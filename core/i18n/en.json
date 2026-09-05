@@ -69,6 +69,16 @@
         "Confirm free disk space is at least the size of the main database (VACUUM needs equivalent temporary space)",
         "Avoid running it at the same time as the daily decay job",
         "Check log lines starting with [StorageMaintenance]"
+      ],
+      "identity": [
+        "Run the command from the platform you want to diagnose so the real Bot account can be read",
+        "If the conversation manager is reported as not ready, run /anam status first",
+        "Check the log for entries prefixed with [IdentityRepair]"
+      ],
+      "fix_identity": [
+        "Run /anam fix-identity first and confirm the detected Bot account",
+        "Run it from the affected platform to avoid falling back to statistical inference",
+        "If the outcome looks wrong, run /anam fix-identity rollback to restore"
       ]
     }
   },
@@ -165,8 +175,57 @@
     "write_ops_line": "Write-operation log: deleted {deleted}, remaining {remaining} ({unfinished} unfinished entries kept, crash recovery unaffected)",
     "graph_line": "Graph cleanup: {summary}"
   },
+  "identity": {
+    "action_name": "Identity diagnostics",
+    "header": "[Anamnesis identity status]",
+    "state_on": "on",
+    "state_off": "off",
+    "anchor_unavailable": "Name anchoring: unavailable (memory processor not ready)",
+    "anchor_line": "Name anchoring: {state} - format {format} - account id tail {tail} chars",
+    "guard_unavailable": "Identity guard: unavailable (memory processor not ready)",
+    "guard_disabled": "Identity guard: disabled (identity_settings.identity_guard_enabled)",
+    "guard_line": "Identity guard: on - tracking {tracked}/{max_tracked} accounts - {unstable} suspected frequent renamers",
+    "guard_dropped": "  Blocked: {echo} session echoes - {missing} rows without an account id - {corrected} Bot names corrected - {flagged} flagged unstable",
+    "guard_window": "  Rename window {hours} h - at most {names} nicknames per account",
+    "alias_unavailable": "Alias table: unavailable (memory engine not ready)",
+    "alias_line": "Alias table: {aliases} nicknames / {identities} accounts - {multi} multi-nickname accounts - {shared} shared nicknames - cache {cached}/{cache_max}",
+    "conversation_header": "Assistant attribution in the conversation log:",
+    "conversation_unavailable": "Assistant attribution: unavailable (conversation manager not ready)",
+    "unknown_platform": "unknown platform",
+    "no_assistant_rows": "  No assistant messages recorded yet.",
+    "source_live": "live adapter",
+    "source_majority": "statistical inference",
+    "platform_line": "  [{platform}] Bot = {bot_name} ({bot_id}), source: {source}",
+    "platform_counts": "    {correct} correct / {wrong} wrong (out of {total})",
+    "platform_ambiguous": "  [{platform}] Bot account is ambiguous (top id holds no majority), skipped. Run this command from that platform so the real Bot account can be read.",
+    "offender_line": "    - {sender_name} ({sender_id}): {count}",
+    "false_flag_header": "Accounts wrongly flagged as the Bot: {count} (display/statistics only, anchoring is unaffected)",
+    "false_flag_line": "  - {identity}: {aliases}",
+    "backup_line": "The backup table holds {count} rows that can still be rolled back (/anam fix-identity rollback).",
+    "fix_hint": "Found {count} misattributed rows - run /anam fix-identity for a repair preview.",
+    "clean": "No misattribution found, identity tracking looks healthy.",
+    "analyse_failed": "Identity diagnostics did not finish (reason: {reason})."
+  },
+  "fix_identity": {
+    "action_name": "Identity repair",
+    "invalid_mode": "Unrecognised mode: {mode}\nAvailable: preview (default, read-only) / exec (apply the repair) / rollback (undo the last repair)",
+    "preview_header": "[Anamnesis identity repair preview]",
+    "preview_hint": "The above is a preview, nothing was changed.\nRun /anam fix-identity exec to apply it, or append a platform name to repair a single platform, e.g. /anam fix-identity exec aiocqhttp.",
+    "exec_starting": "Repairing Bot attribution in the conversation log; the original values are backed up first...",
+    "exec_header": "[Anamnesis identity repair result]",
+    "repaired_line": "Re-attributed {count} assistant messages.",
+    "cleared_flags_line": "Cleared {count} wrongly applied is_bot flags (the nicknames themselves are kept).",
+    "skipped_line": "Skipped (Bot account ambiguous): {platforms}",
+    "nothing_to_do": "Nothing needed repairing.",
+    "graph_note": "Note: already extracted memories and graph nodes are not rewritten; stale attributions age out through normal decay.",
+    "rollback_hint": "To undo: /anam fix-identity rollback",
+    "rollback_starting": "Rolling back the last identity repair...",
+    "rollback_done": "Restored the original attribution of {count} assistant messages.",
+    "rollback_empty": "The backup table is empty, there is nothing to roll back.",
+    "failed": "Identity repair failed: {reason}"
+  },
   "help": {
-    "text": "Anamnesis User Guide\n\nCore commands:\n/anam status              View system status\n/anam search <keyword> [count]  Search memories (default 5)\n/anam forget <ID>          Delete specified memory\n/anam rebuild-index       Rebuild index (fix inconsistency)\n/anam rebuild-graph       Rebuild graph memory index (backfill old data)\n/anam webui               Show WebUI management interface entry\n/anam summarize [message_count]  Summarize now or re-summarize the latest messages\n/anam reset               Reset current session memory context\n/anam cleanup [preview|exec] Clean up memory injection fragments in historical messages (default preview)\n/anam migrate [preview|exec] Import data from legacy LivingMemory (default preview)\n/anam migrate-verify      Reconcile legacy and new databases before removing the old plugin\n/anam vacuum              Prune write-operation logs and reclaim database disk space\n/anam help                Show this help\n\nUsage tips:\n• Use search command for daily queries\n• For complex management, go to Plugins -> Anamnesis -> Pages -> dashboard in AstrBot Dashboard\n• Memories are automatically saved from conversations\n• Use forget to delete sensitive information\n• Execute rebuild-index when index is inconsistent\n• After enabling graph memory, execute rebuild-graph to backfill old data\n• After plugin update, execute cleanup to clean old data\n• When migrating from LivingMemory, run migrate preview first to inspect the plan\n• Run vacuum when the database grows large\n\ncleanup command examples:\n  /anam cleanup          # Preview mode, shows statistics only\n  /anam cleanup preview  # Same as above\n  /anam cleanup exec     # Perform actual cleanup\n\nmigrate command examples:\n  /anam migrate          # Preview only, shows the plan\n  /anam migrate exec     # Perform the migration\n  /anam migrate-verify   # Reconcile after migration\n\nMore info: https://github.com/Whereis-Alice/astrbot_plugin_anamnesis"
+    "text": "Anamnesis User Guide\n\nCore commands:\n/anam status              View system status\n/anam search <keyword> [count]  Search memories (default 5)\n/anam forget <ID>          Delete specified memory\n/anam rebuild-index       Rebuild index (fix inconsistency)\n/anam rebuild-graph       Rebuild graph memory index (backfill old data)\n/anam webui               Show WebUI management interface entry\n/anam summarize [message_count]  Summarize now or re-summarize the latest messages\n/anam reset               Reset current session memory context\n/anam cleanup [preview|exec] Clean up memory injection fragments in historical messages (default preview)\n/anam migrate [preview|exec] Import data from legacy LivingMemory (default preview)\n/anam migrate-verify      Reconcile legacy and new databases before removing the old plugin\n/anam vacuum              Prune write-operation logs and reclaim database disk space\n/anam identity            Inspect name anchoring and bot-attribution diagnostics\n/anam fix-identity [preview|exec|rollback] Repair bot messages recorded as group members (default preview)\n/anam help                Show this help\n\nUsage tips:\n• Use search command for daily queries\n• For complex management, go to Plugins -> Anamnesis -> Pages -> dashboard in AstrBot Dashboard\n• Memories are automatically saved from conversations\n• Use forget to delete sensitive information\n• Execute rebuild-index when index is inconsistent\n• After enabling graph memory, execute rebuild-graph to backfill old data\n• After plugin update, execute cleanup to clean old data\n• When migrating from LivingMemory, run migrate preview first to inspect the plan\n• Run vacuum when the database grows large\n• If bot messages look attributed to group members, run identity, then fix-identity\n\ncleanup command examples:\n  /anam cleanup          # Preview mode, shows statistics only\n  /anam cleanup preview  # Same as above\n  /anam cleanup exec     # Perform actual cleanup\n\nmigrate command examples:\n  /anam migrate          # Preview only, shows the plan\n  /anam migrate exec     # Perform the migration\n  /anam migrate-verify   # Reconcile after migration\n\nidentity repair examples:\n  /anam identity                    # Show anchor/guard/alias stats and attribution\n  /anam fix-identity                # Preview only, shows how many rows would change\n  /anam fix-identity exec           # Perform the repair (original values are backed up)\n  /anam fix-identity exec aiocqhttp # Repair a single platform only\n  /anam fix-identity rollback       # Roll back the previous repair\n\nMore info: https://github.com/Whereis-Alice/astrbot_plugin_anamnesis"
   },
   "init": {
     "ready": "Plugin is ready. Use /anam help to view available commands.",

@@ -16,6 +16,8 @@ Anamnesis commands use the `/anam` prefix (alias `/amem`).
 | `/anam migrate [preview\|exec]` | Read-only migration of all data from the old `astrbot_plugin_livingmemory` data directory; `preview` only reports, `exec` performs the migration |
 | `/anam migrate-verify` | Reconcile after migration by comparing per-table row counts with the old database |
 | `/anam vacuum` | Trim the write-operation log and run SQLite VACUUM to reclaim disk space |
+| `/anam identity` | Show a read-only checkup of name anchoring, the identity guard, and Bot attribution |
+| `/anam fix-identity [preview\|exec\|rollback] [platform]` | Re-attribute Bot messages filed under a member account; `preview` only reports |
 | `/anam help` | Show help |
 
 ## Migration and disk reclamation
@@ -30,6 +32,26 @@ The full migration procedure from the old LivingMemory plugin is described in th
 | `/anam vacuum` | Trims the write-operation log and runs SQLite VACUUM to reclaim database file space |
 
 Migration reads the old data directory only and never modifies or deletes the old plugin's data. Uninstall the old plugin after `/anam migrate-verify` passes.
+
+## Identity checkup and attribution repair
+
+Nicknames are neither unique nor stable, so person nodes are keyed by account id and nicknames are kept as aliases. `/anam identity` reports how that machinery is behaving.
+
+| Command | Behavior |
+| --- | --- |
+| `/anam identity` | Read-only checkup: name-anchoring config, identity-guard drop counters, alias-store size, and the per-platform Bot attribution spread in the conversation log |
+| `/anam fix-identity preview` | Reports how many `assistant` messages are filed under the wrong account and writes nothing |
+| `/anam fix-identity exec` | Rewrites those senders and clears `is_bot` flags stuck on real members |
+| `/anam fix-identity rollback` | Restores the previous `exec` from its row-level undo log |
+| `/anam fix-identity exec aiocqhttp` | Processes one platform only and leaves the others untouched |
+
+`preview` / `exec` / `rollback` accept the usual synonyms (`dry-run`, `apply`, `undo`, and so on).
+
+The repair is deliberately conservative. The real Bot account comes from the live platform adapter whenever it is reachable; otherwise it falls back to the statistical mode, and only when one account owns a **strict majority** of that platform's `assistant` rows. Platforms without a majority are reported as `ambiguous` and skipped rather than "repaired" on a coin flip.
+
+::: warning Conversation log only
+`fix-identity` rewrites the conversation message table only. Already-extracted memories and graph nodes are left alone because re-running extraction over the whole history is too expensive, and stale attributions age out through normal decay. Rollback does not restore `is_bot` flags either: they are display-only metadata and are re-learned from traffic.
+:::
 
 ## Index maintenance states
 
@@ -52,6 +74,7 @@ Startup consistency checks and automatic repairs run in the background. Use `/an
 | Recently discussed content is not searchable | Run `/anam summarize` to ensure it has been written into long-term memory |
 | A summary is empty or misses details | Use `/anam summarize 20` for the latest 20 messages, or re-summarize retained source from memory details |
 | Memories leak across personas | Check `filtering_settings.use_persona_filtering` |
+| Something one member did is remembered as someone else | Renames and duplicate nicknames break name-only matching; run `/anam identity` to confirm anchoring is on, then `/anam fix-identity preview` |
 | Group context is incomplete | Check `session_manager.enable_full_group_capture` |
 | Search indexes look inconsistent | Run `/anam rebuild-index`; for graph issues, run `/anam rebuild-graph` |
 | Old recall degrades after changing the embedding model | Wait for the provider-fingerprint check to trigger a full vector rebuild and monitor `/anam status` |

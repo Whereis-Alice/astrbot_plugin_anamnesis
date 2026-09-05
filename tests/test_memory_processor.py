@@ -182,10 +182,11 @@ async def test_dual_channel_summary_stores_canonical_and_persona():
     assert "张三" in metadata["persona_summary"]
     assert "呀" in metadata["persona_summary"]
 
-    # content 应为 summary + key_facts 富文本（检索语料）
+    # content 应为 summary + key_facts 富文本（检索语料）。
+    # key_facts 里的人名会被身份锚定改写成「昵称#账号尾号」，summary 部分保持原样。
     assert (
         content
-        == "张三明天下午三点要开会呀，我已经认真记下来啦！ | 张三明天下午三点开会"
+        == "张三明天下午三点要开会呀，我已经认真记下来啦！ | 张三#u1明天下午三点开会"
     )
 
     # schema 版本标记

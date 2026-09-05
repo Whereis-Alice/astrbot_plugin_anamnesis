@@ -18,9 +18,20 @@ class GraphStore(GraphStoreWriteMixin, GraphStoreReadMixin, GraphStoreSnapshotMi
 
     _SQLITE_BATCH_SIZE = 500
     _NODE_TOKEN_QUERY_BATCH_SIZE = 200
+    _DEFAULT_PERSON_ALIAS_LIMIT = 40
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, config: dict[str, Any] | None = None):
         self.db_path = db_path
+        options = config or {}
+        try:
+            limit = int(
+                options.get("alias_max_per_identity", self._DEFAULT_PERSON_ALIAS_LIMIT)
+            )
+        except (TypeError, ValueError):
+            limit = self._DEFAULT_PERSON_ALIAS_LIMIT
+        #: person 节点 metadata 里缓存的昵称上限。完整改名史由 person_aliases 表
+        #: 负责，这里只是给图查询用的就近缓存，必须有界以免 metadata 无限膨胀。
+        self.person_alias_limit = max(1, limit)
 
     @asynccontextmanager
     async def _connect(self):

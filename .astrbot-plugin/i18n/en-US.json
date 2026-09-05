@@ -321,6 +321,58 @@
         "hint": "Cap the number of relation (edge) entries a single memory writes into the knowledge graph. Measured legacy data produced 85190 relations from 1766 memories, the dominant source of database size; lowering it cuts disk and index cost substantially. Set 0 for no limit. Allowed range: 0-1000."
       }
     },
+    "identity_settings": {
+      "description": "Identity & Name Anchoring",
+      "hint": "Make memories distinguish people by account ID instead of nickname. Nicknames are neither unique nor stable: one group can hold several members with the same nickname, and one person may rename repeatedly. When enabled, facts are written as \"nickname#idtail\" and a nickname history table lets an old name still retrieve the same person.",
+      "anchor_enabled": {
+        "description": "Anchor Accounts in Facts",
+        "hint": "Rewrite person names inside key facts as \"nickname#idtail\", for example \"Alice\" becomes \"Alice#4778\". Fact nodes are keyed by their text, so without anchoring two different accounts sharing a nickname collapse into one node and A's actions get attributed to B. The summary injected into the model and the raw conversation are untouched."
+      },
+      "anchor_format": {
+        "description": "Anchor Format Template",
+        "hint": "Format of the anchored name. It must contain both the {name} and {tail} placeholders; an invalid value falls back to the default."
+      },
+      "anchor_tail_length": {
+        "description": "Anchor ID Tail Length",
+        "hint": "How many trailing characters of the account ID become the anchor suffix. Shorter is more readable but slightly more likely to collide between same-nickname accounts. Set 0 to use the full account ID. Allowed range: 0-32."
+      },
+      "alias_max_per_identity": {
+        "description": "Nickname History per Account",
+        "hint": "How many past nicknames to keep per account. Beyond the limit the least recently seen and least matched ones are dropped. Raise it for groups where people rename often. Allowed range: 1-500."
+      },
+      "alias_cache_max": {
+        "description": "Alias Snapshot Size Limit",
+        "hint": "To avoid hitting the database on every search, the alias table keeps an in-memory snapshot. This caps its entry count and therefore the resident memory this feature uses. Lower it on small machines; set 0 to disable caching and always query the database. Allowed range: 0-200000."
+      },
+      "alias_cache_ttl_seconds": {
+        "description": "Alias Snapshot Refresh Interval",
+        "hint": "An expired snapshot is refreshed lazily on next use, with no background timer. Larger values save IO but newly changed nicknames take slightly longer to apply. Allowed range: 0-86400 seconds."
+      },
+      "alias_query_expansion": {
+        "description": "Expand Queries with Old Nicknames",
+        "hint": "When a question mentions someone's former nickname, also add that account's other nicknames to the keyword condition so renaming does not break recall. Disable for literal-only matching."
+      },
+      "alias_backfill_on_start": {
+        "description": "Backfill Aliases on First Start",
+        "hint": "When the alias table is empty, backfill nickname history in batches from existing memory metadata so old data benefits from identity resolution too. Runs only once, on first start."
+      },
+      "identity_guard_enabled": {
+        "description": "Enable Identity Guard",
+        "hint": "Filter out identity data that would pollute memories: entries without an account ID, entries that mistake a session ID for a person, and multiple self-names of the bot which are normalised into one. Recommended to keep enabled."
+      },
+      "identity_guard_max_tracked": {
+        "description": "Guard Tracking Limit",
+        "hint": "To judge rename frequency the guard keeps each account's recent nicknames in memory. This caps how many accounts are tracked, evicting the least recently seen, and directly determines the guard's memory footprint. Allowed range: 16-100000."
+      },
+      "max_distinct_names_per_identity": {
+        "description": "Rename Instability Threshold",
+        "hint": "If one account shows more distinct nicknames than this inside the observation window, its nickname is treated as unreliable: the account is still remembered, but its nickname is no longer used to anchor facts, keeping noise out of memory. Allowed range: 2-200."
+      },
+      "name_stability_window_hours": {
+        "description": "Rename Observation Window",
+        "hint": "Time window used to count renames. Nicknames older than the window no longer count toward the instability check. Allowed range: 0.1-8760 hours."
+      }
+    },
     "migration_settings": {
       "description": "Database Migration",
       "hint": "Control database version upgrade behavior on plugin startup",

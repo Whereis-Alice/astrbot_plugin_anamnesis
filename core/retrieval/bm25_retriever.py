@@ -12,6 +12,7 @@ import aiosqlite
 
 from astrbot.api import logger
 
+from ...storage.alias_store import expand_query_tokens
 from ..processors.text_processor import TextProcessor
 
 
@@ -41,6 +42,7 @@ class BM25Retriever:
         db_path: str,
         text_processor: TextProcessor,
         config: dict[str, Any] | None = None,
+        alias_store: Any = None,
     ):
         """
         初始化BM25检索器
@@ -53,6 +55,7 @@ class BM25Retriever:
         self.db_path = db_path
         self.text_processor = text_processor
         self.config = config or {}
+        self.alias_store = alias_store
         self.fts_table = "livingmemory_memories_fts"
         self.doc_table = "documents"
 
@@ -168,6 +171,9 @@ class BM25Retriever:
         tokens = await self.text_processor.tokenize_async(query, remove_stopwords=True)
         if not tokens:
             return []
+
+        # 用旧昵称提问也要能命中：把同一账号的其它昵称补进 OR 条件。
+        tokens = await expand_query_tokens(self.alias_store, query, tokens)
 
         # 构建FTS5查询: 使用OR连接多个token,提高召回率
         # 转义特殊字符

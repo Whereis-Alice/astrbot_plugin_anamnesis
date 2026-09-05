@@ -6,6 +6,32 @@
 
 Anamnesis 由上游插件 `astrbot_plugin_livingmemory` v2.6.1 派生而来。3.0.0 之前的历史记录原样保留在 [CHANGELOG_upstream.md](CHANGELOG_upstream.md)，其中的命令名与标识符均为旧版，不适用于本插件。
 
+## 3.1.0
+
+本次更新只做一件事：**让「谁做了什么」记得住、也记得对**。此前人物完全依赖群昵称识别，改名即失联，撞名即串档，Bot 自称还会被当成群友写进记忆。没有破坏性变更，旧库直接可用。
+
+### 新增
+
+- **人物身份锚定**。抽取出的 `key_facts` 里的人名会被改写成 `昵称#账号尾号`（格式由 `identity_settings.anchor_format` 控制，默认 `{name}#{tail}`，尾号长度 `anchor_tail_length` 默认 4 位）。同一窗口内撞名、Bot、昵称不稳定、单字名、以及已经带 `#` 的名字一律跳过，只在真正可能混淆时才加后缀。锚定只作用于 `key_facts`，`summary` 保持自然语言，可读性不受影响。
+- **昵称改名史（`person_aliases` 表）**。每个账号用过的全部昵称都会被记录，检索时自动把旧昵称展开成同义词（`alias_query_expansion`，默认开启），用三个月前的旧名字也能搜到人。单账号上限 `alias_max_per_identity`（默认 40），首次启动会从既有记忆回填一次（`alias_backfill_on_start`）。
+- **身份卫士**。写入前拦掉三类脏数据：缺 `sender_id` 的匿名条目、把 `session_id` 当成人名的回音、以及 Bot 自称的各种变体（按多数票归一到同一个名字）。同一账号在 `name_stability_window_hours`（默认 24 小时）内出现超过 `max_distinct_names_per_identity`（默认 12）个不同昵称时标记为不稳定，不再参与锚定。
+- **`/anam identity`**（管理员，只读）：身份体检报告，一次性给出锚定、身份卫士、别名库三部分的运行统计与生效配置，不写任何数据。
+- **`/anam fix-identity [preview|exec|rollback] [platform]`**（管理员）：诊断并修复历史上被错记到群友名下的 Bot 发言。`preview` 只报告（默认），`exec` 执行修复并写行级撤销日志，`rollback` 完整还原上一次修复。判定策略保守：优先采信当前在线适配器上报的 Bot 账号，其次才用统计众数，且众数占比需超过 50%；合成的 `bot:` id 不采信；平台归属本身存在歧义时整个平台跳过。修复只改会话日志里的发言人归属，不动记忆正文与图谱。
+- **`identity_settings` 配置段（12 项）**，详见 [docs/configuration.md](docs/configuration.md)。其中只有 `alias_cache_max`（默认 2000）与 `identity_guard_max_tracked`（默认 512）会决定常驻内存，1 GB 小机建议分别调到 500 与 128。
+
+### 修复
+
+- **人物节点只记得最后一次用过的昵称**。`_upsert_node` 原来是 `metadata = excluded.metadata`，每写一次就把整份 metadata 覆盖掉，同一个人的历史昵称全部丢失——结果是用旧名字既搜不到人，也看不出这个人曾经叫过什么。现在 `node_type == "person"` 改走 `_merge_person_metadata()`：新昵称优先、去重、按 `alias_max_per_identity` 截断，历史昵称完整保留。
+- **一条坏数据能把群友永久误标成 Bot**。`is_bot` 在查询侧被 `MAX()` 聚合，任何一次错误标记都会永久粘住，之后这个账号的发言都会被当成 Bot 输出过滤掉。现在写入侧 `is_bot` 改为粘性 OR（某次缺标记不会把已知 Bot 降级成人），已经产生的错误标记由 `/anam fix-identity exec` 统一清理，别名文本本身保留不动。
+- **群聊提示词没有约束昵称的抄写方式**，模型会自行改写或简化人名（去掉后缀、合并近似名），同一个人在不同记忆里名字不一致。现在提示词明确要求逐字照抄前缀原文；同一账号出现多个昵称时取最后一条；不同账号撞名时补账号后 4 位。
+
+### 优化
+
+- **图谱抽取能认出改过名的人**。抽取前会把别名库里的全量改名史折进参与者身份（浅拷贝，不污染已持久化的 metadata），旧名字与新名字因此会被归到同一个人身上。
+- **检索接入别名扩展**。BM25 与图谱关键词两条通路都会展开旧昵称，单次查询最多 12 个同义词，避免关键词爆炸拖慢检索。
+- **新增结构全部有内存上限**。别名库是内存快照 + TTL（`alias_cache_max` / `alias_cache_ttl_seconds`），身份卫士的跟踪表按 LRU 淘汰（`identity_guard_max_tracked`），长期运行不会无边界增长。
+- 新增 43 个测试，覆盖别名库、身份卫士、锚定、人物节点昵称累积与归属修复（含撤销），全量测试 1032 项。
+
 ## 3.0.0
 
 ### 破坏性变更

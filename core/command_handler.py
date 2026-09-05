@@ -13,6 +13,7 @@ from astrbot.api.event import AstrMessageEvent, MessageEventResult
 
 from .base.config_manager import ConfigManager
 from .i18n_backend import t, t_list
+from .identity_repair import normalise_platform
 from .managers.conversation_manager import ConversationManager
 from .managers.memory_engine import MemoryEngine
 from .memory_scope import is_event_memory_allowed, resolve_memory_scope
@@ -35,6 +36,27 @@ _MIGRATE_MODES: dict[str, str] = {
     "confirm": "exec",
     "force": "force",
     "overwrite": "force",
+}
+
+# /anam fix-identity 的模式别名 → 规范化动作
+_IDENTITY_FIX_MODES: dict[str, str] = {
+    "": "preview",
+    "preview": "preview",
+    "dry": "preview",
+    "dry-run": "preview",
+    "dryrun": "preview",
+    "check": "preview",
+    "plan": "preview",
+    "exec": "exec",
+    "run": "exec",
+    "apply": "exec",
+    "yes": "exec",
+    "confirm": "exec",
+    "fix": "exec",
+    "rollback": "rollback",
+    "undo": "rollback",
+    "revert": "rollback",
+    "restore": "rollback",
 }
 
 
@@ -923,6 +945,318 @@ class CommandHandler:
                     t("vacuum.action_name"),
                     e,
                     t_list("error.suggestions.vacuum"),
+                )
+            )
+
+    # ----------------------------------------------------- identity diagnostics
+
+    @staticmethod
+    def _live_bot_ids(event: AstrMessageEvent) -> dict[str, tuple[str, str]]:
+        """Read the authoritative Bot identity from the live adapter.
+
+        ``IdentityRepair`` takes this as plain data so it stays testable;
+        digging it out of the event is an event-layer concern and lives here.
+        """
+        platform = ""
+        try:
+            if hasattr(event, "get_platform_name"):
+                platform = str(event.get_platform_name() or "")
+        except Exception as exc:
+            logger.debug(f"读取平台名失败: {exc}")
+        key = normalise_platform(platform)
+        if not key:
+            return {}
+        try:
+            bot_id, bot_name = ConversationManager._resolve_bot_identity(
+                event, platform
+            )
+        except Exception as exc:
+            logger.debug(f"读取 Bot 身份失败: {exc}")
+            return {}
+        if not bot_id:
+            return {}
+        return {key: (str(bot_id), str(bot_name or bot_id))}
+
+    def _build_identity_repair(self, command: str):
+        """构造 IdentityRepair，返回 (repair, error_message)。"""
+        if not self.conversation_manager:
+            return None, self._component_not_ready_message("会话管理器", command)
+
+        from .identity_repair import IdentityRepair
+
+        repair = IdentityRepair(
+            self.conversation_manager,
+            getattr(self.memory_engine, "alias_store", None),
+        )
+        if repair.connection is None:
+            return None, t("identity.conversation_unavailable")
+        return repair, None
+
+    def _identity_anchor_lines(self) -> list[str]:
+        anchor = getattr(self._memory_processor, "identity_anchor", None)
+        if anchor is None:
+            return [t("identity.anchor_unavailable")]
+        return [
+            t(
+                "identity.anchor_line",
+                state=t("identity.state_on")
+                if getattr(anchor, "enabled", False)
+                else t("identity.state_off"),
+                format=getattr(anchor, "anchor_format", "") or "-",
+                tail=getattr(anchor, "tail_length", 0),
+            )
+        ]
+
+    def _identity_guard_lines(self) -> list[str]:
+        guard = getattr(self._memory_processor, "identity_guard", None)
+        if guard is None:
+            return [t("identity.guard_unavailable")]
+        stats = guard.stats()
+        if not stats.get("enabled"):
+            return [t("identity.guard_disabled")]
+        return [
+            t(
+                "identity.guard_line",
+                tracked=stats.get("tracked_identities", 0),
+                max_tracked=stats.get("max_tracked", 0),
+                unstable=stats.get("unstable_identities", 0),
+            ),
+            t(
+                "identity.guard_dropped",
+                echo=stats.get("dropped_session_echo", 0),
+                missing=stats.get("dropped_missing_id", 0),
+                corrected=stats.get("bot_names_corrected", 0),
+                flagged=stats.get("flagged_unstable", 0),
+            ),
+            t(
+                "identity.guard_window",
+                hours=f"{float(stats.get('window_hours', 0.0)):.1f}",
+                names=stats.get("max_distinct_names", 0),
+            ),
+        ]
+
+    async def _identity_alias_lines(self) -> list[str]:
+        alias_store = getattr(self.memory_engine, "alias_store", None)
+        if alias_store is None:
+            return [t("identity.alias_unavailable")]
+        try:
+            stats = await alias_store.stats()
+        except Exception as exc:
+            logger.debug(f"读取别名表统计失败: {exc}")
+            return [t("identity.alias_unavailable")]
+        return [
+            t(
+                "identity.alias_line",
+                aliases=stats.get("aliases", 0),
+                identities=stats.get("identities", 0),
+                multi=stats.get("multi_alias_identities", 0),
+                shared=stats.get("shared_aliases", 0),
+                cached=stats.get("cached_aliases", 0),
+                cache_max=stats.get("cache_max", 0),
+            )
+        ]
+
+    def _identity_report_lines(self, report: dict) -> list[str]:
+        """Render the per-platform assistant-attribution audit."""
+        lines: list[str] = [t("identity.conversation_header")]
+        platforms = report.get("platforms") or []
+        if not platforms:
+            lines.append(t("identity.no_assistant_rows"))
+        for item in platforms:
+            label = item.get("platform") or t("identity.unknown_platform")
+            if item.get("ambiguous"):
+                lines.append(t("identity.platform_ambiguous", platform=label))
+                continue
+            lines.append(
+                t(
+                    "identity.platform_line",
+                    platform=label,
+                    bot_name=item.get("bot_name") or "-",
+                    bot_id=item.get("bot_id") or "-",
+                    source=t("identity.source_live")
+                    if item.get("source") == "live"
+                    else t("identity.source_majority"),
+                )
+            )
+            lines.append(
+                t(
+                    "identity.platform_counts",
+                    correct=item.get("correct", 0),
+                    wrong=item.get("wrong", 0),
+                    total=item.get("total", 0),
+                )
+            )
+            for offender in item.get("offenders") or []:
+                lines.append(
+                    t(
+                        "identity.offender_line",
+                        sender_name=offender.get("sender_name") or "-",
+                        sender_id=offender.get("sender_id") or "-",
+                        count=offender.get("count", 0),
+                    )
+                )
+
+        false_flags = report.get("false_bot_flags") or []
+        if false_flags:
+            lines.append("")
+            lines.append(t("identity.false_flag_header", count=len(false_flags)))
+            for row in false_flags[:5]:
+                lines.append(
+                    t(
+                        "identity.false_flag_line",
+                        identity=row.get("identity_key") or "-",
+                        aliases=row.get("aliases") or "-",
+                    )
+                )
+
+        backup_rows = int(report.get("backup_rows") or 0)
+        if backup_rows > 0:
+            lines.append("")
+            lines.append(t("identity.backup_line", count=backup_rows))
+
+        total_wrong = int(report.get("total_wrong") or 0)
+        lines.append("")
+        if total_wrong > 0 or false_flags:
+            lines.append(t("identity.fix_hint", count=total_wrong))
+        else:
+            lines.append(t("identity.clean"))
+        return lines
+
+    async def handle_identity(
+        self, event: AstrMessageEvent
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        """处理 /anam identity 命令 - 人名锚定、身份守卫与 Bot 归属诊断"""
+        lines: list[str] = [t("identity.header"), ""]
+        lines.extend(self._identity_anchor_lines())
+        lines.extend(self._identity_guard_lines())
+        lines.extend(await self._identity_alias_lines())
+
+        repair, error = self._build_identity_repair("/anam identity")
+        if repair is None:
+            lines.append("")
+            lines.append(error or t("identity.conversation_unavailable"))
+            yield event.plain_result("\n".join(lines))
+            return
+
+        try:
+            report = await repair.analyse(live_bot_ids=self._live_bot_ids(event))
+        except Exception as e:
+            logger.error(f"身份诊断失败: {e}", exc_info=True)
+            yield event.plain_result(
+                self._format_error_message(
+                    t("identity.action_name"),
+                    e,
+                    t_list("error.suggestions.identity"),
+                )
+            )
+            return
+
+        lines.append("")
+        if not report.get("ok"):
+            lines.append(
+                t("identity.analyse_failed", reason=report.get("reason") or "unknown")
+            )
+        else:
+            lines.extend(self._identity_report_lines(report))
+        yield event.plain_result("\n".join(lines))
+
+    async def handle_fix_identity(
+        self,
+        event: AstrMessageEvent,
+        mode: str = "preview",
+        platform: str | None = None,
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        """处理 /anam fix-identity 命令 - 修复会话库中错误的 Bot 归属"""
+        action = _IDENTITY_FIX_MODES.get((mode or "preview").strip().lower())
+        if action is None:
+            yield event.plain_result(t("fix_identity.invalid_mode", mode=mode))
+            return
+
+        repair, error = self._build_identity_repair("/anam fix-identity")
+        if repair is None:
+            yield event.plain_result(error or t("identity.conversation_unavailable"))
+            return
+
+        platform_filter = (platform or "").strip() or None
+        try:
+            if action == "rollback":
+                yield event.plain_result(t("fix_identity.rollback_starting"))
+                result = await repair.rollback()
+                if not result.get("ok"):
+                    yield event.plain_result(
+                        t(
+                            "fix_identity.failed",
+                            reason=result.get("reason") or t("common.unknown_error"),
+                        )
+                    )
+                    return
+                if result.get("empty"):
+                    yield event.plain_result(t("fix_identity.rollback_empty"))
+                    return
+                yield event.plain_result(
+                    t("fix_identity.rollback_done", count=result.get("restored", 0))
+                )
+                return
+
+            live_bot_ids = self._live_bot_ids(event)
+            if action == "preview":
+                report = await repair.analyse(platform_filter, live_bot_ids)
+                if not report.get("ok"):
+                    yield event.plain_result(
+                        t(
+                            "fix_identity.failed",
+                            reason=report.get("reason") or t("common.unknown_error"),
+                        )
+                    )
+                    return
+                lines = [t("fix_identity.preview_header"), ""]
+                lines.extend(self._identity_report_lines(report))
+                lines.append("")
+                lines.append(t("fix_identity.preview_hint"))
+                yield event.plain_result("\n".join(lines))
+                return
+
+            yield event.plain_result(t("fix_identity.exec_starting"))
+            result = await repair.repair(platform_filter, live_bot_ids)
+            if not result.get("ok"):
+                yield event.plain_result(
+                    t(
+                        "fix_identity.failed",
+                        reason=result.get("reason") or t("common.unknown_error"),
+                    )
+                )
+                return
+
+            repaired = int(result.get("repaired") or 0)
+            cleared = int(result.get("cleared_bot_flags") or 0)
+            lines = [t("fix_identity.exec_header")]
+            if repaired <= 0 and cleared <= 0:
+                lines.append(t("fix_identity.nothing_to_do"))
+            if repaired > 0:
+                lines.append(t("fix_identity.repaired_line", count=repaired))
+            if cleared > 0:
+                lines.append(t("fix_identity.cleared_flags_line", count=cleared))
+            skipped = result.get("skipped") or []
+            if skipped:
+                lines.append(
+                    t(
+                        "fix_identity.skipped_line",
+                        platforms=", ".join(str(item) for item in skipped),
+                    )
+                )
+            if repaired > 0:
+                lines.append("")
+                lines.append(t("fix_identity.graph_note"))
+                lines.append(t("fix_identity.rollback_hint"))
+            yield event.plain_result("\n".join(lines))
+
+        except Exception as e:
+            logger.error(f"身份修复失败: {e}", exc_info=True)
+            yield event.plain_result(
+                self._format_error_message(
+                    t("fix_identity.action_name"),
+                    e,
+                    t_list("error.suggestions.fix_identity"),
                 )
             )
 

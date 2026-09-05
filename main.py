@@ -88,7 +88,7 @@ elif _version_lt(_CURRENT_ASTRBOT_VERSION, _MIN_ASTRBOT_VERSION):
     "Anamnesis",
     "Whereis-Alice",
     "An intelligent long-term memory plugin with a dynamic lifecycle for AstrBot.",
-    "3.0.0",
+    "3.1.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_anamnesis",
 )
 class AnamnesisPlugin(Star):
@@ -658,6 +658,48 @@ class AnamnesisPlugin(Star):
 
         async for message in self.command_handler.handle_vacuum(event):
             yield message
+
+    @permission_type(PermissionType.ADMIN)
+    @anam.command("identity")
+    async def identity(
+        self, event: AstrMessageEvent
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        """[Admin] Inspect name anchoring, identity guard and Bot attribution"""
+        ready, message = await self._ensure_plugin_ready()
+        if not ready:
+            yield event.plain_result(message)
+            return
+
+        if not self.command_handler:
+            yield event.plain_result(self._command_handler_not_ready_message())
+            return
+
+        async for message in self.command_handler.handle_identity(event):
+            yield message
+
+    @permission_type(PermissionType.ADMIN)
+    @anam.command("fix-identity")
+    async def fix_identity(
+        self,
+        event: AstrMessageEvent,
+        mode: str = "preview",
+        platform: str = "",
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        """[Admin] Re-attribute assistant messages filed under the wrong account"""
+        ready, message = await self._ensure_plugin_ready()
+        if not ready:
+            yield event.plain_result(message)
+            return
+
+        if not self.command_handler:
+            yield event.plain_result(self._command_handler_not_ready_message())
+            return
+
+        async for message in self.command_handler.handle_fix_identity(
+            event, mode, platform
+        ):
+            yield message
+
     @permission_type(PermissionType.ADMIN)
     @anam.command("help")
     async def help(

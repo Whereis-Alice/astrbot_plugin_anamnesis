@@ -649,6 +649,120 @@
       }
     }
   },
+  "identity_settings": {
+    "description": "身份标识与人名锚定",
+    "hint": "让记忆按账号 ID 而不是昵称区分人。昵称既不唯一也不稳定：同一个群里可能有多个同名成员，一个人也可能反复改名。开启后事实文本会写成「昵称#账号尾号」，并维护一张历史昵称表，用旧名字也能检索到同一个人。",
+    "type": "object",
+    "items": {
+      "anchor_enabled": {
+        "description": "在事实中锚定账号",
+        "hint": "把关键事实里的人名改写成「昵称#账号尾号」，例如「爱丽丝」→「爱丽丝#4778」。事实节点按文本做主键，不锚定时两个同名的不同账号会共用一个节点，导致 A 做的事被算到 B 头上。注入给模型的摘要与原始对话不受影响。",
+        "type": "bool",
+        "default": true
+      },
+      "anchor_format": {
+        "description": "锚定写法模板",
+        "hint": "锚定后的人名格式，必须同时包含 {name} 和 {tail} 两个占位符。填错会自动回退成默认值。",
+        "type": "string",
+        "default": "{name}#{tail}"
+      },
+      "anchor_tail_length": {
+        "description": "锚点取 ID 末尾位数",
+        "hint": "取账号 ID 最后几位作为锚点后缀，位数越少越简短、但同名撞号的概率略增。填 0 表示使用完整账号 ID。（允许范围：0–32）",
+        "type": "int",
+        "default": 4,
+        "slider": {
+          "min": 0,
+          "max": 32,
+          "step": 1
+        }
+      },
+      "alias_max_per_identity": {
+        "description": "每人保留历史昵称数",
+        "hint": "同一个账号最多记住多少个历史昵称，超出后淘汰最久未出现、命中最少的那些。改名频繁的群可以适当调高。（允许范围：1–500）",
+        "type": "int",
+        "default": 40,
+        "slider": {
+          "min": 1,
+          "max": 500,
+          "step": 1
+        }
+      },
+      "alias_cache_max": {
+        "description": "别名内存快照上限",
+        "hint": "为了避免每次检索都查库，别名表会在内存里放一份快照。这是快照的条数上限，直接决定这项功能的常驻内存占用。小内存机器可以调低，填 0 表示不缓存（每次都查库）。（允许范围：0–200000）",
+        "type": "int",
+        "default": 2000,
+        "slider": {
+          "min": 0,
+          "max": 200000,
+          "step": 100
+        }
+      },
+      "alias_cache_ttl_seconds": {
+        "description": "别名快照刷新间隔",
+        "hint": "快照过期后在下一次使用时懒加载刷新，不会有后台定时任务。调大更省 IO，新改的昵称生效会稍慢。（允许范围：0–86400 秒）",
+        "type": "float",
+        "default": 300,
+        "slider": {
+          "min": 0,
+          "max": 86400,
+          "step": 30
+        }
+      },
+      "alias_query_expansion": {
+        "description": "用旧昵称扩展检索",
+        "hint": "检索时如果问题里出现了某人的旧昵称，自动把该账号的其它昵称一并加入关键词条件，避免改名后搜不到。关闭则只按字面检索。",
+        "type": "bool",
+        "default": true
+      },
+      "alias_backfill_on_start": {
+        "description": "首次启动回填别名",
+        "hint": "别名表为空时，从已有记忆的元数据里分批回填历史昵称，让旧数据也能享受身份识别。只在第一次启动时跑一次。",
+        "type": "bool",
+        "default": true
+      },
+      "identity_guard_enabled": {
+        "description": "启用身份守卫",
+        "hint": "过滤掉会污染记忆的身份数据：缺少账号 ID 的条目、把会话 ID 误当人的条目，并把机器人自己的多个自称归一成同一个名字。建议保持开启。",
+        "type": "bool",
+        "default": true
+      },
+      "identity_guard_max_tracked": {
+        "description": "守卫跟踪账号上限",
+        "hint": "守卫为判断改名频率需要在内存里保留每个账号的近期昵称，这是跟踪的账号数上限，超出后按最久未见淘汰。这项直接决定守卫的内存占用。（允许范围：16–100000）",
+        "type": "int",
+        "default": 512,
+        "slider": {
+          "min": 16,
+          "max": 100000,
+          "step": 16
+        }
+      },
+      "max_distinct_names_per_identity": {
+        "description": "改名不稳定阈值",
+        "hint": "同一账号在观察窗口内出现超过这么多个不同昵称，就判定昵称不可靠：该账号仍然会被记住，但不再用它的昵称去锚定事实，避免把噪声写进记忆。（允许范围：2–200）",
+        "type": "int",
+        "default": 12,
+        "slider": {
+          "min": 2,
+          "max": 200,
+          "step": 1
+        }
+      },
+      "name_stability_window_hours": {
+        "description": "改名观察窗口",
+        "hint": "统计改名次数的时间窗口，超过窗口的旧昵称不再计入不稳定判定。（允许范围：0.1–8760 小时）",
+        "type": "float",
+        "default": 24,
+        "slider": {
+          "min": 0.1,
+          "max": 8760,
+          "step": 1
+        }
+      }
+    }
+  },
   "migration_settings": {
     "description": "数据库迁移",
     "hint": "控制插件启动时的数据库版本升级行为",

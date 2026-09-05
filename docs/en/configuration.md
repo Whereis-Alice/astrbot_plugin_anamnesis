@@ -74,6 +74,31 @@ For very busy group chats, lower `context_window_size` or disable full group cap
 
 Aliases are matched in this order: `platform:user ID`, user ID, then current username. The mapped display name is applied before summarization. Scope changes affect newly written memories only; existing memories are not migrated or re-embedded automatically.
 
+## Person identity and nicknames
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `identity_settings.anchor_enabled` | `true` | Rewrite names inside stored facts as `nickname#account-tail` |
+| `identity_settings.anchor_format` | `{name}#{tail}` | Anchor template; must contain both `{name}` and `{tail}` |
+| `identity_settings.anchor_tail_length` | `4` | How many trailing account-id digits to use; `0` uses the full id |
+| `identity_settings.alias_max_per_identity` | `40` | Maximum historical nicknames kept per account |
+| `identity_settings.alias_cache_max` | `2000` | Row cap for the in-memory alias snapshot; `0` disables caching |
+| `identity_settings.alias_cache_ttl_seconds` | `300` | Lazy refresh interval for the alias snapshot |
+| `identity_settings.alias_query_expansion` | `true` | Expand queries with the other nicknames of the same account |
+| `identity_settings.alias_backfill_on_start` | `true` | Backfill nicknames from existing memory metadata when the table is empty |
+| `identity_settings.identity_guard_enabled` | `true` | Drop identity records that would poison memory and normalize the Bot's own names |
+| `identity_settings.identity_guard_max_tracked` | `512` | Maximum accounts the guard tracks in memory |
+| `identity_settings.max_distinct_names_per_identity` | `12` | Distinct nicknames within the window before the name is treated as unreliable |
+| `identity_settings.name_stability_window_hours` | `24` | Observation window for counting renames |
+
+Nicknames are neither unique nor stable, yet fact nodes are keyed by their text. Without anchoring, two different accounts sharing one nickname collapse into a single person node and one member's actions get attributed to the other; after a rename, older memories degrade into a stranger. Anchoring welds the account tail into the fact text, and the alias store remembers every nickname an account ever used so pre-rename memories stay searchable.
+
+Anchoring affects the fact text written to long-term memory only; the summary injected into the model and the raw conversation are untouched. Changing `anchor_format` or `anchor_tail_length` does not rewrite existing memories, so both spellings coexist until the older ones decay away.
+
+`alias_cache_max` and `identity_guard_max_tracked` are the only two keys here that directly determine resident memory: the first is the alias snapshot row cap, the second is how many accounts the guard keeps recent nicknames for. On a 1 GB host, lower them to `500` and `128`; setting `alias_cache_max` to `0` disables the snapshot entirely and queries SQLite every time.
+
+For attributions that older builds already wrote incorrectly, use `/anam identity` to inspect and `/anam fix-identity` to repair; see [Commands](/en/commands).
+
 ## Reflection and lifecycle
 
 | Key | Default | Description |

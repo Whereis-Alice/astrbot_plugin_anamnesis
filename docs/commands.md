@@ -16,6 +16,8 @@ Anamnesis 的命令统一使用 `/anam` 前缀（别名 `/amem`）。
 | `/anam migrate [preview\|exec]` | 从旧插件 `astrbot_plugin_livingmemory` 的数据目录只读迁移全部数据；默认 `preview` 只报告清单，`exec` 才真正执行 |
 | `/anam migrate-verify` | 迁移后对账，逐表比对行数是否与旧库一致 |
 | `/anam vacuum` | 裁剪写操作日志并执行 SQLite VACUUM，回收磁盘空间 |
+| `/anam identity` | 查看昵称锚定、身份守卫与 Bot 归属体检报告 |
+| `/anam fix-identity [preview\|exec\|rollback] [platform]` | 修复会话库中被错误记到群友名下的 Bot 消息；默认 `preview` 只报告 |
 | `/anam help` | 显示帮助 |
 
 ## 数据迁移与磁盘回收
@@ -30,6 +32,26 @@ Anamnesis 的命令统一使用 `/anam` 前缀（别名 `/amem`）。
 | `/anam vacuum` | 裁剪写操作日志并执行 SQLite VACUUM，回收数据库文件占用的磁盘 |
 
 迁移只读取旧数据目录，不会修改或删除旧插件的数据；`/anam migrate-verify` 通过后再卸载旧插件即可。
+
+## 身份体检与归属修复
+
+昵称既不唯一也不稳定，所以人物节点按账号 ID 归档，昵称只是别名。`/anam identity` 把这套机制的运行情况一次性列出来。
+
+| 命令 | 行为 |
+| --- | --- |
+| `/anam identity` | 只读体检：昵称锚定配置、身份守卫拦截统计、别名库规模，以及会话库里每个平台的 Bot 归属分布 |
+| `/anam fix-identity preview` | 报告有多少条 `assistant` 消息被记到了错误账号名下，不写入任何数据 |
+| `/anam fix-identity exec` | 实际改写这些消息的发送者，并清理别名库里被误标的 `is_bot` 标记 |
+| `/anam fix-identity rollback` | 按行级撤销日志还原上一次 `exec` 的改写 |
+| `/anam fix-identity exec aiocqhttp` | 只处理指定平台，其他平台原样保留 |
+
+`preview` / `exec` / `rollback` 都接受常见同义词（`dry-run`、`apply`、`undo` 等）。
+
+修复逻辑刻意保守：真正的 Bot 账号优先取自当前平台适配器；取不到时才回退到统计众数，且只有在某个账号占据该平台 `assistant` 消息的**绝对多数**时才认定。比例不过半的平台会被标记为 `ambiguous` 并跳过，不会靠掷硬币「修复」。
+
+::: warning 只改会话库
+`fix-identity` 只改写会话消息表，不动已抽取的记忆和图谱节点——重跑抽取的代价过高，历史误归属会随记忆衰减自然淘汰。回滚也不恢复 `is_bot` 标记，那只是展示用元数据，会从后续流量重新学习。
+:::
 
 ## 索引维护状态
 
@@ -52,6 +74,7 @@ Anamnesis 的命令统一使用 `/anam` 前缀（别名 `/amem`）。
 | 搜不到刚聊过的内容 | 先执行 `/anam summarize`，确认对话已经写入长期记忆 |
 | 总结为空或遗漏细节 | 使用 `/anam summarize 20` 重新总结最近 20 条消息，或在详情中对已保留原文重新总结 |
 | 记忆明显串到其他人格 | 检查 `filtering_settings.use_persona_filtering` 是否开启 |
+| 别人做的事被记成我做的 | 群友改名或撞名会让「只按昵称匹配」失效；先用 `/anam identity` 确认昵称锚定已开启，再用 `/anam fix-identity preview` 查看 Bot 归属 |
 | 群聊上下文不完整 | 检查 `session_manager.enable_full_group_capture` 是否开启 |
 | 索引疑似异常 | 执行 `/anam rebuild-index`，图谱异常则执行 `/anam rebuild-graph` |
 | 更换 Embedding 模型后旧记忆召回异常 | 等待后台 Provider 指纹检查触发完整向量重建，并用 `/anam status` 查看进度 |

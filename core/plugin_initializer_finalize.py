@@ -242,6 +242,22 @@ class InitializerFinalizeMixin:
                 "index_rebuild_max_failure_ratio": self.config_manager.get(
                     "index_rebuild_settings.max_failure_ratio", 0.02
                 ),
+                # 身份标识：历史昵称索引（别名表）与查询扩展。
+                "alias_max_per_identity": self.config_manager.get(
+                    "identity_settings.alias_max_per_identity", 40
+                ),
+                "alias_cache_max": self.config_manager.get(
+                    "identity_settings.alias_cache_max", 2000
+                ),
+                "alias_cache_ttl_seconds": self.config_manager.get(
+                    "identity_settings.alias_cache_ttl_seconds", 300.0
+                ),
+                "alias_query_expansion": self.config_manager.get(
+                    "identity_settings.alias_query_expansion", True
+                ),
+                "alias_backfill_on_start": self.config_manager.get(
+                    "identity_settings.alias_backfill_on_start", True
+                ),
             }
 
             # Rerank 提供商动态解析：每次调用时重新获取实例，
@@ -307,6 +323,28 @@ class InitializerFinalizeMixin:
                     # 记忆整合的合并提示词字符预算，避免超长输入撑爆上下文与内存。
                     "merge_input_char_budget": self.config_manager.get(
                         "memory_consolidation.merge_input_char_budget", 12000
+                    ),
+                    # 身份标识：人名锚定与昵称稳定性守卫。
+                    "anchor_enabled": self.config_manager.get(
+                        "identity_settings.anchor_enabled", True
+                    ),
+                    "anchor_format": self.config_manager.get(
+                        "identity_settings.anchor_format", "{name}#{tail}"
+                    ),
+                    "anchor_tail_length": self.config_manager.get(
+                        "identity_settings.anchor_tail_length", 4
+                    ),
+                    "identity_guard_enabled": self.config_manager.get(
+                        "identity_settings.identity_guard_enabled", True
+                    ),
+                    "identity_guard_max_tracked": self.config_manager.get(
+                        "identity_settings.identity_guard_max_tracked", 512
+                    ),
+                    "max_distinct_names_per_identity": self.config_manager.get(
+                        "identity_settings.max_distinct_names_per_identity", 12
+                    ),
+                    "name_stability_window_hours": self.config_manager.get(
+                        "identity_settings.name_stability_window_hours", 24.0
                     ),
                 },
             )

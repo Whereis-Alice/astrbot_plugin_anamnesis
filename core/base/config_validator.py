@@ -417,6 +417,50 @@ class StorageMaintenanceConfig(BaseModel):
         default=False, description="每日维护时清理图谱孤儿数据"
     )
 
+class IdentitySettingsConfig(BaseModel):
+    """身份标识设置（人名锚定 / 别名索引 / 昵称稳定性守卫）"""
+
+    anchor_enabled: bool = Field(
+        default=True, description="在事实文本里把人名改写为「昵称#账号尾号」"
+    )
+    anchor_format: str = Field(
+        default="{name}#{tail}", description="锚定写法模板，必须包含 {name} 与 {tail}"
+    )
+    anchor_tail_length: int = Field(
+        default=4, ge=0, le=32, description="取账号 ID 末尾多少位作为锚点（0=用完整 ID）"
+    )
+    alias_max_per_identity: int = Field(
+        default=40, ge=1, le=500, description="每个账号最多保留多少个历史昵称"
+    )
+    alias_cache_max: int = Field(
+        default=2000, ge=0, le=200000, description="别名内存快照的条数上限"
+    )
+    alias_cache_ttl_seconds: float = Field(
+        default=300.0, ge=0.0, le=86400.0, description="别名内存快照的刷新间隔（秒）"
+    )
+    alias_query_expansion: bool = Field(
+        default=True, description="检索时用旧昵称扩展查询词"
+    )
+    alias_backfill_on_start: bool = Field(
+        default=True, description="首次启动时从既有记忆回填别名索引"
+    )
+    identity_guard_enabled: bool = Field(
+        default=True, description="启用身份守卫：过滤机器人自称与异常改名"
+    )
+    identity_guard_max_tracked: int = Field(
+        default=512, ge=16, le=100000, description="守卫最多同时跟踪多少个账号"
+    )
+    max_distinct_names_per_identity: int = Field(
+        default=12,
+        ge=2,
+        le=200,
+        description="同一账号在观察窗口内出现多少个不同昵称就判定为不稳定",
+    )
+    name_stability_window_hours: float = Field(
+        default=24.0, ge=0.1, le=8760.0, description="昵称稳定性观察窗口（小时）"
+    )
+
+
 class AnamnesisConfig(BaseModel):
     """完整插件配置"""
 
@@ -449,6 +493,9 @@ class AnamnesisConfig(BaseModel):
     )
     memory_consolidation: MemoryConsolidationConfig = Field(
         default_factory=MemoryConsolidationConfig, description="记忆库定期整合配置"
+    )
+    identity_settings: IdentitySettingsConfig = Field(
+        default_factory=IdentitySettingsConfig, description="身份标识与人名锚定配置"
     )
 
     model_config = {"extra": "allow"}  # 允许额外字段，向前兼容

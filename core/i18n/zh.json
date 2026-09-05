@@ -69,6 +69,16 @@
         "确认磁盘剩余空间不小于主库体积（VACUUM 需要等量临时空间）",
         "避免与每日衰减任务同时执行",
         "查看日志中以 [StorageMaintenance] 开头的记录"
+      ],
+      "identity": [
+        "在需要诊断的平台内执行本命令，插件才能读到真实的 Bot 账号",
+        "若提示会话管理器未就绪，先执行 /anam status 检查初始化状态",
+        "查看日志中以 [IdentityRepair] 开头的记录"
+      ],
+      "fix_identity": [
+        "先执行 /anam fix-identity 预览，确认 Bot 账号识别正确",
+        "在需要修复的平台内执行，避免退化成统计推断",
+        "结果不符预期时执行 /anam fix-identity rollback 还原"
       ]
     }
   },
@@ -165,8 +175,57 @@
     "write_ops_line": "写操作日志: 删除 {deleted} 条，剩余 {remaining} 条（其中未完成 {unfinished} 条已保留，不影响崩溃恢复）",
     "graph_line": "图数据清理: {summary}"
   },
+  "identity": {
+    "action_name": "身份诊断",
+    "header": "【Anamnesis 身份标识状态】",
+    "state_on": "开启",
+    "state_off": "关闭",
+    "anchor_unavailable": "人名锚定: 不可用（记忆处理器未就绪）",
+    "anchor_line": "人名锚定: {state} · 格式 {format} · 账号尾号取 {tail} 位",
+    "guard_unavailable": "身份守卫: 不可用（记忆处理器未就绪）",
+    "guard_disabled": "身份守卫: 已关闭（identity_settings.identity_guard_enabled）",
+    "guard_line": "身份守卫: 开启 · 跟踪 {tracked}/{max_tracked} 个账号 · 疑似频繁改名 {unstable} 个",
+    "guard_dropped": "  已拦截: 会话回声 {echo} 条 · 缺少账号 ID {missing} 条 · 纠正 Bot 名 {corrected} 次 · 标记不稳定 {flagged} 次",
+    "guard_window": "  改名判定窗口 {hours} 小时 · 单账号最多 {names} 个昵称",
+    "alias_unavailable": "别名表: 不可用（记忆引擎未就绪）",
+    "alias_line": "别名表: {aliases} 条昵称 / {identities} 个账号 · 多昵称账号 {multi} 个 · 撞名昵称 {shared} 组 · 缓存 {cached}/{cache_max}",
+    "conversation_header": "会话库 assistant 归属:",
+    "conversation_unavailable": "会话库 assistant 归属: 不可用（会话管理器未就绪）",
+    "unknown_platform": "未知平台",
+    "no_assistant_rows": "  会话库中还没有 assistant 消息。",
+    "source_live": "实时适配器",
+    "source_majority": "统计推断",
+    "platform_line": "  [{platform}] Bot = {bot_name}（{bot_id}），来源: {source}",
+    "platform_counts": "    归属正确 {correct} 条 / 错误 {wrong} 条（共 {total} 条）",
+    "platform_ambiguous": "  [{platform}] 无法确定 Bot 账号（最高占比未过半），已跳过。请在该平台内执行本命令，以读取真实 Bot 账号。",
+    "offender_line": "    - {sender_name}（{sender_id}）: {count} 条",
+    "false_flag_header": "被误标为 Bot 的账号: {count} 个（只影响展示与统计，不影响锚定判定）",
+    "false_flag_line": "  - {identity}: {aliases}",
+    "backup_line": "备份表中有 {count} 条可回滚记录（/anam fix-identity rollback）。",
+    "fix_hint": "发现 {count} 条错误归属 —— 执行 /anam fix-identity 查看修复预览。",
+    "clean": "未发现错误归属，身份标识正常。",
+    "analyse_failed": "身份诊断未完成（原因: {reason}）。"
+  },
+  "fix_identity": {
+    "action_name": "身份修复",
+    "invalid_mode": "无法识别的模式: {mode}\n可用: preview（默认，只看不动）/ exec（执行修复）/ rollback（回滚上一次修复）",
+    "preview_header": "【Anamnesis 身份修复预览】",
+    "preview_hint": "以上为预览，未改动任何数据。\n确认无误后执行 /anam fix-identity exec 开始修复；也可附带平台名只修复单个平台，例如 /anam fix-identity exec aiocqhttp。",
+    "exec_starting": "正在修复会话库中的 Bot 归属，修复前会自动备份原始归属……",
+    "exec_header": "【Anamnesis 身份修复结果】",
+    "repaired_line": "已修正 {count} 条 assistant 消息的归属。",
+    "cleared_flags_line": "已清除 {count} 条被误标的 is_bot 标记（昵称本身保留）。",
+    "skipped_line": "已跳过（Bot 账号不明确）: {platforms}",
+    "nothing_to_do": "未发现需要修复的记录。",
+    "graph_note": "注意: 已提取的记忆正文与图谱不会被改写，旧的错误归属会随记忆衰减自然淘汰。",
+    "rollback_hint": "如需还原: /anam fix-identity rollback",
+    "rollback_starting": "正在回滚上一次身份修复……",
+    "rollback_done": "已还原 {count} 条 assistant 消息的原始归属。",
+    "rollback_empty": "备份表为空，没有可回滚的记录。",
+    "failed": "身份修复失败: {reason}"
+  },
   "help": {
-    "text": "Anamnesis 使用指南\n\n核心指令:\n/anam status              查看系统状态\n/anam search <关键词> [数量]  搜索记忆(默认5条)\n/anam forget <ID>          删除指定记忆\n/anam rebuild-index       重建索引（修复索引不一致）\n/anam rebuild-graph       重建图记忆索引（回填旧记忆）\n/anam webui               查看 WebUI 管理界面入口\n/anam summarize [message_count]  立即总结，或重新总结最近指定条数的消息\n/anam reset               重置当前会话记忆上下文\n/anam cleanup [preview|exec] 清理历史消息中的记忆片段(默认preview预演)\n/anam migrate [preview|exec] 从旧版 LivingMemory 导入数据(默认preview预演)\n/anam migrate-verify      对账旧库与新库，确认可安全删除旧插件\n/anam vacuum              清理写操作日志并回收数据库磁盘空间\n/anam help                显示此帮助\n\n使用建议:\n• 日常查询使用 search 指令\n• 复杂管理请在 AstrBot 仪表盘中进入 插件 -> Anamnesis -> Pages -> dashboard\n• 记忆会自动保存对话内容\n• 使用 forget 删除敏感信息\n• 索引不一致时执行 rebuild-index\n• 启用图记忆后建议执行 rebuild-graph 回填旧数据\n• 更新插件后建议执行 cleanup 清理旧数据\n• 从 LivingMemory 迁移请先执行 migrate preview 查看计划\n• 数据库体积偏大时执行 vacuum 回收空间\n\ncleanup 命令示例:\n  /anam cleanup          # 预演模式,仅显示统计\n  /anam cleanup preview  # 同上\n  /anam cleanup exec     # 执行实际清理\n\n迁移命令示例:\n  /anam migrate          # 预演，只显示计划\n  /anam migrate exec     # 执行迁移\n  /anam migrate-verify   # 迁移后对账\n\n更多信息: https://github.com/Whereis-Alice/astrbot_plugin_anamnesis"
+    "text": "Anamnesis 使用指南\n\n核心指令:\n/anam status              查看系统状态\n/anam search <关键词> [数量]  搜索记忆(默认5条)\n/anam forget <ID>          删除指定记忆\n/anam rebuild-index       重建索引（修复索引不一致）\n/anam rebuild-graph       重建图记忆索引（回填旧记忆）\n/anam webui               查看 WebUI 管理界面入口\n/anam summarize [message_count]  立即总结，或重新总结最近指定条数的消息\n/anam reset               重置当前会话记忆上下文\n/anam cleanup [preview|exec] 清理历史消息中的记忆片段(默认preview预演)\n/anam migrate [preview|exec] 从旧版 LivingMemory 导入数据(默认preview预演)\n/anam migrate-verify      对账旧库与新库，确认可安全删除旧插件\n/anam vacuum              清理写操作日志并回收数据库磁盘空间\n/anam identity            查看人名锚定与 Bot 归属诊断\n/anam fix-identity [preview|exec|rollback] 修复被记成群友的 Bot 发言(默认preview预演)\n/anam help                显示此帮助\n\n使用建议:\n• 日常查询使用 search 指令\n• 复杂管理请在 AstrBot 仪表盘中进入 插件 -> Anamnesis -> Pages -> dashboard\n• 记忆会自动保存对话内容\n• 使用 forget 删除敏感信息\n• 索引不一致时执行 rebuild-index\n• 启用图记忆后建议执行 rebuild-graph 回填旧数据\n• 更新插件后建议执行 cleanup 清理旧数据\n• 从 LivingMemory 迁移请先执行 migrate preview 查看计划\n• 数据库体积偏大时执行 vacuum 回收空间\n• 怀疑 Bot 发言被记成群友时执行 identity 诊断，再用 fix-identity 修复\n\ncleanup 命令示例:\n  /anam cleanup          # 预演模式,仅显示统计\n  /anam cleanup preview  # 同上\n  /anam cleanup exec     # 执行实际清理\n\n迁移命令示例:\n  /anam migrate          # 预演，只显示计划\n  /anam migrate exec     # 执行迁移\n  /anam migrate-verify   # 迁移后对账\n\n身份修复示例:\n  /anam identity                    # 查看锚定/守卫/别名与归属统计\n  /anam fix-identity                # 预演，只显示将要修正的条数\n  /anam fix-identity exec           # 执行修复(自动备份原始归属)\n  /anam fix-identity exec aiocqhttp # 只修复指定平台\n  /anam fix-identity rollback       # 回滚上一次修复\n\n更多信息: https://github.com/Whereis-Alice/astrbot_plugin_anamnesis"
   },
   "init": {
     "ready": "插件已就绪。可使用 /anam help 查看可用命令。",

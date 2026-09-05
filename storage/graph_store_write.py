@@ -145,12 +145,58 @@ class GraphStoreWriteMixin:
             await db.commit()
         return node_key_to_id
 
+    async def _merge_person_metadata(
+        self,
+        db: aiosqlite.Connection,
+        node: GraphNode,
+    ) -> dict[str, Any]:
+        """Accumulate person aliases instead of overwriting them.
+
+        A plain ``metadata = excluded.metadata`` upsert throws away every former
+        nickname, so a person node ends up remembering only the name used in the
+        most recent memory. People rename themselves constantly; losing the
+        history breaks recall for anyone who searches by an older name.
+        """
+        incoming = dict(node.metadata or {})
+        cursor = await db.execute(
+            "SELECT metadata FROM graph_nodes WHERE node_key = ?",
+            (node.node_key,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return incoming
+
+        existing = self._from_json(row[0])
+        merged = {**existing, **incoming}
+
+        aliases: list[str] = []
+        seen: set[str] = set()
+        for source in (incoming.get("aliases"), existing.get("aliases")):
+            for alias in source or []:
+                text = str(alias).strip()
+                if not text or text in seen:
+                    continue
+                seen.add(text)
+                aliases.append(text)
+                if len(aliases) >= self.person_alias_limit:
+                    break
+            if len(aliases) >= self.person_alias_limit:
+                break
+        merged["aliases"] = aliases
+        # Once an identity is known to be a bot it stays a bot; a single message
+        # missing the flag must not silently demote it back to a human.
+        merged["is_bot"] = bool(existing.get("is_bot") or incoming.get("is_bot"))
+        return merged
+
     async def _upsert_node(
         self,
         db: aiosqlite.Connection,
         node: GraphNode,
         now: str,
     ) -> int:
+        metadata = node.metadata
+        if node.node_type == "person":
+            metadata = await self._merge_person_metadata(db, node)
         cursor = await db.execute(
             """
             INSERT INTO graph_nodes(
@@ -167,7 +213,7 @@ class GraphStoreWriteMixin:
                 node.node_type,
                 node.value,
                 node.canonical_value,
-                self._to_json(node.metadata),
+                self._to_json(metadata),
                 now,
                 now,
             ),

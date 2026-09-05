@@ -74,6 +74,31 @@ Anamnesis 的默认配置已经适合大多数场景。真正需要调整的通�
 
 身份别名按 `平台:用户 ID`、用户 ID、当前用户名的顺序匹配，并在对话总结前替换显示名称。作用域配置只影响升级后新写入的记忆，现有记忆不会自动迁移或重新生成向量。
 
+## 人物身份与昵称
+
+| 配置项 | 默认 | 说明 |
+| --- | --- | --- |
+| `identity_settings.anchor_enabled` | `true` | 把关键事实里的人名改写成「昵称#账号尾号」 |
+| `identity_settings.anchor_format` | `{name}#{tail}` | 锚定写法模板，必须同时含 `{name}` 和 `{tail}` |
+| `identity_settings.anchor_tail_length` | `4` | 锚点取账号 ID 末尾位数，`0` 表示用完整 ID |
+| `identity_settings.alias_max_per_identity` | `40` | 每个账号保留的历史昵称数量上限 |
+| `identity_settings.alias_cache_max` | `2000` | 别名内存快照条数上限，`0` 表示不缓存 |
+| `identity_settings.alias_cache_ttl_seconds` | `300` | 别名快照的懒刷新间隔（秒） |
+| `identity_settings.alias_query_expansion` | `true` | 检索时用同账号的其它昵称扩展关键词 |
+| `identity_settings.alias_backfill_on_start` | `true` | 别名表为空时从已有记忆元数据分批回填 |
+| `identity_settings.identity_guard_enabled` | `true` | 过滤会污染记忆的身份数据并归一 Bot 自称 |
+| `identity_settings.identity_guard_max_tracked` | `512` | 守卫在内存里跟踪的账号数上限 |
+| `identity_settings.max_distinct_names_per_identity` | `12` | 窗口内昵称数超过该值即判定昵称不可靠 |
+| `identity_settings.name_stability_window_hours` | `24` | 统计改名次数的时间窗口（小时） |
+
+昵称既不唯一也不稳定，但事实节点按文本做主键。不锚定时，两个用了同一个昵称的不同账号会共用一个人物节点，A 做的事就会被算到 B 头上；同一个人改名之后，旧记忆也会退化成另一个陌生人。锚定把账号尾号焊进事实文本，别名库则记住每个账号用过的所有昵称，让改名前的记忆仍然搜得到。
+
+锚定只影响写入长期记忆的事实文本，注入给模型的摘要和原始对话不受影响。修改 `anchor_format` 或 `anchor_tail_length` 不会重写已有记忆，新旧写法会共存一段时间，直到旧记忆自然衰减。
+
+`alias_cache_max` 和 `identity_guard_max_tracked` 是这一组里唯一两项直接决定常驻内存的配置：前者是别名表的内存快照条数，后者是守卫为判断改名频率保留的账号数。1 GB 级别的小机器可以把它们分别降到 `500` 和 `128`；`alias_cache_max` 填 `0` 会彻底关闭快照，每次检索都回查 SQLite。
+
+历史数据里已经写错的归属，用 `/anam identity` 体检、`/anam fix-identity` 修复，详见[命令速查](/commands)。
+
 ## 总结与生命周期
 
 | 配置项 | 默认 | 说明 |

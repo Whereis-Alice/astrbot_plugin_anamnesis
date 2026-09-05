@@ -25,10 +25,12 @@ class GraphMemoryManager:
         graph_store: GraphStore,
         graph_vector_retriever: GraphVectorRetriever,
         graph_extractor: GraphExtractor,
+        alias_store: Any = None,
     ):
         self.graph_store = graph_store
         self.graph_vector_retriever = graph_vector_retriever
         self.graph_extractor = graph_extractor
+        self.alias_store = alias_store
         self._rebuild_gate = asyncio.Lock()
         self._rebuild_active = False
         self._rebuild_delta: dict[
@@ -90,6 +92,7 @@ class GraphMemoryManager:
         atoms: list | None = None,
     ) -> tuple[list[GraphEntry], list[int]]:
         """Persist graph structure without touching the vector index."""
+        metadata = await self._with_alias_history(metadata)
         extracted = self.graph_extractor.extract(
             source_memory_id, content, metadata, atoms
         )
@@ -114,6 +117,71 @@ class GraphMemoryManager:
                 f"ids={len(entry_ids)}, entries={len(extracted.entries)}"
             )
         return extracted.entries, entry_ids
+
+    async def _with_alias_history(
+        self, metadata: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Return a copy of metadata whose identities carry their full alias史.
+
+        The stored document metadata only knows the nicknames seen in that one
+        conversation window. Person nodes should know every nickname ever used by
+        the account, so the alias table is folded in here.
+
+        The result is a *shallow copy* used purely for graph extraction; the
+        caller's metadata (which is persisted alongside the document) is never
+        modified — that field is already large and must not keep growing.
+        """
+        if self.alias_store is None or not metadata:
+            return metadata
+        identities = metadata.get("participant_identities")
+        if not isinstance(identities, list) or not identities:
+            return metadata
+
+        keys = [
+            str(item.get("identity_key") or "").strip()
+            for item in identities
+            if isinstance(item, dict)
+        ]
+        keys = [key for key in keys if key]
+        if not keys:
+            return metadata
+
+        try:
+            alias_map = await self.alias_store.aliases_for_many(keys)
+        except Exception:
+            logger.debug("[GraphMemoryManager] 读取昵称别名失败，跳过补全", exc_info=True)
+            return metadata
+        if not alias_map:
+            return metadata
+
+        enriched: list[Any] = []
+        changed = False
+        for item in identities:
+            if not isinstance(item, dict):
+                enriched.append(item)
+                continue
+            known = alias_map.get(str(item.get("identity_key") or "").strip())
+            if not known:
+                enriched.append(item)
+                continue
+            aliases = list(item.get("aliases") or [])
+            merged = list(aliases)
+            for alias in known:
+                if alias and alias not in merged:
+                    merged.append(alias)
+            if merged == aliases:
+                enriched.append(item)
+                continue
+            copied = dict(item)
+            copied["aliases"] = merged
+            enriched.append(copied)
+            changed = True
+
+        if not changed:
+            return metadata
+        patched = dict(metadata)
+        patched["participant_identities"] = enriched
+        return patched
 
     async def delete_memory(self, source_memory_id: int) -> None:
         """Delete graph artifacts belonging to one source memory."""

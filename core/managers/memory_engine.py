@@ -13,6 +13,7 @@ import aiosqlite
 
 from astrbot.api import logger
 
+from ...storage.alias_store import AliasStore
 from ...storage.atom_store import AtomStore
 from ...storage.graph_store import GraphStore
 from ..managers.atom_lifecycle_manager import AtomLifecycleManager
@@ -139,6 +140,7 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         self.atom_store = None
         self.atom_lifecycle_manager = None
         self.atom_retriever = None
+        self.alias_store = None
         self.db_connection = None
         self._search_cache_enabled = bool(self.config.get("search_cache_enabled", True))
         self._search_cache_ttl = float(
@@ -175,6 +177,16 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         # 2. 创建表结构
         await self._create_tables()
 
+        # 2.5 昵称别名表
+        # 别名历史与图记忆无关（纯昵称→账号映射），因此无条件建立：
+        # 关闭图记忆的用户同样需要「旧昵称也能召回」的能力。
+        self.alias_store = AliasStore(self.db_path, self.config)
+        try:
+            await self.alias_store.initialize()
+        except Exception:
+            logger.error("[MemoryEngine] 别名表初始化失败，昵称别名功能降级", exc_info=True)
+            self.alias_store = None
+
         # 3. 初始化文本处理器
         stopwords_path = self.config.get("stopwords_path")
         self.text_processor = TextProcessor(stopwords_path)
@@ -185,7 +197,10 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
 
         # 5. 初始化BM25检索器
         self.bm25_retriever = BM25Retriever(
-            self.db_path, self.text_processor, self.config
+            self.db_path,
+            self.text_processor,
+            self.config,
+            alias_store=self.alias_store,
         )
         await self.bm25_retriever.initialize()
 
@@ -202,7 +217,7 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         )
 
         if self.graph_enabled and self.graph_vector_db is not None:
-            self.graph_store = GraphStore(self.db_path)
+            self.graph_store = GraphStore(self.db_path, self.config)
             await self.graph_store.initialize()
 
             self.atom_store = AtomStore(self.db_path)
@@ -220,6 +235,7 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
                 self.graph_store,
                 self.text_processor,
                 self.config,
+                alias_store=self.alias_store,
             )
             self.graph_vector_retriever = GraphVectorRetriever(
                 self.graph_vector_db,
@@ -235,6 +251,7 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
                 self.graph_store,
                 self.graph_vector_retriever,
                 self.graph_extractor,
+                alias_store=self.alias_store,
             )
             self.dual_route_retriever = DualRouteRetriever(
                 self.hybrid_retriever,
@@ -245,6 +262,26 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
 
         if self._write_op_repair_enabled:
             await self._repair_incomplete_write_ops()
+
+        if self.alias_store is not None and self.config.get(
+            "alias_backfill_on_start", True
+        ):
+            # 历史记忆的 metadata 里已经存了多年昵称史，回填一次即可让别名扩展
+            # 立刻可用，无需等新流量积累。放后台跑，避免拖慢插件启动。
+            self._create_tracked_task(self._backfill_aliases_if_empty())
+
+    async def _backfill_aliases_if_empty(self) -> None:
+        """Seed person_aliases from stored memory metadata on first run."""
+        try:
+            if await self.alias_store.count() > 0:
+                return
+            recorded = await self.alias_store.backfill_from_documents(self.db_connection)
+            if recorded:
+                logger.info(f"[MemoryEngine] 已从历史记忆回填 {recorded} 条昵称别名")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("[MemoryEngine] 昵称别名回填失败（非致命）", exc_info=True)
 
     async def close(self):
         """关闭数据库连接和清理资源"""

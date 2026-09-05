@@ -16,6 +16,22 @@ import time
 
 class MemoryEngineCrudMixin:
     """MemoryEngine 拆分模块：MemoryEngineCrudMixin"""
+
+    async def _record_participant_aliases(self, metadata: dict[str, Any]) -> None:
+        """Persist每个参与者的昵称，失败不影响记忆写入。"""
+        alias_store = getattr(self, "alias_store", None)
+        if alias_store is None:
+            return
+        identities = metadata.get("participant_identities")
+        if not identities:
+            return
+        try:
+            await alias_store.record_identities(identities)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("[MemoryEngine] 写入昵称别名失败（非致命）", exc_info=True)
+
     async def add_memory(
         self,
         content: str,
@@ -97,6 +113,9 @@ class MemoryEngineCrudMixin:
             else current_time
         )
         full_metadata["last_access_time"] = current_time
+
+        # 记录昵称历史。person 节点只保留最新昵称，别名表负责保存全量改名史。
+        await self._record_participant_aliases(full_metadata)
 
         # 通过混合检索器添加(会同时添加到BM25和向量索引)
         if self.hybrid_retriever is None:

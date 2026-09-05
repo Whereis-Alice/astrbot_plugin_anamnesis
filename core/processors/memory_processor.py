@@ -13,7 +13,9 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..identity_guard import IdentityGuard
 from ..models.conversation_models import Message
+from .identity_anchor import IdentityAnchor
 from .memory_processor_parse import MemoryProcessorParseMixin
 from .memory_processor_build import MemoryProcessorBuildMixin
 
@@ -64,6 +66,10 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         self.context = context
         self._llm_provider = llm_provider
         self.config = config or {}
+
+        # 身份加固：先过滤不可信的发送者身份，再把可信昵称锚定进事实文本。
+        self.identity_guard = IdentityGuard(self.config)
+        self.identity_anchor = IdentityAnchor(self.config)
 
         # 加载提示词模板
         self._load_prompts()
@@ -631,6 +637,17 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                 )
             structured_data["_quality"] = quality
 
+            # 4.6 身份加固：必须在构建存储格式之前完成。
+            # key_facts 会成为 fact 图节点的主键，所以昵称锚定要在 build 之前
+            # 落到 key_facts 上；summary 保持干净，用于面板展示与人格注入。
+            identities = self._participant_identities_for(messages)
+            if identities:
+                anchored_facts, applied = self.identity_anchor.anchor_facts(
+                    structured_data.get("key_facts") or [], identities
+                )
+                if applied:
+                    structured_data["key_facts"] = anchored_facts
+
             # 5. 构建存储格式
             fallback_excerpt = (
                 conversation_text[:200] + "..."
@@ -640,9 +657,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
             content, metadata = self._build_storage_format(
                 fallback_excerpt, structured_data, is_group_chat
             )
-            metadata["participant_identities"] = self._extract_participant_identities(
-                messages
-            )
+            metadata["participant_identities"] = identities
             content = self._apply_source_time_tags(content, metadata, messages)
             # 将质量标记写入 metadata
             metadata["summary_quality"] = structured_data.get("_quality", "normal")
@@ -724,6 +739,28 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                     f"[_format_conversation] 消息#{i} 格式化结果(私聊): {sender_info[:50]}..."
                 )
         return "\n".join(formatted_lines)
+
+    def _participant_identities_for(
+        self, messages: list[Message]
+    ) -> list[dict[str, Any]]:
+        """Extract identities from raw messages, then drop untrustworthy ones.
+
+        Kept separate from :meth:`_extract_participant_identities` so the pure
+        extraction step stays side-effect free and independently testable.
+        """
+        identities = self._extract_participant_identities(messages)
+        if not identities:
+            return []
+        session_ids = {
+            str(message.session_id).strip()
+            for message in messages
+            if getattr(message, "session_id", None)
+        }
+        try:
+            return self.identity_guard.filter_identities(identities, session_ids)
+        except Exception as exc:  # pragma: no cover - guard must never block writes
+            logger.warning(f"[MemoryProcessor] 身份卫兵执行失败，回退原始身份: {exc}")
+            return identities
 
     @staticmethod
     def _extract_participant_identities(

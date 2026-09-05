@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from ...storage.alias_store import expand_query_tokens
 from ...storage.graph_store import GraphStore
 from ..processors.text_processor import TextProcessor
 
@@ -27,10 +28,12 @@ class GraphKeywordRetriever:
         graph_store: GraphStore,
         text_processor: TextProcessor,
         config: dict[str, Any] | None = None,
+        alias_store: Any = None,
     ):
         self.graph_store = graph_store
         self.text_processor = text_processor
         self.config = config or {}
+        self.alias_store = alias_store
         self.expansion_limit = int(self.config.get("graph_expansion_limit", 24))
         self.expansion_hops = max(
             1,
@@ -52,6 +55,9 @@ class GraphKeywordRetriever:
         tokens = await self.text_processor.tokenize_async(query, remove_stopwords=True)
         if not tokens:
             return []
+
+        # 同上：昵称改过名后，旧名字也应该能召回到同一账号的记忆。
+        tokens = await expand_query_tokens(self.alias_store, query, tokens)
 
         escaped_tokens = ['"' + token.replace('"', '""') + '"' for token in tokens]
         fts_query = " OR ".join(escaped_tokens)
