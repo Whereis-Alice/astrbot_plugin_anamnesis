@@ -1,0 +1,53 @@
+Anamnesis
+Copyright (c) 2026 Whereis-Alice
+
+本产品包含由 lxfight 开发的软件。
+
+--------------------------------------------------------------------------------
+派生声明 / Attribution
+--------------------------------------------------------------------------------
+
+本项目（Anamnesis，插件 id `astrbot_plugin_anamnesis`）派生自：
+
+    项目：astrbot_plugin_livingmemory
+    仓库：https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory
+    派生版本：v2.6.1
+    原作者：lxfight
+    原许可证：GNU Affero General Public License v3.0 (AGPL-3.0)
+
+原项目以 AGPL-3.0 授权发布，其版权归原作者所有。本项目在 AGPL-3.0 允许的范围内
+对其进行了重命名、重构与继续开发，并**继续以 AGPL-3.0 发布**。完整许可证文本见
+同目录下的 LICENSE 文件。
+
+自 v3.0.0 起，本项目相对上游做了不兼容的标识符变更，包括插件 id 与数据目录
+(`astrbot_plugin_livingmemory` → `astrbot_plugin_anamnesis`)、命令组
+(`/lmem` → `/anam`)、Agent 工具名与记忆注入标记。上游 v2.6.1 之前的更新历史
+原样保留在 CHANGELOG_upstream.md 中，仅作追溯用途。
+
+--------------------------------------------------------------------------------
+独立性声明 / Disclaimer
+--------------------------------------------------------------------------------
+
+Anamnesis 是一个**独立的重命名分支（fork）**：
+
+  * 与上游项目 astrbot_plugin_livingmemory 及其作者 lxfight 没有隶属、赞助或
+    背书关系；
+  * 不由上游项目维护，上游不对本项目的行为负责；
+  * 请不要就本项目的问题向上游仓库提交 issue，请使用
+    https://github.com/Whereis-Alice/astrbot_plugin_anamnesis/issues 。
+
+--------------------------------------------------------------------------------
+English summary
+--------------------------------------------------------------------------------
+
+Anamnesis (`astrbot_plugin_anamnesis`) is a derivative work of
+astrbot_plugin_livingmemory v2.6.1 by lxfight
+(https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory),
+originally licensed under the GNU Affero General Public License v3.0.
+This project continues to be distributed under AGPL-3.0; see LICENSE.
+
+Anamnesis is an independent, renamed fork. It is not affiliated with,
+sponsored by, or endorsed by the upstream project or its author, and it is not
+maintained by upstream. Please report issues at
+https://github.com/Whereis-Alice/astrbot_plugin_anamnesis/issues instead of the
+upstream repository.

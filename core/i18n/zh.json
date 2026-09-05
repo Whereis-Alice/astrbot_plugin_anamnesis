@@ -1,0 +1,180 @@
+{
+  "common": {
+    "yes": "是",
+    "no": "否",
+    "none": "无",
+    "never": "从未",
+    "unknown_error": "未知错误"
+  },
+  "error": {
+    "format": {
+      "action_failed": "{action}失败。",
+      "details": "错误详情: {error}",
+      "suggestions": "建议排查:",
+      "suggestion_item": "{index}. {suggestion}"
+    },
+    "component_not_ready": "{command} 执行失败：{component}未初始化。\n请先执行 /anam status 检查插件状态；如状态异常请查看启动日志。",
+    "suggestions": {
+      "status": [
+        "确认数据库文件可读写",
+        "确认记忆引擎已完成初始化",
+        "查看日志中的异常堆栈定位具体模块"
+      ],
+      "search": [
+        "确认关键词不为空且长度合理",
+        "确认数据库和索引文件存在且可读写",
+        "检查日志中是否有检索组件初始化失败信息"
+      ],
+      "forget": [
+        "确认记忆 ID 存在且属于当前可访问数据",
+        "确认数据库未被其他进程长时间占用",
+        "查看日志中的删除调用堆栈"
+      ],
+      "rebuild_index": [
+        "确认 Embedding Provider 已可用",
+        "确认数据库文件与索引文件可读写",
+        "根据日志定位失败文档后重试重建"
+      ],
+      "rebuild_graph": [
+        "确认图记忆功能已启用",
+        "确认数据库与索引文件可读写",
+        "查看日志定位具体失败文档"
+      ],
+      "summarize": [
+        "确认当前会话至少有 2 条未总结消息",
+        "确认 LLM Provider 可正常响应",
+        "检查日志中的 summary 处理堆栈"
+      ],
+      "reset": [
+        "确认会话 ID 有效且会话存储可访问",
+        "确认数据库未被占用",
+        "查看日志中的 clear_session 调用堆栈"
+      ],
+      "cleanup": [
+        "确认当前会话存在可读取的历史记录",
+        "确认对话存储可读写",
+        "查看日志中的 cleanup 调用堆栈"
+      ],
+      "migrate": [
+        "确认旧插件数据目录仍在 data/plugin_data 下（默认名 astrbot_plugin_livingmemory）",
+        "确认磁盘剩余空间大于旧数据体积的 1.15 倍",
+        "查看日志中以 [LegacyMigrator] 开头的记录"
+      ],
+      "migrate_verify": [
+        "确认旧插件数据目录未被删除或移动",
+        "旧库若被其他进程独占，请先停用旧插件再对账",
+        "查看日志中以 [LegacyMigrator] 开头的记录"
+      ],
+      "vacuum": [
+        "确认磁盘剩余空间不小于主库体积（VACUUM 需要等量临时空间）",
+        "避免与每日衰减任务同时执行",
+        "查看日志中以 [StorageMaintenance] 开头的记录"
+      ]
+    }
+  },
+  "status": {
+    "action_name": "获取状态",
+    "report": "Anamnesis 状态报告\n\n总记忆数: {total}\n会话数: {session_count}\n最后更新: {last_update}\n数据库大小: {db_size:.2f} MB\n\n可用操作:\n- /anam search <关键词>",
+    "graph_report": "\n\n图记忆: 节点 {nodes} / 关系 {edges} / 条目 {entries}（平均 {per_memory:.1f} 条目/记忆）",
+    "index_maintenance": "\n\n索引维护: {state} ({current}/{total})\n{message}"
+  },
+  "search": {
+    "action_name": "搜索",
+    "query_empty": "查询关键词不能为空。示例: /anam search 项目进度 5",
+    "no_results": "未找到与 '{query}' 相关的记忆。可尝试更短关键词，或调大返回数量参数 k。",
+    "header": "找到 {count} 条相关记忆:\n\n",
+    "item": {
+      "score": "{index}. [得分:{score:.2f}] {content}\n",
+      "id": "   ID: {id}\n\n",
+      "breakdown": "   命中: 文档关键词={doc_kw:.2f}, 文档向量={doc_vec:.2f}, 图关键词={graph_kw:.2f}, 图向量={graph_vec:.2f}\n\n"
+    }
+  },
+  "forget": {
+    "action_name": "删除记忆",
+    "id_invalid": "记忆 ID 必须为非负整数。示例: /anam forget 123",
+    "success": "已删除记忆 #{id}。",
+    "not_found": "删除失败：记忆 #{id} 不存在。\n请先使用 /anam search 或 WebUI 确认记忆 ID。"
+  },
+  "rebuild_index": {
+    "action_name": "重建索引",
+    "checking": "开始检查索引状态...",
+    "ok": "索引状态正常: {reason}",
+    "status_template": "当前索引状态:\n• Documents表: {doc_count} 条\n• BM25索引: {bm25_count} 条\n• 向量索引: {vec_count} 条\n• 问题: {reason}\n\n开始重建索引...",
+    "partial_notice": "\n注意: 本次重建存在少量失败，失败率 {ratio:.2%}，未超过安全阈值。可稍后再次执行 /anam rebuild-index 补齐。",
+    "result_template": "索引重建完成。\n\n处理结果:\n• 成功: {success} 条\n• 失败: {failed} 条\n• 总计: {total} 条\n• 向量处理模式: {vector_mode}\n• 新索引切换: {switched}\n{partial_notice}\n\n现在可以继续使用召回功能。",
+    "failed": "索引重建失败。\n错误详情: {message}\n请查看日志确认失败原因后重试 /anam rebuild-index。"
+  },
+  "rebuild_graph": {
+    "action_name": "重建图记忆",
+    "starting": "开始重建图记忆索引，这可能需要一些时间...",
+    "success": "图记忆重建完成。\n\n• 重建: {rebuilt} 条\n• 跳过: {skipped} 条"
+  },
+  "webui": {
+    "guide": "Anamnesis 管理界面\n\n请通过 AstrBot 官方 WebUI 访问:\n• 打开 AstrBot 仪表盘\n• 进入 插件 -> Anamnesis -> Pages -> dashboard\n\n提示:\n• 插件页面复用 AstrBot 登录态，无需额外登录\n• 需要 AstrBot >= 4.24.2 版本支持\n\n可在界面中执行:\n• 记忆编辑与管理\n• 可视化统计分析\n• 图谱浏览与召回调试\n• 数据迁移与索引维护"
+  },
+  "summarize": {
+    "action_name": "记忆总结",
+    "access_denied": "当前用户或会话不在长期记忆白名单中。",
+    "invalid_count": "总结消息条数必须是大于等于 2 的整数。",
+    "no_new": "当前没有需要总结的新对话。\n当前消息总数: {total}\n已总结到消息序号: {index}",
+    "starting": "开始手动总结记忆...\n消息范围: [{start}:{end}]，共 {count} 条",
+    "fetch_failed": "获取消息失败：未读取到可总结的消息。\n请确认当前会话存在历史消息后重试。",
+    "success": "记忆总结完成。\n重要性: {importance:.2f}\n主题: {topics}\n已更新总结进度至第 {count} 条消息"
+  },
+  "reset": {
+    "action_name": "重置记忆上下文",
+    "success": "当前会话的长期记忆上下文已重置。\n\n下一次记忆总结将从现在开始，不会再包含之前的对话内容。"
+  },
+  "cleanup": {
+    "action_name": "清理历史消息",
+    "mode_preview": "预演模式：",
+    "mode_exec": "",
+    "starting": "{mode_text}开始清理 AstrBot 历史消息中的记忆注入片段...",
+    "context_unavailable": "清理失败：无法访问 AstrBot Context。\n请确认插件运行在完整 AstrBot 上下文中后重试。",
+    "no_history": "当前会话没有对话历史，无需清理。",
+    "empty_history": "当前对话历史为空，无需清理。",
+    "parse_failed": "解析对话历史失败：数据不是有效 JSON。\n请检查会话存储内容是否被外部工具修改。",
+    "result_template": "{mode_text}清理完成。\n\n统计信息:\n• 扫描消息: {scanned} 条\n• 匹配记忆片段: {matched} 条\n• 清理内容: {cleaned} 条\n• 删除消息: {deleted} 条\n\n{notice}",
+    "notice_preview": "这是预演模式，未实际修改数据。使用 /anam cleanup exec 执行实际清理。",
+    "notice_exec": "AstrBot 对话历史已更新，记忆注入片段已清理。"
+  },
+  "migrate": {
+    "action_name": "数据迁移",
+    "invalid_mode": "无法识别的模式: {mode}\n可用: preview（默认，只看不动）/ exec（执行迁移）/ force（强制覆盖，仅在记忆引擎未持有数据库时可用）",
+    "data_dir_unavailable": "无法定位插件数据目录，迁移命令暂不可用。请先执行 /anam status 检查插件状态。",
+    "preview_starting": "正在扫描旧插件（LivingMemory）数据目录……",
+    "preview_hint": "以上为预览，未改动任何文件。\n确认无误后执行 /anam migrate exec 开始迁移。",
+    "exec_starting": "开始迁移旧插件数据，期间请勿重启 AstrBot……",
+    "migrated_items": "已迁移: {items}",
+    "report_path": "迁移报告: {path}",
+    "next_steps": "后续步骤:\n1. /anam migrate-verify —— 逐表对账新旧数据\n2. 对账通过后重启 AstrBot，让插件加载迁移后的数据\n3. 确认记忆可正常检索后，再卸载旧插件并删除其数据目录",
+    "failed_hint": "本次未执行迁移（原因: {reason}）。",
+    "engine_busy": "记忆引擎正持有当前数据库，运行期覆盖库文件会造成数据损坏，已拒绝执行。\n\n请改用安全流程:\n1. 停止 AstrBot\n2. 删除本插件数据目录下的 anamnesis.db* / anamnesis.index / anamnesis_graph*\n3. 确认配置项 migration_settings.auto_import_legacy 已开启\n4. 重启 AstrBot —— 插件会在打开数据库之前自动完成导入\n5. 重启后执行 /anam migrate-verify 对账"
+  },
+  "migrate_verify": {
+    "action_name": "迁移对账",
+    "starting": "正在逐表对账旧库与新库……"
+  },
+  "vacuum": {
+    "action_name": "存储回收",
+    "starting": "正在执行存储回收（清理写操作日志 → FTS 优化 → VACUUM 重建库文件），大库可能需要数分钟，请稍候……",
+    "result_header": "【Anamnesis 存储回收结果】",
+    "failed": "存储回收失败: {error}",
+    "size_line": "主库: {before} → {after}（WAL: {wal_before} → {wal_after}）",
+    "reclaimed_line": "本次回收: {reclaimed}",
+    "write_ops_line": "写操作日志: 删除 {deleted} 条，剩余 {remaining} 条（其中未完成 {unfinished} 条已保留，不影响崩溃恢复）",
+    "graph_line": "图数据清理: {summary}"
+  },
+  "help": {
+    "text": "Anamnesis 使用指南\n\n核心指令:\n/anam status              查看系统状态\n/anam search <关键词> [数量]  搜索记忆(默认5条)\n/anam forget <ID>          删除指定记忆\n/anam rebuild-index       重建索引（修复索引不一致）\n/anam rebuild-graph       重建图记忆索引（回填旧记忆）\n/anam webui               查看 WebUI 管理界面入口\n/anam summarize [message_count]  立即总结，或重新总结最近指定条数的消息\n/anam reset               重置当前会话记忆上下文\n/anam cleanup [preview|exec] 清理历史消息中的记忆片段(默认preview预演)\n/anam migrate [preview|exec] 从旧版 LivingMemory 导入数据(默认preview预演)\n/anam migrate-verify      对账旧库与新库，确认可安全删除旧插件\n/anam vacuum              清理写操作日志并回收数据库磁盘空间\n/anam help                显示此帮助\n\n使用建议:\n• 日常查询使用 search 指令\n• 复杂管理请在 AstrBot 仪表盘中进入 插件 -> Anamnesis -> Pages -> dashboard\n• 记忆会自动保存对话内容\n• 使用 forget 删除敏感信息\n• 索引不一致时执行 rebuild-index\n• 启用图记忆后建议执行 rebuild-graph 回填旧数据\n• 更新插件后建议执行 cleanup 清理旧数据\n• 从 LivingMemory 迁移请先执行 migrate preview 查看计划\n• 数据库体积偏大时执行 vacuum 回收空间\n\ncleanup 命令示例:\n  /anam cleanup          # 预演模式,仅显示统计\n  /anam cleanup preview  # 同上\n  /anam cleanup exec     # 执行实际清理\n\n迁移命令示例:\n  /anam migrate          # 预演，只显示计划\n  /anam migrate exec     # 执行迁移\n  /anam migrate-verify   # 迁移后对账\n\n更多信息: https://github.com/Whereis-Alice/astrbot_plugin_anamnesis"
+  },
+  "init": {
+    "ready": "插件已就绪。可使用 /anam help 查看可用命令。",
+    "failed": "插件初始化失败。\n错误详情: {error}\n\n请检查:\n1. Embedding Provider 是否已正确配置并可调用\n2. LLM Provider 是否可用\n3. 插件数据目录是否有读写权限\n4. 启动日志中的异常堆栈信息",
+    "in_progress": "插件正在后台初始化中。\n当前已尝试检查 Provider: {attempts} 次\n\n如果长时间未完成，请检查:\n1. Embedding Provider 与 LLM Provider 配置\n2. 其他插件是否阻塞初始化流程\n3. 日志中是否出现 Provider 相关报错"
+  },
+  "command": {
+    "not_ready": "命令处理器尚未就绪，当前命令无法执行。\n请先执行 /anam status 查看插件状态；若持续失败，请检查初始化日志。",
+    "core_not_ready": "插件核心组件未初始化。\n请先执行 /anam status 查看初始化状态；如仍失败，请检查启动日志中的异常堆栈。"
+  }
+}

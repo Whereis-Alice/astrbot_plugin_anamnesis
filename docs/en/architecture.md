@@ -1,0 +1,81 @@
+# Architecture
+
+Anamnesis is built from event hooks, memory processing, retrieval fusion, storage, and a Pages API. Automatic memory and active agent tools share the same core data model so they do not become two separate memory systems.
+
+<img class="diagram" src="/images/architecture-flow.svg" alt="Anamnesis runtime architecture">
+
+## Runtime flow
+
+1. AstrBot receives a message and `EventHandler` captures session context.
+2. Before the LLM request, the recall pipeline searches long-term memory using the current message and optional recent context.
+3. Retrieved memories are injected into the request or returned as agent tool results.
+4. After the LLM responds, the reflection pipeline decides whether to summarize and store new memory.
+5. Background tasks handle decay, cleanup, backup, and index validation.
+
+## Main modules
+
+| Module | Responsibility |
+| --- | --- |
+| `main.py` | Registers the plugin, initializes runtime components, registers agent tools and Pages API |
+| `core/plugin_initializer.py` | Non-blocking initialization, provider waiting, database migration, index loading |
+| `core/event_handler.py` | Group capture, memory recall, memory reflection |
+| `core/managers/memory_engine.py` | Unified write, search, delete, and index maintenance |
+| `core/managers/graph_memory_manager.py` | Coordinates graph nodes, edges, entries, and graph retrieval |
+| `core/managers/atom_lifecycle_manager.py` | Maintains atom expiration, forgetting, reinforcement, and lifecycle state |
+| `core/retrieval/` | BM25, vector, graph, atom retrieval, and RRF fusion |
+| `storage/` | SQLite storage, graph storage, atom storage, database migration |
+| `pages/dashboard/` | AstrBot Pages management UI |
+
+## Dual-route retrieval
+
+Document memories and graph memories are searched through two routes:
+
+| Route | Keyword mode | Vector mode |
+| --- | --- | --- |
+| Document route | `BM25Retriever` | `VectorRetriever` |
+| Graph route | `GraphKeywordRetriever` | `GraphVectorRetriever` |
+
+`RRFFusion` merges the ranked lists, then the runtime applies importance, time decay, session filtering, and persona filtering.
+
+## Background index maintenance
+
+Plugin readiness is separated from index maintenance. After core storage is initialized, startup consistency checks run as a background task. Even extensive repairs do not have to finish before the plugin becomes available.
+
+```mermaid
+flowchart LR
+    A[Background consistency check] --> B{Rebuild required?}
+    B -- No --> C[ready]
+    B -- Yes --> D[Build shadow generation]
+    D --> E[Final consistency check]
+    E --> F{Passed?}
+    F -- Yes --> G[Atomic cutover]
+    F -- No --> H[Keep live generation]
+```
+
+| Stage | Design |
+| --- | --- |
+| Change detection | Stores an embedding-provider fingerprint; a provider or model change triggers a full vector rebuild even when dimensions match |
+| Documents and vectors | Reads in batches with bounded embedding size, concurrency, retries, and delays; full vector rebuilds persist checkpoints |
+| BM25 and FAISS | Builds a shadow generation and switches only after failure-ratio requirements and consistency checks pass |
+| Graph | Streams active memories by primary key into shadow storage and replays writes made during the rebuild before cutover |
+| Final reconciliation | Checks consistency again and repairs concurrent changes made while maintenance was running |
+| Observability | Exposes state through `MemoryEngine`; `/anam status` reports checking, rebuilding, partial, failed, or cancelled states and progress |
+
+## Memory data model
+
+| Type | Description |
+| --- | --- |
+| Session messages | Raw conversation context used for summarization triggers and expanded queries |
+| Memory entries | LLM-generated long-term memories with summaries, importance, session, and persona metadata |
+| Graph nodes and edges | Entities and relationships extracted from memories, with cross-memory merging |
+| Memory atoms | Independent fact units with type, TTL, decay, and access reinforcement |
+
+## Data safety
+
+| Scenario | Protection |
+| --- | --- |
+| Plugin version change | Startup creates a version-tagged backup |
+| Database migration | Backup before migration |
+| Index rebuild | Builds shadow generations in batches, keeps live data on failure, atomically switches on success, and reconciles concurrent writes |
+| Memory deletion | Transactional deletion of related records |
+| Dashboard operations | Pages API reuses MemoryEngine and GraphStore instead of bypassing backend safety logic |

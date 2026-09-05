@@ -1,0 +1,5 @@
+name: astrbot_plugin_anamnesis
+author: Whereis-Alice
+version: 3.0.0
+description: 为 AstrBot 打造的长期记忆插件，覆盖召回、反思、整合、衰减与遗忘的完整记忆生命周期。
+repo: https://github.com/Whereis-Alice/astrbot_plugin_anamnesis

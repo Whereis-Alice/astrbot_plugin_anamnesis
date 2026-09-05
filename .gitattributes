@@ -1,0 +1,11 @@
+# 统一以 LF 存入仓库，避免 Windows 贡献者把 CRLF 带进版本库；
+# 二进制资源显式标记，防止被换行规范化破坏。
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.db binary
+*.index binary
