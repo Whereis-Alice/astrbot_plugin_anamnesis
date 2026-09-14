@@ -41,6 +41,7 @@ For very busy group chats, lower `context_window_size` or disable full group cap
 | Key | Default | Description |
 | --- | --- | --- |
 | `recall_engine.top_k` | `5` | Number of memories automatically recalled each turn |
+| `recall_engine.search_timeout_seconds` | `5.0` | Maximum seconds to wait for automatic retrieval; a timeout skips injection for that turn without affecting the reply, and `0` disables the timeout (range `0-600`) |
 | `recall_engine.max_k` | `10` | Maximum results returned by active agent recall |
 | `recall_engine.importance_weight` | `1.0` | Importance weight in final ranking |
 | `recall_engine.min_importance_for_retrieval` | `0.0` | Minimum importance; `0` disables the filter |
@@ -55,6 +56,8 @@ For very busy group chats, lower `context_window_size` or disable full group cap
 | `recall_engine.injection_method` | `extra_user_content` | Where or how recalled memories are injected |
 | `recall_engine.inject_with_recent_context` | `false` | Expands the query with recent conversation |
 | `recall_engine.search_cache_enabled` | `true` | Enables short-term retrieval caching |
+
+Automatic recall waits up to 5 seconds by default so a slow Embedding provider, SQLite query, or FAISS search cannot hold up the LLM reply. Change `search_timeout_seconds` directly on the Anamnesis configuration page; 10–30 seconds is reasonable for a low-resource host or remote provider, while `0` restores the legacy unlimited-wait behavior. A timeout only skips memory injection for the current turn and does not affect later conversations.
 
 `extra_user_content` is the safest default. Gemini providers automatically fall back from `fake_tool_call` to `extra_user_content`. DeepSeek V4 thinking mode can now use normal `fake_tool_call` on recent AstrBot versions; the legacy `fake_tool_call_deepseek_v4` option is kept only as a compatibility alias and automatically falls back to `fake_tool_call`.
 
@@ -171,12 +174,18 @@ With automatic archiving enabled, source documents remain visible and restorable
 | `storage_maintenance.write_ops_failed_keep_days` | `30.0` | Retention in days for failed write-operation log rows, kept longer for debugging |
 | `storage_maintenance.daily_vacuum` | `false` | Runs SQLite `VACUUM` during daily maintenance. Off by default |
 | `storage_maintenance.graph_prune_orphans` | `false` | Prunes orphaned graph nodes, edges, and entries during daily maintenance |
+| `storage_maintenance.sqlite_busy_timeout_seconds` | `30.0` | Maximum seconds each SQLite connection waits for another writer (range `1-300`) |
+| `storage_maintenance.sqlite_lock_retries` | `4` | Extra retries for non-critical access-time writes after a lock conflict (range `0-10`) |
+| `storage_maintenance.sqlite_lock_retry_delay_seconds` | `0.1` | Initial exponential backoff between lock retries, capped at 2 seconds (range `0.01-2`) |
 
 The write-operation log (`memory_write_ops`) stores the full payload of every memory write so that crashes can be recovered and replays stay idempotent. It is only useful while a write is in flight; on a store that had been running for 70 days this table measured 24MB.
 
 `daily_vacuum` is off on purpose: `VACUUM` needs temporary space as large as the database and holds a write lock while it runs. Keep it off on low-memory or disk-constrained hosts and reclaim space on demand with `/anam vacuum` instead.
 
 `graph_prune_orphans` is off because normal operation should not create orphans. If you have deleted memories by hand or interrupted a rebuild, inspect the result of `/anam vacuum` first before leaving it on.
+
+Anamnesis memory-store connections now use WAL, a busy wait, and bounded retries consistently. Access-time updates also use a separate connection, so a retry can never roll back an in-flight multi-step memory write. The defaults are suitable for most hosts; raise `sqlite_busy_timeout_seconds` only when another process routinely holds the database for a long time.
+
 ## Memory store consolidation
 
 | Key | Default | Description |

@@ -218,6 +218,15 @@ class InitializerFinalizeMixin:
                 "graph_prune_orphans": self.config_manager.get(
                     "storage_maintenance.graph_prune_orphans", False
                 ),
+                "sqlite_busy_timeout_seconds": self.config_manager.get(
+                    "storage_maintenance.sqlite_busy_timeout_seconds", 30.0
+                ),
+                "sqlite_lock_retries": self.config_manager.get(
+                    "storage_maintenance.sqlite_lock_retries", 4
+                ),
+                "sqlite_lock_retry_delay_seconds": self.config_manager.get(
+                    "storage_maintenance.sqlite_lock_retry_delay_seconds", 0.1
+                ),
                 "index_rebuild_batch_size": self.config_manager.get(
                     "index_rebuild_settings.batch_size", 50
                 ),
@@ -288,7 +297,20 @@ class InitializerFinalizeMixin:
 
             # 初始化 ConversationManager
             conversation_db_path = data_dir_path / "conversations.db"
+            # Keep the one-argument construction compatible with embedders and
+            # test doubles that subclassed the pre-3.1.1 ConversationStore.
+            # The concrete store reads ``config`` during initialize(), so
+            # attach the shared SQLite options before opening its connection.
             conversation_store = ConversationStore(str(conversation_db_path))
+            try:
+                conversation_store.config = memory_engine_config
+            except (AttributeError, TypeError):
+                # A third-party replacement may use ``__slots__`` and not
+                # expose the optional tuning field; its own defaults remain
+                # safe and initialization can continue.
+                logger.debug(
+                    "ConversationStore 不支持共享 SQLite 配置，使用其默认连接参数"
+                )
             await conversation_store.initialize()
 
             session_config = self.config_manager.session_manager

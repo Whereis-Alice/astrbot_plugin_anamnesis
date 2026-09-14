@@ -16,6 +16,10 @@ class GraphStoreWriteMixin:
     async def initialize(self) -> None:
         """Create tables used by the graph-memory layer."""
         async with self._connect() as db:
+            # WAL is persistent and database-wide.  Enable it once at startup
+            # (after busy_timeout has been configured by ``_connect``), rather
+            # than on every graph read/write connection.
+            await db.execute("PRAGMA journal_mode = WAL")
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS graph_nodes (

@@ -82,6 +82,10 @@
         "description": "Recall Count Per Request",
         "hint": "Number of most relevant memories returned per retrieval. Set to 0 to skip automatic recall/injection while keeping historical injection cleanup. Recommended: 3-10. Allowed range: 0-50."
       },
+      "search_timeout_seconds": {
+        "description": "Memory Retrieval Timeout (seconds)",
+        "hint": "Maximum time to wait for automatic memory retrieval on each request. Default is 5 seconds; when exceeded, this turn skips memory injection without affecting the normal reply. Set to 0 for no timeout. Allowed range: 0-600."
+      },
       "max_k": {
         "description": "Max Active Retrieval Count",
         "hint": "Maximum memories returned when the Agent actively calls the long-term memory retrieval tool. Used to limit single-tool recall scale. Recommended: 5-10. Allowed range: 1-50."
@@ -479,6 +483,18 @@
       "graph_prune_orphans": {
         "description": "Prune Graph Orphans",
         "hint": "Clean up graph nodes, relations and index entries left behind by deleted memories. Disabled by default; enable after confirming migration succeeded."
+      },
+      "sqlite_busy_timeout_seconds": {
+        "description": "SQLite Lock Wait Limit (seconds)",
+        "hint": "Maximum time each SQLite connection waits while another writer holds the database lock. The default is 30 seconds; increasing it reduces transient lock failures but delays reporting a genuinely stuck operation. Allowed range: 1-300."
+      },
+      "sqlite_lock_retries": {
+        "description": "SQLite Lock Retry Count",
+        "hint": "Additional retries for non-critical access-time writes after a database is locked error. The default is 4; set to 0 to disable retries. Allowed range: 0-10."
+      },
+      "sqlite_lock_retry_delay_seconds": {
+        "description": "SQLite Initial Retry Backoff (seconds)",
+        "hint": "Initial exponential backoff between lock retries; each subsequent wait doubles up to 2 seconds. The default is 0.1 seconds. Allowed range: 0.01-2."
       }
     },
     "forgetting_agent": {

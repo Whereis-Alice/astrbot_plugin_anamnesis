@@ -6,6 +6,18 @@
 
 Anamnesis 由上游插件 `astrbot_plugin_livingmemory` v2.6.1 派生而来。3.0.0 之前的历史记录原样保留在 [CHANGELOG_upstream.md](CHANGELOG_upstream.md)，其中的命令名与标识符均为旧版，不适用于本插件。
 
+## 3.1.1
+
+### 修复
+
+- **SQLite `database is locked`**：记忆存储连接统一启用 WAL、忙等待和有界指数退避重试；访问时间更新改用独立连接，后台更新失败不会回滚或提交正在进行的多步记忆写入。
+- **自动召回超时不可配置**：新增 `recall_engine.search_timeout_seconds`，默认 5 秒，可在 AstrBot 配置页调整为 `0–600` 秒；设为 `0` 表示不限时，超时只跳过当前轮记忆注入。
+
+### 优化
+
+- 新增 `storage_maintenance.sqlite_busy_timeout_seconds`、`sqlite_lock_retries` 和 `sqlite_lock_retry_delay_seconds` 高级调优项，默认值适合多数单机部署。
+- 补齐配置校验、三语 WebUI 文案、配置文档与 SQLite 锁竞争回归测试。
+
 ## 3.1.0
 
 本次更新只做一件事：**让「谁做了什么」记得住、也记得对**。此前人物完全依赖群昵称识别，改名即失联，撞名即串档，Bot 自称还会被当成群友写进记忆。没有破坏性变更，旧库直接可用。
@@ -78,4 +90,3 @@ Anamnesis 由上游插件 `astrbot_plugin_livingmemory` v2.6.1 派生而来。3.
 - **6 处热路径日志由 info 降为 debug**，减少高频磁盘写入与日志噪音。
 - **移除 `networkx` 依赖**：图检索已完全由 SQLite 实现，不再需要这个包。
 - 存储维护（写操作日志裁剪、图谱残留清理、FTS optimize、WAL checkpoint、可选 VACUUM）统一收敛到一个入口，返回结构化报告，任一步失败都会转成报告而不是中断整个维护任务。
-

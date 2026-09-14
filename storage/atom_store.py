@@ -17,6 +17,7 @@ from ..core.models.memory_atom import (
     MemoryAtom,
     compute_ttl,
 )
+from .sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
 
 
 class AtomStore:
@@ -24,15 +25,21 @@ class AtomStore:
 
     _SQLITE_BATCH_SIZE = 500
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, config: dict[str, Any] | None = None):
         self.db_path = db_path
+        self.config = config or {}
 
     @asynccontextmanager
     async def _connect(self):
-        db = await aiosqlite.connect(self.db_path)
+        # Do not change the database-wide journal mode on every connection;
+        # that PRAGMA is itself a writer and was a major source of lock
+        # contention during concurrent recall and graph/atom writes.
+        db = await aiosqlite.connect(
+            self.db_path,
+            **sqlite_connect_kwargs(self.config),
+        )
         try:
-            await db.execute("PRAGMA journal_mode = WAL")
-            await db.execute("PRAGMA busy_timeout = 10000")
+            await configure_sqlite_connection(db, self.config)
             yield db
         finally:
             await db.close()
@@ -62,6 +69,10 @@ class AtomStore:
     async def initialize(self) -> None:
         """Create tables for memory atoms."""
         async with self._connect() as db:
+            # Enable WAL once during store initialisation.  ``_connect`` has
+            # already installed the busy timeout, so this setup operation also
+            # waits correctly if another startup component is still writing.
+            await db.execute("PRAGMA journal_mode = WAL")
             await db.execute("PRAGMA foreign_keys = ON")
             await db.execute(
                 """

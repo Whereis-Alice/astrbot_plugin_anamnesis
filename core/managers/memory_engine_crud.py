@@ -5,6 +5,8 @@ MemoryEngine 的 MemoryEngineCrudMixin 拆分模块
 
 import asyncio
 import json
+import math
+import sqlite3
 from typing import Any
 from ..utils.number_utils import clamp_float, safe_float
 from ..processors.atom_classifier import classify_atoms
@@ -16,6 +18,45 @@ import time
 
 class MemoryEngineCrudMixin:
     """MemoryEngine 拆分模块：MemoryEngineCrudMixin"""
+
+    @staticmethod
+    def _is_sqlite_lock_error(error: BaseException) -> bool:
+        """Return whether an exception means SQLite is temporarily busy.
+
+        Different SQLite adapters expose the same condition as either
+        ``sqlite3.OperationalError`` or an adapter-specific subclass, so use
+        both the type and the stable message text.
+        """
+
+        message = str(error).lower()
+        # SQLite uses several stable variants, including "database table is
+        # locked" and "database schema is locked".  Keep the check narrow
+        # enough to avoid retrying unrelated application errors while covering
+        # both sqlite3 and adapter-wrapped OperationalError instances.
+        if (
+            not isinstance(error, sqlite3.OperationalError)
+            and "database" not in message
+        ):
+            return False
+        return ("locked" in message or "busy" in message) and "database" in message
+
+    def _access_update_retry_options(self) -> tuple[int, float]:
+        """Resolve bounded retry settings for best-effort access updates."""
+
+        config = getattr(self, "config", {}) or {}
+        try:
+            retries = int(config.get("sqlite_lock_retries", 4))
+        except (TypeError, ValueError, OverflowError):
+            retries = 4
+        retries = max(0, min(10, retries))
+        try:
+            delay = float(config.get("sqlite_lock_retry_delay_seconds", 0.1))
+        except (TypeError, ValueError, OverflowError):
+            delay = 0.1
+        if not math.isfinite(delay):
+            delay = 0.1
+        delay = max(0.01, min(2.0, delay))
+        return retries, delay
 
     async def _record_participant_aliases(self, metadata: dict[str, Any]) -> None:
         """Persist每个参与者的昵称，失败不影响记忆写入。"""
@@ -1087,15 +1128,23 @@ class MemoryEngineCrudMixin:
             return False
 
         current_time = time.time()
+        retries, retry_delay = self._access_update_retry_options()
+        lock = getattr(self, "_access_update_lock", None)
+        # Prefer the isolated connection created by MemoryEngine.  Falling
+        # back to ``db_connection`` keeps the mixin usable in small test
+        # doubles and by older embedders that do not provide one.
+        access_connection = getattr(self, "_access_update_connection", None)
+        if access_connection is None:
+            access_connection = getattr(self, "db_connection", None)
 
-        try:
-            if self.db_connection is None:
+        async def _write_once() -> bool:
+            if access_connection is None:
                 return False
 
             # 单条原子 SQL，避免并发召回任务对同一记忆产生丢失更新，
             # 同时将多条结果合并为一次 commit 以降低写放大。
             placeholders = ",".join("?" * len(unique_ids))
-            cursor = await self.db_connection.execute(
+            cursor = await access_connection.execute(
                 f"""
                 UPDATE documents
                 SET metadata = CASE
@@ -1116,19 +1165,52 @@ class MemoryEngineCrudMixin:
                 """,
                 (current_time, current_time, *unique_ids),
             )
-            await self.db_connection.commit()
-
+            await access_connection.commit()
             return cursor.rowcount > 0
 
-        except asyncio.CancelledError:
-            raise
-        except Exception as e:
-            # 记录错误但不影响查询流程
-            logger.warning(
-                f"批量更新访问时间失败 (doc_ids={unique_ids}): {e}",
-                exc_info=True,
-            )
-            return False
+        for attempt in range(retries + 1):
+            try:
+                # The engine's access-update lock coalesces the burst of
+                # best-effort recall writes.  Keep compatibility with small
+                # test doubles that do not define the lock.
+                if lock is None:
+                    return await _write_once()
+                async with lock:
+                    return await _write_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                # A failed UPDATE may leave a pending transaction on the
+                # aiosqlite connection.  Roll it back before retrying so the
+                # next attempt does not inherit a stale write lock.
+                if access_connection is not None:
+                    try:
+                        await access_connection.rollback()
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.debug(
+                            "访问时间更新失败后的事务回滚失败",
+                            exc_info=True,
+                        )
+
+                if not self._is_sqlite_lock_error(error) or attempt >= retries:
+                    # 访问时间是增强性元数据，失败不应影响召回主流程。
+                    logger.warning(
+                        f"批量更新访问时间失败 (doc_ids={unique_ids}): {error}",
+                        exc_info=True,
+                    )
+                    return False
+
+                wait_seconds = min(2.0, retry_delay * (2**attempt))
+                logger.debug(
+                    "SQLite 暂时繁忙，稍后重试访问时间更新 "
+                    f"(attempt={attempt + 1}/{retries}, wait={wait_seconds:.2f}s, "
+                    f"doc_ids={unique_ids})"
+                )
+                await asyncio.sleep(wait_seconds)
+
+        return False
 
     async def get_session_memories(
         self,

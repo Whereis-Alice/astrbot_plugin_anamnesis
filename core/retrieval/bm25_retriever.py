@@ -13,6 +13,7 @@ import aiosqlite
 from astrbot.api import logger
 
 from ...storage.alias_store import expand_query_tokens
+from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
 from ..processors.text_processor import TextProcessor
 
 
@@ -61,11 +62,18 @@ class BM25Retriever:
 
     @asynccontextmanager
     async def _connect(self):
-        """创建新的SQLite连接并启用WAL模式和busy_timeout。"""
-        db = await aiosqlite.connect(self.db_path)
+        """创建新的SQLite连接并应用每连接设置。
+
+        WAL 是持久的数据库级设置，只在 ``initialize`` 中启用。若在每
+        次查询前执行 ``PRAGMA journal_mode=WAL``，该 PRAGMA 会争抢写锁，
+        在并发召回时容易造成 ``database is locked``。
+        """
+        db = await aiosqlite.connect(
+            self.db_path,
+            **sqlite_connect_kwargs(self.config),
+        )
         try:
-            await db.execute("PRAGMA journal_mode = WAL")
-            await db.execute("PRAGMA busy_timeout = 10000")
+            await configure_sqlite_connection(db, self.config)
             yield db
         finally:
             await db.close()
@@ -78,6 +86,10 @@ class BM25Retriever:
         使用unicode61分词器处理已预处理的文本。
         """
         async with self._connect() as db:
+            # WAL is persistent and database-wide; enable it once during
+            # initialisation instead of issuing this write-like PRAGMA for
+            # every hot-path connection.
+            await db.execute("PRAGMA journal_mode = WAL")
             await self._warn_if_legacy_documents_fts_exists(db)
             # 创建FTS5虚拟表
             await db.execute(f"""

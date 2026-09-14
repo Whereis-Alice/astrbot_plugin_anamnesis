@@ -3,6 +3,7 @@ config_validator.py - 配置验证模块
 提供配置验证、默认值管理和逐项配置修正功能。
 """
 
+import math
 import re
 from typing import Any
 
@@ -45,6 +46,12 @@ class RecallEngineConfig(BaseModel):
 
     top_k: int = Field(
         default=5, ge=0, le=50, description="返回记忆数量。设为 0 则跳过自动召回和注入"
+    )
+    search_timeout_seconds: float = Field(
+        default=5.0,
+        ge=0.0,
+        le=600.0,
+        description="自动记忆检索超时时间（秒），设为 0 表示不限时",
     )
     max_k: int = Field(
         default=10, ge=1, le=50, description="Agent 主动检索时允许的最大返回数量"
@@ -416,6 +423,24 @@ class StorageMaintenanceConfig(BaseModel):
     graph_prune_orphans: bool = Field(
         default=False, description="每日维护时清理图谱孤儿数据"
     )
+    sqlite_busy_timeout_seconds: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=300.0,
+        description="SQLite 等待写锁的最长时间（秒）",
+    )
+    sqlite_lock_retries: int = Field(
+        default=4,
+        ge=0,
+        le=10,
+        description="SQLite 锁冲突时访问时间更新的重试次数",
+    )
+    sqlite_lock_retry_delay_seconds: float = Field(
+        default=0.1,
+        ge=0.01,
+        le=2.0,
+        description="SQLite 锁冲突重试的初始退避时间（秒）",
+    )
 
 class IdentitySettingsConfig(BaseModel):
     """身份标识设置（人名锚定 / 别名索引 / 昵称稳定性守卫）"""
@@ -613,6 +638,8 @@ def _force_number(
     if isinstance(value, int):
         return value, False
     if isinstance(value, float):
+        if not math.isfinite(value):
+            return None, True
         if is_integer:
             if value.is_integer():
                 return int(value), True
@@ -622,12 +649,16 @@ def _force_number(
         text = value.strip()
         try:
             number: int | float = int(text) if is_integer else float(text)
+            if isinstance(number, float) and not math.isfinite(number):
+                return None, True
             return number, True
-        except ValueError:
+        except (ValueError, OverflowError):
             pass
         try:
             number = float(text)
-        except ValueError:
+        except (ValueError, OverflowError):
+            return None, True
+        if not math.isfinite(number):
             return None, True
         if is_integer:
             if number.is_integer():

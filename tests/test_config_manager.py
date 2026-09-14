@@ -16,6 +16,10 @@ def test_config_manager_loads_defaults() -> None:
     assert "sparse_retriever" not in config
     assert "dense_retriever" not in config
     assert manager.get("recall_engine.top_k") == 5
+    assert manager.get("recall_engine.search_timeout_seconds") == 5.0
+    assert manager.get("storage_maintenance.sqlite_busy_timeout_seconds") == 30.0
+    assert manager.get("storage_maintenance.sqlite_lock_retries") == 4
+    assert manager.get("storage_maintenance.sqlite_lock_retry_delay_seconds") == 0.1
     assert manager.get("recall_engine.min_importance_for_retrieval") == 0.0
     assert manager.get("recall_engine.min_similarity_for_retrieval") == 0.0
     assert manager.get("recall_engine.recent_memory_count") == 2
@@ -34,6 +38,55 @@ def test_config_manager_supports_nested_get_and_default() -> None:
     assert manager.get("recall_engine.top_k") == 9
     assert manager.get("recall_engine.unknown", "fallback") == "fallback"
     assert manager.get("missing.path", 123) == 123
+
+
+def test_config_manager_exposes_search_timeout_seconds() -> None:
+    manager = ConfigManager(
+        {"recall_engine": {"search_timeout_seconds": 12.5}}
+    )
+
+    assert manager.get("recall_engine.search_timeout_seconds") == 12.5
+
+
+def test_search_timeout_seconds_is_clamped_and_invalid_values_fall_back() -> None:
+    manager = ConfigManager(
+        {"recall_engine": {"search_timeout_seconds": 9999}}
+    )
+    assert manager.get("recall_engine.search_timeout_seconds") == 600.0
+
+    invalid = ConfigManager(
+        {"recall_engine": {"search_timeout_seconds": "not-a-number"}}
+    )
+    assert invalid.get("recall_engine.search_timeout_seconds") == 5.0
+
+    non_finite = ConfigManager(
+        {
+            "recall_engine": {
+                "search_timeout_seconds": "nan",
+                "top_k": 9,
+            }
+        }
+    )
+    # A malformed float must only reset this field, not discard unrelated
+    # user settings while validating the complete configuration.
+    assert non_finite.get("recall_engine.search_timeout_seconds") == 5.0
+    assert non_finite.get("recall_engine.top_k") == 9
+
+
+def test_sqlite_lock_settings_are_normalized_individually() -> None:
+    manager = ConfigManager(
+        {
+            "storage_maintenance": {
+                "sqlite_busy_timeout_seconds": 9999,
+                "sqlite_lock_retries": -4,
+                "sqlite_lock_retry_delay_seconds": "invalid",
+            }
+        }
+    )
+
+    assert manager.get("storage_maintenance.sqlite_busy_timeout_seconds") == 300.0
+    assert manager.get("storage_maintenance.sqlite_lock_retries") == 0
+    assert manager.get("storage_maintenance.sqlite_lock_retry_delay_seconds") == 0.1
 
 
 def test_config_manager_sections_and_properties() -> None:

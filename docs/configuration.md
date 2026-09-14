@@ -41,6 +41,7 @@ Anamnesis 的默认配置已经适合大多数场景。真正需要调整的通�
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
 | `recall_engine.top_k` | `5` | 每轮自动召回的记忆数量 |
+| `recall_engine.search_timeout_seconds` | `5.0` | 每轮自动检索最多等待的秒数；超时则跳过本轮记忆注入但不影响回复，设为 `0` 表示不限时（范围 `0–600`） |
 | `recall_engine.max_k` | `10` | Agent 主动检索工具允许返回的最大数量 |
 | `recall_engine.importance_weight` | `1.0` | 重要性在最终排序中的权重 |
 | `recall_engine.min_importance_for_retrieval` | `0.0` | 最低重要性阈值，`0` 表示不过滤 |
@@ -55,6 +56,8 @@ Anamnesis 的默认配置已经适合大多数场景。真正需要调整的通�
 | `recall_engine.injection_method` | `extra_user_content` | 记忆注入到 LLM 请求的位置或形式 |
 | `recall_engine.inject_with_recent_context` | `false` | 是否拼接最近对话扩展查询 |
 | `recall_engine.search_cache_enabled` | `true` | 是否启用短期检索缓存 |
+
+自动召回默认最多等待 5 秒，主要用于避免慢速 Embedding、SQLite 或 FAISS 检索阻塞 LLM 回复。可以在 AstrBot 的 Anamnesis 配置页直接调整 `search_timeout_seconds`；低配或远程 Provider 可提高到 10–30 秒，若希望完全沿用旧的不限时行为则填 `0`。超时只跳过当前轮的记忆注入，不会取消或影响后续对话。
 
 `extra_user_content` 是最稳妥的默认注入方式。Gemini Provider 下选择 `fake_tool_call` 会自动降级到 `extra_user_content`；DeepSeek V4 thinking 模式现在可以直接使用普通 `fake_tool_call`，旧的 `fake_tool_call_deepseek_v4` 仅作为兼容别名保留，并会自动回退到 `fake_tool_call`。
 
@@ -171,12 +174,18 @@ Anamnesis 的默认配置已经适合大多数场景。真正需要调整的通�
 | `storage_maintenance.write_ops_failed_keep_days` | `30.0` | 失败写操作日志的保留天数，保留更久便于排查 |
 | `storage_maintenance.daily_vacuum` | `false` | 每日维护时执行 SQLite `VACUUM`。默认关闭 |
 | `storage_maintenance.graph_prune_orphans` | `false` | 每日维护时清理图谱孤儿节点、边与条目 |
+| `storage_maintenance.sqlite_busy_timeout_seconds` | `30.0` | SQLite 遇到其他写入时每个连接等待锁的最长时间（范围 `1–300`） |
+| `storage_maintenance.sqlite_lock_retries` | `4` | 访问时间这类非关键写入遇到锁冲突后的额外重试次数（范围 `0–10`） |
+| `storage_maintenance.sqlite_lock_retry_delay_seconds` | `0.1` | 锁冲突重试的初始指数退避时间，后续最多退避到 2 秒（范围 `0.01–2`） |
 
 写操作日志（`memory_write_ops`）记录每次记忆写入的完整载荷，用于崩溃恢复与幂等重放。它只在写入过程中有价值，完成后即可裁剪；实测一个运行 70 天的库里这张表占了 24MB。
 
 `daily_vacuum` 默认关闭是刻意的：`VACUUM` 需要与数据库等大的临时空间，并会在执行期间持有写锁。低内存或磁盘紧张的机器请保持关闭，改为在需要回收空间时手动执行 `/anam vacuum`。
 
 `graph_prune_orphans` 默认关闭，因为正常运行时不应产生孤儿数据。如果曾经手动删除过记忆或中断过重建，可以先用 `/anam vacuum` 观察，再决定是否常开。
+
+Anamnesis 的记忆存储连接现在统一使用 WAL、忙等待和有界重试；访问时间更新还使用独立连接，避免回滚正在进行的多步记忆写入。通常保持上述默认值即可。只有在同一数据库被其他进程长期占用时，才需要提高 `sqlite_busy_timeout_seconds`；重试参数主要用于排查极端锁竞争。
+
 ## 记忆库整合
 
 | 配置项 | 默认 | 说明 |

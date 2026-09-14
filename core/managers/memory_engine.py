@@ -16,6 +16,10 @@ from astrbot.api import logger
 from ...storage.alias_store import AliasStore
 from ...storage.atom_store import AtomStore
 from ...storage.graph_store import GraphStore
+from ...storage.sqlite_utils import (
+    configure_sqlite_connection,
+    sqlite_connect_kwargs,
+)
 from ..managers.atom_lifecycle_manager import AtomLifecycleManager
 from ..managers.graph_memory_manager import GraphMemoryManager
 from ..processors.graph_extractor import GraphExtractor
@@ -101,6 +105,9 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
                 - cleanup_days_threshold: 清理天数阈值,默认30
                 - cleanup_importance_threshold: 清理重要性阈值,默认0.3
                 - stopwords_path: 停用词文件路径(可选)
+                - sqlite_busy_timeout_seconds: SQLite 忙等待上限,默认30
+                - sqlite_lock_retries: 访问时间更新锁冲突重试次数,默认4
+                - sqlite_lock_retry_delay_seconds: 锁重试初始退避,默认0.1
             rerank_provider_resolver: 返回RerankProvider实例的可调用对象(可选)。
                 动态解析以适配AstrBot的Provider实例重建,传None时跳过重排序。
         """
@@ -123,6 +130,16 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
 
         # 后台任务跟踪
         self._pending_tasks: set[asyncio.Task] = set()
+
+        # Access timestamps are best-effort writes launched by recall tasks.
+        # Serialising them avoids a burst of tiny transactions competing with
+        # FAISS/graph writers, while the CRUD mixin adds bounded locked retries.
+        self._access_update_lock = asyncio.Lock()
+        # Keep access-time metadata writes on a separate SQLite connection.
+        # The main connection is also used by multi-step memory writes; a
+        # background UPDATE must never rollback or commit one of those
+        # in-flight transactions when SQLite is busy.
+        self._access_update_connection: aiosqlite.Connection | None = None
 
         # 初始化组件(在initialize中完成)
         self.text_processor = None
@@ -169,13 +186,53 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         创建数据库表、初始化所有检索器组件
         """
         # 1. 连接数据库
-        self.db_connection = await aiosqlite.connect(self.db_path)
+        self.db_connection = await aiosqlite.connect(
+            self.db_path,
+            **sqlite_connect_kwargs(self.config),
+        )
         self.db_connection.row_factory = aiosqlite.Row
+        # Install busy_timeout before changing the database-wide journal mode;
+        # the old order used aiosqlite's short default timeout for this write.
+        await configure_sqlite_connection(self.db_connection, self.config)
         await self.db_connection.execute("PRAGMA journal_mode = WAL")
-        await self.db_connection.execute("PRAGMA busy_timeout = 10000")
 
         # 2. 创建表结构
         await self._create_tables()
+
+        # Access timestamps are non-critical metadata and are updated by
+        # fire-and-forget recall tasks.  Isolate those writes from the main
+        # multi-step connection so a lock/retry cannot affect a memory write.
+        access_connection: aiosqlite.Connection | None = None
+        # ``:memory:`` creates a separate database for every connection, so a
+        # second connection would not see the documents table at all.  Keep
+        # the main connection as the fallback for this test/embedding mode.
+        if str(self.db_path) != ":memory:":
+            try:
+                access_connection = await aiosqlite.connect(
+                    self.db_path,
+                    **sqlite_connect_kwargs(self.config),
+                )
+                await configure_sqlite_connection(
+                    access_connection,
+                    self.config,
+                )
+                self._access_update_connection = access_connection
+            except Exception:
+                # The main connection remains a safe compatibility fallback
+                # (and is what lightweight test doubles provide).
+                if access_connection is not None:
+                    try:
+                        await access_connection.close()
+                    except Exception:
+                        logger.debug(
+                            "[MemoryEngine] 清理访问时间连接失败",
+                            exc_info=True,
+                        )
+                self._access_update_connection = None
+                logger.warning(
+                    "[MemoryEngine] 访问时间专用数据库连接初始化失败，将回退主连接",
+                    exc_info=True,
+                )
 
         # 2.5 昵称别名表
         # 别名历史与图记忆无关（纯昵称→账号映射），因此无条件建立：
@@ -220,7 +277,7 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
             self.graph_store = GraphStore(self.db_path, self.config)
             await self.graph_store.initialize()
 
-            self.atom_store = AtomStore(self.db_path)
+            self.atom_store = AtomStore(self.db_path, self.config)
             await self.atom_store.initialize()
 
             if self.atom_enabled:
@@ -293,6 +350,15 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
                     task.cancel()
             await asyncio.gather(*self._pending_tasks, return_exceptions=True)
             self._pending_tasks.clear()
+        if self._access_update_connection:
+            try:
+                await self._access_update_connection.close()
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.debug("[MemoryEngine] 关闭访问时间数据库连接失败", exc_info=True)
+            finally:
+                self._access_update_connection = None
         if self.db_connection:
             await self.db_connection.close()
         if self.graph_vector_db is not None:

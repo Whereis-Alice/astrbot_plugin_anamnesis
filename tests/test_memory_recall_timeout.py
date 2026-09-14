@@ -34,8 +34,7 @@ _MISSING = object()
 class _TimeoutConfigManager(ConfigManager):
     """仅覆写 recall_engine.search_timeout_seconds 的读取。
 
-    config_validator.RecallEngineConfig 目前没有声明该字段，pydantic 会静默丢弃它，
-    所以无法通过构造参数注入。这里直接覆写 get()，模拟主代理补齐 schema 之后的行为。
+    这里保留覆写能力，便于测试运行时切换超时值（包括 <= 0 的不限时语义）。
     """
 
     def __init__(self, raw_config: dict, timeout_value=_MISSING):
@@ -240,6 +239,9 @@ async def test_recall_search_runtime_error_is_logged_not_raised():
         (-1, None),
         ("abc", DEFAULT_SEARCH_TIMEOUT_SECONDS),
         (None, DEFAULT_SEARCH_TIMEOUT_SECONDS),
+        ("nan", DEFAULT_SEARCH_TIMEOUT_SECONDS),
+        ("inf", DEFAULT_SEARCH_TIMEOUT_SECONDS),
+        (True, DEFAULT_SEARCH_TIMEOUT_SECONDS),
     ],
 )
 def test_resolve_search_timeout(configured, expected):
@@ -252,7 +254,7 @@ def test_resolve_search_timeout(configured, expected):
 
 
 def test_resolve_search_timeout_defaults_to_five_seconds():
-    """真实 ConfigManager（当前 schema 未声明该项）下应回退到 5.0 秒。"""
+    """真实 ConfigManager 下未配置时应回退到 5.0 秒。"""
     engine = Mock()
     engine.search_memories = AsyncMock(return_value=[])
     handler = EventHandler(

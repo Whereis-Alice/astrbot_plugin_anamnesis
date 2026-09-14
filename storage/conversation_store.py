@@ -7,6 +7,7 @@ import asyncio
 import json
 import time
 from pathlib import Path
+from typing import Any
 
 import aiosqlite
 
@@ -14,6 +15,7 @@ from astrbot.api import logger
 
 from ..core.models.conversation_models import Session, serialize_to_json
 from .conversation_store_messages import ConversationStoreMessagesMixin
+from .sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
 
 class ConversationStore(ConversationStoreMessagesMixin):
     """
@@ -25,14 +27,16 @@ class ConversationStore(ConversationStoreMessagesMixin):
     - 支持群聊场景的数据查询
     """
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str, config: dict[str, Any] | None = None):
         """
         初始化存储层
 
         Args:
             db_path: 数据库文件路径
+            config: 可选 SQLite 连接配置（如 busy timeout）
         """
         self.db_path = db_path
+        self.config = config or {}
         self.connection: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()
 
@@ -41,11 +45,15 @@ class ConversationStore(ConversationStoreMessagesMixin):
 
     async def initialize(self) -> None:
         """初始化数据库连接并创建表结构"""
-        self.connection = await aiosqlite.connect(self.db_path)
+        self.connection = await aiosqlite.connect(
+            self.db_path,
+            **sqlite_connect_kwargs(self.config),
+        )
         if self.connection is not None:
             self.connection.row_factory = aiosqlite.Row
+            # Configure the wait policy before the database-wide WAL switch.
+            await configure_sqlite_connection(self.connection, self.config)
             await self.connection.execute("PRAGMA journal_mode = WAL")
-            await self.connection.execute("PRAGMA busy_timeout = 10000")
 
         await self._create_tables()
         await self._create_indexes()

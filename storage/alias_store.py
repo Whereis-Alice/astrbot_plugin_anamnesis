@@ -23,6 +23,8 @@ from typing import Any
 
 import aiosqlite
 
+from .sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
+
 
 #: Aliases shorter than this are not used for free-text matching. Single
 #: characters match almost any Chinese sentence and would create noise.
@@ -59,6 +61,7 @@ class AliasStore:
     def __init__(self, db_path: str, config: dict[str, Any] | None = None):
         self.db_path = db_path
         options = config or {}
+        self.config = options
         self.max_per_identity = max(
             1, int(options.get("alias_max_per_identity", 40) or 40)
         )
@@ -79,10 +82,16 @@ class AliasStore:
 
     @asynccontextmanager
     async def _connect(self):
-        db = await aiosqlite.connect(self.db_path)
+        # WAL is enabled once during ``initialize``.  Re-running
+        # ``PRAGMA journal_mode=WAL`` for every short-lived connection is a
+        # database-wide write operation and can itself cause ``database is
+        # locked`` under concurrent recall/write traffic.
+        db = await aiosqlite.connect(
+            self.db_path,
+            **sqlite_connect_kwargs(self.config),
+        )
         try:
-            await db.execute("PRAGMA journal_mode = WAL")
-            await db.execute("PRAGMA busy_timeout = 10000")
+            await configure_sqlite_connection(db, self.config)
             yield db
         finally:
             await db.close()
@@ -94,6 +103,8 @@ class AliasStore:
     async def initialize(self) -> None:
         """Create the alias table and supporting indexes."""
         async with self._connect() as db:
+            # Set the persistent journal mode only during initialisation.
+            await db.execute("PRAGMA journal_mode = WAL")
             await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS person_aliases (

@@ -139,6 +139,17 @@
           "step": 1
         }
       },
+      "search_timeout_seconds": {
+        "description": "记忆检索超时（秒）",
+        "hint": "每轮自动记忆检索最多等待的时间。默认 5 秒；超过此时间会跳过本轮记忆注入，但不影响正常回复。设为 0 表示不限时。（允许范围：0–600）",
+        "type": "float",
+        "default": 5.0,
+        "slider": {
+          "min": 0.0,
+          "max": 600.0,
+          "step": 0.1
+        }
+      },
       "max_k": {
         "description": "主动检索最大数量",
         "hint": "Agent 主动调用长期记忆检索工具时允许返回的最大记忆条数。用于限制工具单次召回规模，建议 5-10。（允许范围：1–50）",
@@ -1001,6 +1012,39 @@
         "hint": "清理已删除记忆残留的图谱节点、关系和索引条目。默认关闭，确认迁移无误后再开启。",
         "type": "bool",
         "default": false
+      },
+      "sqlite_busy_timeout_seconds": {
+        "description": "SQLite 锁等待上限（秒）",
+        "hint": "数据库被其他写入占用时，每个连接最多等待的时间。默认 30 秒；提高可减少繁忙时的锁失败，但会让真正卡死的操作更晚暴露。（允许范围：1–300）",
+        "type": "float",
+        "default": 30.0,
+        "slider": {
+          "min": 1.0,
+          "max": 300.0,
+          "step": 0.5
+        }
+      },
+      "sqlite_lock_retries": {
+        "description": "SQLite 锁冲突重试次数",
+        "hint": "访问时间这类非关键写入遇到 database is locked 时的额外重试次数。默认 4 次，设为 0 可关闭重试。（允许范围：0–10）",
+        "type": "int",
+        "default": 4,
+        "slider": {
+          "min": 0,
+          "max": 10,
+          "step": 1
+        }
+      },
+      "sqlite_lock_retry_delay_seconds": {
+        "description": "SQLite 重试初始退避（秒）",
+        "hint": "锁冲突重试之间的指数退避初始值；后续等待会逐次加倍，最长 2 秒。默认 0.1 秒。（允许范围：0.01–2）",
+        "type": "float",
+        "default": 0.1,
+        "slider": {
+          "min": 0.01,
+          "max": 2.0,
+          "step": 0.01
+        }
       }
     }
   },

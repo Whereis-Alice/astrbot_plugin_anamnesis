@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import math
 import re
 import time
 from datetime import datetime
@@ -120,8 +121,15 @@ class MemoryRecall:
             "recall_engine.search_timeout_seconds", DEFAULT_SEARCH_TIMEOUT_SECONDS
         )
         try:
+            # bool 会被 float() 当作 0/1，NaN/Inf 也无法作为可靠的等待时长；
+            # 将这些值视为非法配置并回退默认值，避免意外关闭超时或触发
+            # asyncio.wait_for 的平台相关行为。
+            if isinstance(raw, bool):
+                raise TypeError("布尔值不是有效的超时时间")
             timeout = float(raw)
-        except (TypeError, ValueError):
+            if not math.isfinite(timeout):
+                raise ValueError("超时时间必须是有限数")
+        except (TypeError, ValueError, OverflowError):
             logger.debug(
                 f"recall_engine.search_timeout_seconds 配置值非法（{raw!r}），"
                 f"回退默认 {DEFAULT_SEARCH_TIMEOUT_SECONDS}s",
@@ -294,7 +302,7 @@ class MemoryRecall:
                 }
                 try:
                     if search_timeout is None:
-                        # 配置 <= 0：用户显式选择不限时，保持旧行为
+                        # 配置 <= 0：用户显式选择不限时，保持旧行为。
                         recalled_memories = await self.memory_engine.search_memories(
                             **search_kwargs
                         )
@@ -306,10 +314,18 @@ class MemoryRecall:
                             timeout=search_timeout,
                         )
                 except (asyncio.TimeoutError, TimeoutError):
-                    logger.warning(
-                        f"[{session_id}] 记忆检索超过 {search_timeout}s 超时，"
-                        f"本轮跳过记忆注入"
-                    )
+                    if search_timeout is None:
+                        # 不限时模式下仍可能收到 Provider/数据库自身的超时异常；
+                        # 这不是本插件的截止时间，但同样应静默跳过本轮注入。
+                        logger.warning(
+                            f"[{session_id}] 记忆检索后端返回超时，"
+                            f"本轮跳过记忆注入"
+                        )
+                    else:
+                        logger.warning(
+                            f"[{session_id}] 记忆检索超过 {search_timeout}s 超时，"
+                            f"本轮跳过记忆注入"
+                        )
                     return
 
                 if recalled_memories:
