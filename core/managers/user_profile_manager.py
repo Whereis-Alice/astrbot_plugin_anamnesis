@@ -239,6 +239,21 @@ class UserProfileManager:
         return count
 
     async def delete_by_source_memory(self, memory_id: int) -> int:
+        return await self.delete_by_source_memories([memory_id])
+
+    async def delete_by_source_memories(self, memory_ids: list[int]) -> int:
+        """Remove profile facts sourced from explicitly deleted memories."""
+        ids = sorted(
+            {
+                memory_id
+                for memory_id in memory_ids
+                if isinstance(memory_id, int)
+                and not isinstance(memory_id, bool)
+                and memory_id > 0
+            }
+        )
+        if not ids:
+            return 0
         if not await self._ensure_schema():
             return 0
         connection = self.store.connection
@@ -246,10 +261,15 @@ class UserProfileManager:
             return 0
         async with self.store._write_lock:
             try:
-                cursor = await connection.execute(
-                    "DELETE FROM user_profiles WHERE source_memory_id = ?", (memory_id,)
-                )
-                count = cursor.rowcount
+                count = 0
+                for start in range(0, len(ids), 500):
+                    batch = ids[start : start + 500]
+                    placeholders = ",".join("?" for _ in batch)
+                    cursor = await connection.execute(
+                        f"DELETE FROM user_profiles WHERE source_memory_id IN ({placeholders})",
+                        batch,
+                    )
+                    count += cursor.rowcount
                 await connection.commit()
             except BaseException:
                 await connection.rollback()

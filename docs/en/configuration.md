@@ -141,7 +141,7 @@ Profiles live separately in `conversations.db` and bypass top-k ranking. When en
 | `user_profile.extraction_max_chars` | `12000` | Maximum source text per extraction |
 | `user_profile.llm_max_retries` | `1` | Additional LLM extraction retries |
 
-Use `/anam profile` to inspect your own profile and `/anam profile-clear [key]` to delete a key or your entire profile (omit `key`). These commands remain available while extraction is disabled. In a group, profile output is public; use a private chat for inspection. `/anam forget <id>` is the administrator's exact-ID memory deletion command. The optional Agent deletion tool also requires an exact ID and an explicit user request. Both explicit deletion paths remove profile facts sourced from the deleted memory.
+Use `/anam profile` to inspect your own profile and `/anam profile-clear [key]` to delete a key or your entire profile (omit `key`). These commands remain available while extraction is disabled. In a group, profile output is public; use a private chat for inspection. `/anam forget <id>` is the administrator's exact-ID memory deletion command. The optional Agent deletion tool also requires an exact ID and an explicit user request. The command, Dashboard batch deletion, and Agent tool all remove profile facts sourced from deleted memories.
 
 ## Graph memory and atomization
 

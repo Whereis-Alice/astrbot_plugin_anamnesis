@@ -81,6 +81,25 @@ async def test_profile_upsert_corrects_value_and_isolates_users(profile_manager)
 
 
 @pytest.mark.asyncio
+async def test_batch_source_delete_clears_only_selected_fact_origins(profile_manager):
+    alice = _event("alice")
+    await profile_manager.upsert_facts(
+        alice, [_fact("first", "第一条")], source_memory_id=10
+    )
+    await profile_manager.upsert_facts(
+        alice, [_fact("second", "第二条")], source_memory_id=11
+    )
+    await profile_manager.upsert_facts(
+        alice, [_fact("third", "第三条")], source_memory_id=12
+    )
+
+    assert await profile_manager.delete_by_source_memories([10, 12, 999]) == 2
+    assert [
+        fact["profile_key"] for fact in await profile_manager.get_profile(alice)
+    ] == ["second"]
+
+
+@pytest.mark.asyncio
 async def test_profile_scope_platform_and_isolated_session(profile_manager):
     qq = _event("same-id", "qq", "qq:GroupMessage:42")
     telegram = _event("same-id", "telegram", "telegram:GroupMessage:42")

@@ -241,7 +241,9 @@ class PluginPageApi:
         ready, error = await self._ensure_plugin_ready()
         if error:
             return error
-        return await self.memory_handler.batch_delete_memories(ready["memory_engine"])
+        return await self.memory_handler.batch_delete_memories(
+            ready["memory_engine"], getattr(self.plugin, "user_profile_manager", None)
+        )
 
     async def batch_update_memories(self):
         """批量更新记忆字段"""

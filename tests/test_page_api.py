@@ -941,6 +941,22 @@ class TestBatchDeleteMemories:
         assert result["data"]["total"] == 3
 
     @pytest.mark.asyncio
+    async def test_valid_delete_cleans_source_linked_profile(self, api):
+        profile_manager = SimpleNamespace(
+            delete_by_source_memories=AsyncMock(return_value=2)
+        )
+        api.plugin.user_profile_manager = profile_manager
+        req = _mock_page_request(get_json={"memory_ids": [1, 2, 999]})
+
+        with _patch_page_request(req):
+            result = await api.batch_delete_memories()
+
+        assert result["status"] == "ok"
+        profile_manager.delete_by_source_memories.assert_awaited_once_with(
+            [1, 2, 999]
+        )
+
+    @pytest.mark.asyncio
     async def test_mixed_valid_invalid_ids(self, api):
         req = _mock_page_request(get_json={"memory_ids": [1, "abc", 3]})
         with _patch_page_request(req):

@@ -281,7 +281,9 @@ class MemoryHandlerUpdateMixin:
             }
         )
 
-    async def batch_delete_memories(self, memory_engine) -> dict[str, Any]:
+    async def batch_delete_memories(
+        self, memory_engine, user_profile_manager=None
+    ) -> dict[str, Any]:
         """
         批量删除记忆
 
@@ -310,6 +312,17 @@ class MemoryHandlerUpdateMixin:
 
         if valid_ids:
             deleted_count = await memory_engine.batch_delete_memories(valid_ids)
+            if user_profile_manager is not None:
+                try:
+                    # A normal return means all requested IDs are absent: they
+                    # were either deleted or already missing. In either case,
+                    # their source-linked profile facts must not be injected.
+                    await user_profile_manager.delete_by_source_memories(valid_ids)
+                except Exception:
+                    logger.warning(
+                        "Dashboard 批量删除已完成，但关联用户档案清理失败",
+                        exc_info=True,
+                    )
 
         return self.utils.ok(
             {

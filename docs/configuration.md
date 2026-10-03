@@ -141,7 +141,7 @@ Anamnesis 的默认配置已经适合大多数场景。真正需要调整的通�
 | `user_profile.extraction_max_chars` | `12000` | 单次提取读取的本人发言上限 |
 | `user_profile.llm_max_retries` | `1` | 档案提取 LLM 的额外重试次数 |
 
-`/anam profile` 查看当前用户的档案，`/anam profile-clear [key]` 删除指定条目或全部条目（不填 `key`）。这些命令在关闭档案功能后仍可用于查看或删除已经保存的数据。群聊中查看档案会公开回复，请在私聊中使用。`/anam forget <id>` 是管理员按 ID 删除普通记忆的命令；启用 Agent 删除工具后，模型也可在用户明确请求时按 ID 删除。两条显式删除路径都会清理来源于该记忆的档案条目。
+`/anam profile` 查看当前用户的档案，`/anam profile-clear [key]` 删除指定条目或全部条目（不填 `key`）。这些命令在关闭档案功能后仍可用于查看或删除已经保存的数据。群聊中查看档案会公开回复，请在私聊中使用。`/anam forget <id>` 是管理员按 ID 删除普通记忆的命令；启用 Agent 删除工具后，模型也可在用户明确请求时按 ID 删除。命令、Dashboard 批量删除与 Agent 工具这三条显式删除路径都会清理来源于该记忆的档案条目。
 
 ## 图记忆与原子化
 
