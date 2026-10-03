@@ -473,6 +473,50 @@
       }
     }
   },
+  "user_profile": {
+    "description": "用户个人档案（Beta）",
+    "hint": "将用户明确表达的稳定事实独立保存，并在每次对话临时注入；不依赖 Top-K 检索。默认关闭，开启后每次记忆总结会额外调用一次 LLM 提取档案。",
+    "type": "object",
+    "items": {
+      "enabled": {
+        "description": "启用用户档案",
+        "hint": "关闭时不提取、不注入档案；已保存档案仍可通过命令查看或删除。",
+        "type": "bool",
+        "default": false
+      },
+      "max_items": {
+        "description": "每位用户最多档案条数",
+        "type": "int",
+        "default": 40,
+        "slider": {"min": 1, "max": 200, "step": 1}
+      },
+      "max_injection_chars": {
+        "description": "每轮档案注入字数上限",
+        "type": "int",
+        "default": 3000,
+        "slider": {"min": 500, "max": 20000, "step": 100}
+      },
+      "volatile_ttl_days": {
+        "description": "临时状态保留天数",
+        "hint": "当前状态类事实超期后不再注入；长期偏好不受此项限制。",
+        "type": "int",
+        "default": 7,
+        "slider": {"min": 1, "max": 3650, "step": 1}
+      },
+      "extraction_max_chars": {
+        "description": "单次提取来源文本字数上限",
+        "type": "int",
+        "default": 12000,
+        "slider": {"min": 1000, "max": 50000, "step": 1000}
+      },
+      "llm_max_retries": {
+        "description": "档案提取 LLM 额外重试次数",
+        "type": "int",
+        "default": 1,
+        "slider": {"min": 0, "max": 3, "step": 1}
+      }
+    }
+  },
   "agent_tools": {
     "description": "Agent 主动记忆工具",
     "hint": "控制是否向 AstrBot Agent 注册长期记忆回忆与写入工具。",
@@ -487,6 +531,12 @@
       "enable_memorize_tool": {
         "description": "启用主动记忆写入工具",
         "hint": "开启后注册 anamnesis_memorize_memory，允许 Agent 主动写入长期记忆。",
+        "type": "bool",
+        "default": false
+      },
+      "enable_forget_tool": {
+        "description": "启用删除记忆工具",
+        "hint": "开启后注册 anamnesis_forget_memory；Agent 仅能按记忆 ID 删除当前作用域中的记忆。建议仅在可信场景中启用。",
         "type": "bool",
         "default": false
       }

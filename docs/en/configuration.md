@@ -124,8 +124,24 @@ Retained source is written only to the SQLite `memory_sources` table, not to vec
 | --- | --- | --- |
 | `agent_tools.enable_recall_tool` | `true` | Registers `anamnesis_recall_memory` for active recall |
 | `agent_tools.enable_memorize_tool` | `false` | Registers `anamnesis_memorize_memory` for active writes |
+| `agent_tools.enable_forget_tool` | `false` | Registers `anamnesis_forget_memory` for exact-ID deletion in the current scope |
 
 The write tool is powerful and depends on model discipline. Start with active recall, then enable active writes after observing stable behavior.
+
+## User profiles (Beta)
+
+Profiles live separately in `conversations.db` and bypass top-k ranking. When enabled, each successful conversation summary triggers an extra LLM call to extract explicit facts from the current sender's own messages. The profile is injected as temporary context even if normal retrieval is disabled or times out. `/new` and `/reset` clear short-term context, not the profile or long-term memories.
+
+| Key | Default | Description |
+| --- | --- | --- |
+| `user_profile.enabled` | `false` | Off means no extraction, injection, or extra LLM call |
+| `user_profile.max_items` | `40` | Maximum facts per user |
+| `user_profile.max_injection_chars` | `3000` | Per-request profile injection limit |
+| `user_profile.volatile_ttl_days` | `7` | Lifetime of temporary status facts |
+| `user_profile.extraction_max_chars` | `12000` | Maximum source text per extraction |
+| `user_profile.llm_max_retries` | `1` | Additional LLM extraction retries |
+
+Use `/anam profile` to inspect your own profile and `/anam profile-clear [key]` to delete a key or your entire profile (omit `key`). These commands remain available while extraction is disabled. In a group, profile output is public; use a private chat for inspection. `/anam forget <id>` is the administrator's exact-ID memory deletion command. The optional Agent deletion tool also requires an exact ID and an explicit user request. Both explicit deletion paths remove profile facts sourced from the deleted memory.
 
 ## Graph memory and atomization
 

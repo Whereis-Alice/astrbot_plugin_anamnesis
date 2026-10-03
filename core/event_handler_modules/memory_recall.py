@@ -72,6 +72,7 @@ class MemoryRecall:
         conversation_manager: "ConversationManager",
         message_utils: "MessageUtils",
         injection_adapter: "InjectionAdapter",
+        user_profile_manager=None,
     ):
         """
         初始化记忆召回模块
@@ -90,6 +91,7 @@ class MemoryRecall:
         self.conversation_manager = conversation_manager
         self.message_utils = message_utils
         self.injection_adapter = injection_adapter
+        self.user_profile_manager = user_profile_manager
 
     @staticmethod
     def _message_timestamp_seconds(value) -> float | None:
@@ -207,6 +209,22 @@ class MemoryRecall:
                         content=message_to_store,
                     )
                     await self.message_utils.enforce_message_limit(session_id)
+
+                # 用户档案不参与 Top-K 排名，普通检索关闭或超时时仍可提供稳定事实。
+                # 档案读取失败不应阻断用户请求或普通记忆检索。
+                if self.user_profile_manager is not None:
+                    try:
+                        profile_text = await self.user_profile_manager.format_for_injection(event)
+                        if profile_text:
+                            if getattr(req, "extra_user_content_parts", None) is None:
+                                req.extra_user_content_parts = []
+                            req.extra_user_content_parts.append(
+                                TextPart(text=profile_text).mark_as_temp()
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.warning("用户档案注入失败，本轮继续普通记忆召回", exc_info=True)
 
                 # 若 top_k <= 0，跳过记忆检索和注入，但上述清理和消息存储已执行
                 top_k = self.config_manager.get("recall_engine.top_k", 5)

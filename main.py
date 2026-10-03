@@ -21,13 +21,15 @@ from .core.event_handler import EventHandler
 from .core.i18n_backend import init as i18n_init
 from .core.i18n_backend import t
 from .core.managers.backup_manager import BackupManager
+from .core.managers.user_profile_manager import UserProfileManager
+from .core.memory_scope import is_event_memory_allowed
 from .core.passive_group_capture import PassiveGroupCaptureFilter
 from .core.passive_group_capture import get_active_plugin
 from .core.passive_group_capture import is_plugin_enabled_for_session
 from .core.passive_group_capture import is_session_enabled
 from .core.passive_group_capture import set_active_plugin
 from .core.plugin_initializer import PluginInitializer
-from .core.tools import MemoryMemorizeTool, MemorySearchTool
+from .core.tools import MemoryForgetTool, MemoryMemorizeTool, MemorySearchTool
 
 _MIN_ASTRBOT_VERSION = "4.24.2"
 _ASTRBOT_DISTRIBUTION_NAMES = ("AstrBot", "astrbot")
@@ -88,7 +90,7 @@ elif _version_lt(_CURRENT_ASTRBOT_VERSION, _MIN_ASTRBOT_VERSION):
     "Anamnesis",
     "Whereis-Alice",
     "An intelligent long-term memory plugin with a dynamic lifecycle for AstrBot.",
-    "3.1.1",
+    "3.2.0",
     "https://github.com/Whereis-Alice/astrbot_plugin_anamnesis",
 )
 class AnamnesisPlugin(Star):
@@ -118,6 +120,7 @@ class AnamnesisPlugin(Star):
         # 事件处理器和命令处理器（初始化后创建）
         self.event_handler: EventHandler | None = None
         self.command_handler: CommandHandler | None = None
+        self.user_profile_manager: UserProfileManager | None = None
 
         # 后台任务跟踪集合
         self._background_tasks: set[asyncio.Task] = set()
@@ -244,6 +247,10 @@ class AnamnesisPlugin(Star):
                 return False
 
             # 创建事件处理器（幂等）
+            if self.user_profile_manager is None:
+                self.user_profile_manager = UserProfileManager(
+                    self.config_manager, self.initializer.conversation_manager
+                )
             if not self.event_handler:
                 self.event_handler = EventHandler(
                     context=self.context,
@@ -252,6 +259,7 @@ class AnamnesisPlugin(Star):
                     memory_processor=self.initializer.memory_processor,  # type: ignore[arg-type]
                     conversation_manager=self.initializer.conversation_manager,  # type: ignore[arg-type]
                     consolidation_manager=self.initializer.consolidation_manager,
+                    user_profile_manager=self.user_profile_manager,
                 )
 
             # 创建命令处理器（幂等）
@@ -265,6 +273,7 @@ class AnamnesisPlugin(Star):
                     memory_processor=self.initializer.memory_processor,
                     initialization_status_callback=self._get_initialization_status_message,
                     data_dir=self._data_dir,
+                    user_profile_manager=self.user_profile_manager,
                 )
 
             self._register_agent_tools_if_needed()
@@ -272,7 +281,7 @@ class AnamnesisPlugin(Star):
         return True
 
     def _register_agent_tools_if_needed(self) -> None:
-        """在核心组件就绪后注册 Agent 工具（回忆/写入）。"""
+        """在核心组件就绪后注册 Agent 工具（回忆/写入/删除）。"""
         if self._llm_tools_registered:
             return
         if not self.initializer.memory_engine or not self.initializer.memory_processor:
@@ -294,6 +303,15 @@ class AnamnesisPlugin(Star):
                     config_manager=self.config_manager,
                     memory_engine=self.initializer.memory_engine,
                     memory_processor=self.initializer.memory_processor,
+                )
+            )
+        if self.config_manager.get("agent_tools.enable_forget_tool", False):
+            tools.append(
+                MemoryForgetTool(
+                    context=self.context,
+                    config_manager=self.config_manager,
+                    memory_engine=self.initializer.memory_engine,
+                    user_profile_manager=getattr(self, "user_profile_manager", None),
                 )
             )
 
@@ -481,6 +499,50 @@ class AnamnesisPlugin(Star):
 
         async for message in self.command_handler.handle_forget(event, doc_id):
             yield message
+
+    @anam.command("profile")
+    async def profile(
+        self, event: AstrMessageEvent
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        """Show the calling user's own long-term profile."""
+        ready, message = await self._ensure_plugin_ready()
+        if not ready:
+            yield event.plain_result(message)
+            return
+        if not is_event_memory_allowed(self.config_manager, event):
+            yield event.plain_result("当前用户无记忆访问权限。")
+            return
+        if self.user_profile_manager is None:
+            yield event.plain_result("用户档案尚未就绪。")
+            return
+        facts = await self.user_profile_manager.get_profile(event)
+        if not facts:
+            yield event.plain_result("当前用户没有档案条目。")
+            return
+        lines = ["当前用户档案："]
+        lines.extend(
+            f"- {fact['profile_key']} [{fact['category']}]：{fact['value']}"
+            for fact in facts
+        )
+        yield event.plain_result("\n".join(lines))
+
+    @anam.command("profile-clear")
+    async def profile_clear(
+        self, event: AstrMessageEvent, key: str = ""
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        """Delete one profile key, or the calling user's entire profile."""
+        ready, message = await self._ensure_plugin_ready()
+        if not ready:
+            yield event.plain_result(message)
+            return
+        if not is_event_memory_allowed(self.config_manager, event):
+            yield event.plain_result("当前用户无记忆访问权限。")
+            return
+        if self.user_profile_manager is None:
+            yield event.plain_result("用户档案尚未就绪。")
+            return
+        count = await self.user_profile_manager.delete_profile(event, key or None)
+        yield event.plain_result(f"已删除 {count} 条当前用户档案。")
 
     @permission_type(PermissionType.ADMIN)
     @anam.command("rebuild-index")

@@ -474,6 +474,35 @@ async def test_storage_task_does_not_retain_source_below_threshold(
 
 
 @pytest.mark.asyncio
+async def test_profile_extraction_failure_does_not_retry_saved_memory(
+    handler, memory_engine, conversation_manager
+):
+    """An optional profile failure must not re-summarize an already saved window."""
+    from astrbot_plugin_anamnesis.core.models.conversation_models import Message
+
+    profile = Mock()
+    profile.update_from_messages = AsyncMock(side_effect=RuntimeError("profile LLM failed"))
+    handler._memory_reflection.user_profile_manager = profile
+    handler._memory_reflection.memory_processor.process_conversation.return_value = (
+        "summary", {"topics": []}, 0.6
+    )
+    messages = [
+        Message(id=1, session_id="s1", role="user", content="hello", sender_id="u1"),
+        Message(id=2, session_id="s1", role="assistant", content="hi", sender_id="bot"),
+    ]
+
+    await handler._memory_reflection._storage_task(
+        session_id="s1", history_messages=messages, persona_id=None,
+        start_index=0, end_index=2, retry_count=0, event=_make_event(),
+    )
+
+    memory_engine.add_memory.assert_awaited_once()
+    profile.update_from_messages.assert_awaited_once()
+    assert await conversation_manager.get_session_metadata("s1", "last_summarized_index") == 2
+    assert await conversation_manager.get_session_metadata("s1", "pending_summary") is None
+
+
+@pytest.mark.asyncio
 async def test_storage_task_skips_when_already_summarized(
     handler, conversation_manager, memory_engine
 ):

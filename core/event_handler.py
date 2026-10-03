@@ -42,6 +42,7 @@ class EventHandler:
         memory_processor: MemoryProcessor,
         conversation_manager: ConversationManager,
         consolidation_manager=None,
+        user_profile_manager=None,
     ):
         """
         初始化事件处理器
@@ -59,6 +60,7 @@ class EventHandler:
         self.memory_engine = memory_engine
         self.memory_processor = memory_processor
         self.conversation_manager = conversation_manager
+        self.user_profile_manager = user_profile_manager
 
         # 初始化子模块
         self._message_utils = MessageUtils(config_manager, conversation_manager)
@@ -73,6 +75,7 @@ class EventHandler:
             conversation_manager,
             self._message_utils,
             self._injection_adapter,
+            user_profile_manager,
         )
 
         # 后台存储任务跟踪
@@ -92,6 +95,7 @@ class EventHandler:
             self._storage_sessions_inflight,
             self._storage_state_lock,
             consolidation_manager,
+            user_profile_manager,
         )
 
     async def handle_all_group_messages(self, event: AstrMessageEvent):

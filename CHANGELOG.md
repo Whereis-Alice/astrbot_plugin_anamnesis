@@ -6,6 +6,17 @@
 
 Anamnesis 由上游插件 `astrbot_plugin_livingmemory` v2.6.1 派生而来。3.0.0 之前的历史记录原样保留在 [CHANGELOG_upstream.md](CHANGELOG_upstream.md)，其中的命令名与标识符均为旧版，不适用于本插件。
 
+## 3.2.0
+
+### 新增
+
+- **用户个人档案（Beta，默认关闭）**：独立于 Top-K 长期记忆检索，按平台与发送者隔离，只从本人原话抽取明确事实；稳定事实始终可在检索超时或关闭时临时注入，临时状态有有效期。支持事实纠错覆盖、`/anam profile` 查看和 `/anam profile-clear [key]` 删除。对应上游需求 [#276](https://github.com/lxfight-s-Astrbot-Plugins/astrbot_plugin_livingmemory/issues/276)。
+- **Agent 删除记忆工具（默认关闭）**：`anamnesis_forget_memory` 仅接受准确 ID，校验白名单、记忆作用域与人格；`/anam forget` 与工具删除后会清除来源于该记忆的档案条目。
+
+### 优化
+
+- 对比上游近期变更后，保留已有的异步 FAISS 持久化、表达式索引、多行 JSON 修复与提示词缓存；补强适合本分支的 Mixin 宿主接口契约。
+
 ## 3.1.1
 
 ### 修复

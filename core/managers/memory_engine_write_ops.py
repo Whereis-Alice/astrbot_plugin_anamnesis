@@ -13,9 +13,31 @@ import json
 from astrbot.api import logger
 import time
 
+import aiosqlite
+from collections import OrderedDict
+
+from ...storage.atom_store import AtomStore
+
 
 class MemoryEngineWriteOpsMixin:
-    """MemoryEngine 拆分模块：MemoryEngineWriteOpsMixin"""
+    """写操作与缓存；下列注解声明 MemoryEngine 提供的共享状态。"""
+
+    # 仅作类型声明，不赋默认值；共享状态始终由 MemoryEngine 持有。
+    db_connection: aiosqlite.Connection | None
+    config: dict[str, Any]
+    faiss_db: Any
+    atom_enabled: bool
+    atom_store: AtomStore | None
+    hybrid_retriever: Any | None
+    dual_route_retriever: Any | None
+    graph_memory_manager: Any | None
+    _search_cache_enabled: bool
+    _search_cache_ttl: float
+    _search_cache_max_size: int
+    _search_cache_generation: int
+    _search_cache: OrderedDict[tuple[Any, ...], tuple[float, list[HybridResult]]]
+    _write_op_max_retries: int
+
     async def _create_write_ops_table(self) -> None:
         """Create the resumable write-operation log."""
         if self.db_connection is None:

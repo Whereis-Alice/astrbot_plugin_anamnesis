@@ -40,6 +40,7 @@ class MemoryReflection:
         storage_sessions_inflight: set[str],
         storage_state_lock: asyncio.Lock,
         consolidation_manager=None,
+        user_profile_manager=None,
     ):
         """
         初始化记忆反思模块
@@ -66,6 +67,7 @@ class MemoryReflection:
         self._storage_sessions_inflight = storage_sessions_inflight
         self._storage_state_lock = storage_state_lock
         self.consolidation_manager = consolidation_manager
+        self.user_profile_manager = user_profile_manager
         self._shutting_down = False
 
     def _schedule_consolidation(self) -> None:
@@ -310,6 +312,7 @@ class MemoryReflection:
                                     resolve_memory_scope(self.config_manager, event)
                                     or session_id
                                 ),
+                                event=event,
                             )
                         )
                     except Exception:
@@ -335,6 +338,7 @@ class MemoryReflection:
         end_index: int,
         retry_count: int,
         memory_scope: str | None | object = _DEFAULT_MEMORY_SCOPE,
+        event: AstrMessageEvent | None = None,
     ):
         """后台存储任务"""
         from ..utils import OperationContext
@@ -444,7 +448,7 @@ class MemoryReflection:
                         if importance >= source_threshold
                         else None
                     )
-                    await self.memory_engine.add_memory(
+                    memory_id = await self.memory_engine.add_memory(
                         content=content,
                         session_id=memory_scope,
                         persona_id=persona_id,
@@ -457,6 +461,24 @@ class MemoryReflection:
                     logger.info(
                         f"[{session_id}] 成功存储对话记忆（{len(history_messages)}条消息，重要性={importance:.2f}）"
                     )
+
+                    if self.user_profile_manager is not None and event is not None and memory_id is not None:
+                        try:
+                            await self.user_profile_manager.update_from_messages(
+                                event,
+                                history_messages,
+                                self.memory_processor,
+                                source_memory_id=memory_id,
+                            )
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception:
+                            # 普通记忆已落盘，档案提取失败不可重试整个总结窗口。
+                            logger.warning(
+                                "[%s] 用户档案提取失败，已保留普通记忆",
+                                session_id,
+                                exc_info=True,
+                            )
 
                 # 成功：更新已总结的位置，清除待处理记录
                 if self.conversation_manager:

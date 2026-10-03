@@ -124,8 +124,24 @@ Anamnesis 的默认配置已经适合大多数场景。真正需要调整的通�
 | --- | --- | --- |
 | `agent_tools.enable_recall_tool` | `true` | 注册 `anamnesis_recall_memory`，允许 Agent 主动检索长期记忆 |
 | `agent_tools.enable_memorize_tool` | `false` | 注册 `anamnesis_memorize_memory`，允许 Agent 主动写入长期记忆 |
+| `agent_tools.enable_forget_tool` | `false` | 注册 `anamnesis_forget_memory`，仅按当前作用域中的准确记忆 ID 删除；建议先用主动回忆工具获取 ID |
 
 主动写入工具更强，也更需要模型自律。建议先只开启主动回忆，确认效果稳定后再启用主动写入。
+
+## 用户个人档案（Beta）
+
+用户档案独立保存在 `conversations.db`，不参与 Top-K 排序；开启后会在普通记忆总结成功后，额外调用一次 LLM 从**当前发送者本人**的原话提取明确事实。每轮使用临时内容注入，普通记忆检索关闭或超时时仍可使用。`/new` 和 `/reset` 只清理短期对话，不会删除档案或长期记忆。
+
+| 配置项 | 默认 | 说明 |
+| --- | --- | --- |
+| `user_profile.enabled` | `false` | 开关；关闭时不提取、不注入，也不会额外调用 LLM |
+| `user_profile.max_items` | `40` | 每名用户最多保留的档案事实数 |
+| `user_profile.max_injection_chars` | `3000` | 单轮档案注入字符上限 |
+| `user_profile.volatile_ttl_days` | `7` | 当前状态等临时事实的有效天数 |
+| `user_profile.extraction_max_chars` | `12000` | 单次提取读取的本人发言上限 |
+| `user_profile.llm_max_retries` | `1` | 档案提取 LLM 的额外重试次数 |
+
+`/anam profile` 查看当前用户的档案，`/anam profile-clear [key]` 删除指定条目或全部条目（不填 `key`）。这些命令在关闭档案功能后仍可用于查看或删除已经保存的数据。群聊中查看档案会公开回复，请在私聊中使用。`/anam forget <id>` 是管理员按 ID 删除普通记忆的命令；启用 Agent 删除工具后，模型也可在用户明确请求时按 ID 删除。两条显式删除路径都会清理来源于该记忆的档案条目。
 
 ## 图记忆与原子化
 

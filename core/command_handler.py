@@ -87,6 +87,7 @@ class CommandHandler:
         memory_processor=None,
         initialization_status_callback=None,
         data_dir: str | None = None,
+        user_profile_manager=None,
     ):
         """
         初始化命令处理器
@@ -109,6 +110,7 @@ class CommandHandler:
         self._memory_processor = memory_processor
         self.get_initialization_status = initialization_status_callback
         self.data_dir = data_dir
+        self.user_profile_manager = user_profile_manager
 
     @staticmethod
     def _format_error_message(
@@ -289,6 +291,11 @@ class CommandHandler:
         try:
             success = await self.memory_engine.delete_memory(doc_id)
             if success:
+                if self.user_profile_manager is not None:
+                    try:
+                        await self.user_profile_manager.delete_by_source_memory(doc_id)
+                    except Exception:
+                        logger.warning("记忆已删除，但关联用户档案清理失败", exc_info=True)
                 yield event.plain_result(t("forget.success", id=doc_id))
             else:
                 yield event.plain_result(t("forget.not_found", id=doc_id))

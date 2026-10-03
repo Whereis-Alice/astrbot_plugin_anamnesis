@@ -3,7 +3,11 @@
 from unittest.mock import Mock
 
 from astrbot_plugin_anamnesis.core.base.config_manager import ConfigManager
-from astrbot_plugin_anamnesis.core.tools import MemoryMemorizeTool, MemorySearchTool
+from astrbot_plugin_anamnesis.core.tools import (
+    MemoryForgetTool,
+    MemoryMemorizeTool,
+    MemorySearchTool,
+)
 from astrbot_plugin_anamnesis.main import (
     AnamnesisPlugin,
     _parse_version,
@@ -153,3 +157,30 @@ def test_register_llm_tools_respects_all_tools_disabled():
 
     plugin.context.add_llm_tools.assert_not_called()
     assert plugin._llm_tools_registered is True
+
+
+def test_register_llm_tools_forget_is_opt_in():
+    plugin = AnamnesisPlugin.__new__(AnamnesisPlugin)
+    plugin.context = Mock()
+    plugin.config_manager = ConfigManager(
+        {
+            "agent_tools": {
+                "enable_recall_tool": False,
+                "enable_memorize_tool": False,
+                "enable_forget_tool": True,
+            }
+        }
+    )
+    plugin.initializer = Mock()
+    plugin.initializer.memory_engine = Mock()
+    plugin.initializer.memory_processor = Mock()
+    plugin.user_profile_manager = Mock()
+    plugin._llm_tools_registered = False
+
+    plugin._register_agent_tools_if_needed()
+
+    plugin.context.add_llm_tools.assert_called_once()
+    tools = plugin.context.add_llm_tools.call_args.args
+    assert len(tools) == 1
+    assert isinstance(tools[0], MemoryForgetTool)
+    assert tools[0].user_profile_manager is plugin.user_profile_manager

@@ -12,7 +12,12 @@ from ..core.models.graph_models import GraphEdge, GraphEntry, GraphNode
 
 
 class GraphStoreWriteMixin:
-    """GraphStore 拆分模块：GraphStoreWriteMixin"""
+    """图写入；连接工厂与批量常量由 GraphStore 提供。"""
+
+    # 仅作类型声明；本分支没有上游后续引入的 _node_fts_available。
+    _SQLITE_BATCH_SIZE: int
+    person_alias_limit: int
+
     async def initialize(self) -> None:
         """Create tables used by the graph-memory layer."""
         async with self._connect() as db:

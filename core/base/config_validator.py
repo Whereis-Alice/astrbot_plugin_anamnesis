@@ -161,6 +161,20 @@ class AgentToolsConfig(BaseModel):
     enable_memorize_tool: bool = Field(
         default=False, description="是否启用 Agent 主动记忆写入工具"
     )
+    enable_forget_tool: bool = Field(
+        default=False, description="是否启用 Agent 删除长期记忆工具"
+    )
+
+
+class UserProfileConfig(BaseModel):
+    """Independent per-user fact profile, disabled until explicitly enabled."""
+
+    enabled: bool = Field(default=False, description="是否维护和注入用户个人档案")
+    max_items: int = Field(default=40, ge=1, le=200)
+    max_injection_chars: int = Field(default=3000, ge=500, le=20000)
+    volatile_ttl_days: int = Field(default=7, ge=1, le=3650)
+    extraction_max_chars: int = Field(default=12000, ge=1000, le=50000)
+    llm_max_retries: int = Field(default=1, ge=0, le=3)
 
 
 class ForgettingAgentConfig(BaseModel):
@@ -495,6 +509,7 @@ class AnamnesisConfig(BaseModel):
         default_factory=ReflectionEngineConfig
     )
     agent_tools: AgentToolsConfig = Field(default_factory=AgentToolsConfig)
+    user_profile: UserProfileConfig = Field(default_factory=UserProfileConfig)
     forgetting_agent: ForgettingAgentConfig = Field(
         default_factory=ForgettingAgentConfig
     )

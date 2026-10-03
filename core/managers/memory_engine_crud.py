@@ -15,9 +15,27 @@ from astrbot.api import logger
 from ..memory_transfer import memory_import_key
 import time
 
+import aiosqlite
+
+from ...storage.alias_store import AliasStore
+from ...storage.atom_store import AtomStore
+
 
 class MemoryEngineCrudMixin:
-    """MemoryEngine 拆分模块：MemoryEngineCrudMixin"""
+    """记忆增删改查；下列注解声明 MemoryEngine 提供的共享状态。"""
+
+    # 仅作类型声明，不赋默认值；共享状态始终由 MemoryEngine 持有。
+    db_connection: aiosqlite.Connection | None
+    config: dict[str, Any]
+    faiss_db: Any
+    atom_enabled: bool
+    atom_store: AtomStore | None
+    hybrid_retriever: Any | None
+    dual_route_retriever: Any | None
+    graph_memory_manager: Any | None
+    alias_store: AliasStore | None
+    _access_update_lock: asyncio.Lock
+    _access_update_connection: aiosqlite.Connection | None
 
     @staticmethod
     def _is_sqlite_lock_error(error: BaseException) -> bool:

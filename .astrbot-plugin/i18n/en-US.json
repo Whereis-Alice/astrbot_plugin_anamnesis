@@ -245,6 +245,16 @@
         "hint": "Store original messages separately when summary importance reaches this value, enabling verification, detailed Agent recall, and re-summarization. Range 0-1; 1 keeps only maximum-importance memories."
       }
     },
+    "user_profile": {
+      "description": "User Profiles (Beta)",
+      "hint": "Keep explicit per-user facts outside top-k memory retrieval. When enabled, each successful summary makes one additional LLM extraction call.",
+      "enabled": {"description": "Enable User Profiles", "hint": "When off, no profiles are extracted or injected."},
+      "max_items": {"description": "Maximum Facts per User"},
+      "max_injection_chars": {"description": "Maximum Injection Characters"},
+      "volatile_ttl_days": {"description": "Temporary Fact Lifetime (Days)", "hint": "Temporary status facts stop being injected after this many days; stable preferences remain."},
+      "extraction_max_chars": {"description": "Maximum Extraction Source Characters"},
+      "llm_max_retries": {"description": "Additional LLM Extraction Retries"}
+    },
     "agent_tools": {
       "description": "Agent Active Memory Tools",
       "hint": "Control whether AstrBot Agent receives tools for active long-term memory recall and writing.",
@@ -255,6 +265,10 @@
       "enable_memorize_tool": {
         "description": "Enable Active Memory Write Tool",
         "hint": "When enabled, registers anamnesis_memorize_memory so the Agent can actively write long-term memories."
+      },
+      "enable_forget_tool": {
+        "description": "Enable Active Memory Delete Tool",
+        "hint": "When enabled, registers anamnesis_forget_memory. Only exact memory IDs in the current scope can be deleted."
       }
     },
     "graph_memory": {

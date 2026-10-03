@@ -10,7 +10,8 @@ from ..core.utils.number_utils import safe_float
 
 
 class GraphStoreSnapshotMixin:
-    """GraphStore 拆分模块：GraphStoreSnapshotMixin"""
+    """图快照；连接工厂与 JSON 解析器由 GraphStore 提供，无额外共享状态。"""
+
     async def get_subgraph_for_memories(
         self,
         memory_ids: list[int],

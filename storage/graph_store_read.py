@@ -10,7 +10,11 @@ from typing import Any
 
 
 class GraphStoreReadMixin:
-    """GraphStore 拆分模块：GraphStoreReadMixin"""
+    """图读取；连接工厂与批量常量由 GraphStore 提供。"""
+
+    # 仅作类型声明；不覆盖 GraphStore 上的实际常量。
+    _NODE_TOKEN_QUERY_BATCH_SIZE: int
+
     async def list_vector_doc_ids(self) -> list[int]:
         async with self._connect() as db:
             cursor = await db.execute(
