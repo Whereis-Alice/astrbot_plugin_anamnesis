@@ -5,12 +5,16 @@ import { ProfilePage } from "../../pages/dashboard/modules/profile-page.js";
 
 function fakeElement() {
   const classes = new Set();
+  const listeners = {};
   return {
     innerHTML: "",
     textContent: "",
     value: "",
     disabled: false,
     className: "",
+    listeners,
+    addEventListener(type, handler) { listeners[type] = handler; },
+    closest() { return null; },
     classList: {
       add(name) { classes.add(name); },
       toggle(name, enabled) {
@@ -24,9 +28,11 @@ function fakeElement() {
 
 function setup(api) {
   const ids = [
-    "profile-refresh", "profile-status", "profile-scope-note", "profile-scope",
+    "profile-refresh", "profile-reset", "profile-status", "profile-scope-note", "profile-scope",
     "profile-session", "profile-key", "profiles-body", "profile-pagination-info",
     "profile-prev", "profile-next", "peek-badge", "peek-title",
+    "peek-body", "profile-editor-form", "profile-edit-value", "profile-edit-category",
+    "profile-edit-confidence", "profile-edit-expires", "profile-editor-save", "profile-editor-delete",
   ];
   const elements = Object.fromEntries(ids.map((id) => [id, fakeElement()]));
   globalThis.document = { getElementById: (id) => elements[id] || null };
@@ -92,6 +98,49 @@ test("profile page lists scoped facts, escapes stored text, and paginates", asyn
     assert.match(elements["profile-scope-note"].textContent, /profile.scopeMode.session/);
     assert.equal(elements["profile-prev"].disabled, true);
     assert.equal(elements["profile-next"].disabled, false);
+  } finally {
+    cleanup();
+  }
+});
+
+test("profile rows expose recent group context and editor saves exact scope/key", async () => {
+  const posts = [];
+  const { page, state, elements, peek } = setup({
+    async get() {
+      return {
+        ...response,
+        items: [{ ...response.items[0], source_group_id: "42", source_group_name: "夜猫子游戏群", source_sender_name: "Alice" }],
+        total: 1,
+      };
+    },
+    async post(path, body, options) {
+      posts.push({ path, body, options });
+      return { profile_key: body.profile_key, value: body.value };
+    },
+  });
+  try {
+    await page.fetch();
+    assert.match(elements["profiles-body"].innerHTML, /夜猫子游戏群/);
+    const item = state.profile.items[0];
+    page.openItem(item);
+    assert.equal(peek.opens, 1);
+    elements["profile-edit-value"].value = "new value";
+    elements["profile-edit-category"].value = "preference";
+    elements["profile-edit-confidence"].value = "0.91";
+    elements["profile-edit-expires"].value = "";
+    await page.saveItem(item);
+    assert.deepEqual(posts[0], {
+      path: "profiles/update",
+      body: {
+        profile_scope: "platform:user:chat-A",
+        profile_key: "favorite_food",
+        value: "new value",
+        category: "preference",
+        confidence: 0.91,
+        expires_at: null,
+      },
+      options: { retries: 0 },
+    });
   } finally {
     cleanup();
   }

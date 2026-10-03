@@ -321,6 +321,10 @@
                 <i data-lucide="refresh-cw" aria-hidden="true"></i>
                 <span data-i18n="common.refresh">Refresh</span>
               </button>
+              <button class="btn btn-ghost btn-sm" id="profile-reset" data-i18n-title="profile.resetTitle">
+                <i data-lucide="rotate-ccw" aria-hidden="true"></i>
+                <span data-i18n="profile.reset">Reset filters</span>
+              </button>
             </div>
           </header>
           <div class="page-body profiles-page-body">
@@ -339,19 +343,15 @@
                 <table class="data-table profile-table" id="profiles-table">
                   <thead>
                     <tr>
-                      <th data-i18n="profile.key">Key</th>
-                      <th data-i18n="profile.category">Category</th>
+                      <th data-i18n="profile.fact">Profile</th>
                       <th data-i18n="profile.value">Value</th>
-                      <th data-i18n="profile.scope">Scope</th>
-                      <th data-i18n="profile.sourceSession">Source session</th>
-                      <th data-i18n="profile.confidence">Confidence</th>
+                      <th data-i18n="profile.recentChat">Recent group / user</th>
                       <th data-i18n="profile.updated">Updated</th>
-                      <th data-i18n="profile.expires">Expires</th>
                       <th class="profile-action-cell" data-i18n="table.actions">Actions</th>
                     </tr>
                   </thead>
                   <tbody id="profiles-body">
-                    <tr><td colspan="9" class="table-empty" data-i18n="common.loading">Loading...</td></tr>
+                    <tr><td colspan="5" class="table-empty" data-i18n="common.loading">Loading...</td></tr>
                   </tbody>
                 </table>
               </div>

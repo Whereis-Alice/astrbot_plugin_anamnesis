@@ -67,6 +67,9 @@ export class ProfilePage {
         confidence: item.confidence,
         source_memory_id: item.source_memory_id,
         source_session_id: item.source_session_id || "",
+        source_group_id: item.source_group_id || "",
+        source_group_name: item.source_group_name || "",
+        source_sender_name: item.source_sender_name || "",
         updated_at: item.updated_at,
         expires_at: item.expires_at,
       }));
@@ -188,7 +191,7 @@ export class ProfilePage {
 
   _renderEmpty(message = this.t("common.noData")) {
     const body = document.getElementById("profiles-body");
-    if (body) body.innerHTML = '<tr><td colspan="9" class="table-empty">' + esc(message) + "</td></tr>";
+    if (body) body.innerHTML = '<tr><td colspan="5" class="table-empty">' + esc(message) + "</td></tr>";
   }
 
   _renderTable() {
@@ -200,20 +203,16 @@ export class ProfilePage {
       return;
     }
 
-    body.innerHTML = items.map((item) => {
-      const sourceSession = item.source_session_id || this.t("table.na");
-      const expires = item.expires_at == null || item.expires_at === ""
-        ? this.t("profile.never")
-        : this._formatTime(item.expires_at);
-      return '<tr>' +
-        '<td class="profile-key-cell cell-mono" title="' + esc(item.profile_key) + '">' + esc(item.profile_key) + "</td>" +
-        '<td><span class="type-tag">' + esc(item.category) + "</span></td>" +
+    body.innerHTML = items.map((item, index) => {
+      const groupName = item.source_group_name || (item.source_group_id
+        ? this.t("profile.groupWithId", item.source_group_id)
+        : this.t("profile.privateOrUnknown"));
+      const senderName = item.source_sender_name || this.t("table.na");
+      return '<tr class="profile-row" tabindex="0" data-profile-index="' + index + '" aria-label="' + esc(item.profile_key) + '">' +
+        '<td class="profile-fact-cell" title="' + esc(item.profile_key) + '"><strong class="profile-key-cell cell-mono">' + esc(item.profile_key) + '</strong><span class="type-tag">' + esc(item.category) + "</span></td>" +
         '<td class="profile-value-cell" title="' + esc(item.value) + '">' + esc(item.value) + "</td>" +
-        '<td class="profile-scope-cell cell-mono" title="' + esc(item.profile_scope) + '">' + esc(item.profile_scope || this.t("table.na")) + "</td>" +
-        '<td class="profile-session-cell cell-mono" title="' + esc(sourceSession) + '">' + esc(sourceSession) + "</td>" +
-        '<td class="cell-mono">' + esc(this._formatConfidence(item.confidence)) + "</td>" +
-        '<td class="cell-mono">' + esc(this._formatTime(item.updated_at)) + "</td>" +
-        '<td class="cell-mono">' + esc(expires) + "</td>" +
+        '<td class="profile-chat-cell" title="' + esc(groupName) + '"><strong>' + esc(groupName) + '</strong><small>' + esc(senderName) + "</small></td>" +
+        '<td class="cell-mono profile-updated-cell">' + esc(this._formatTime(item.updated_at)) + "</td>" +
         '<td class="profile-action-cell"><button type="button" class="btn btn-danger btn-sm profile-delete" data-profile-scope="' + esc(item.profile_scope) + '" data-profile-key="' + esc(item.profile_key) + '" data-i18n-title="profile.deleteTitle" title="' + esc(this.t("profile.deleteTitle")) + '"><i data-lucide="trash-2" aria-hidden="true"></i><span>' + esc(this.t("profile.delete")) + "</span></button></td>" +
         "</tr>";
     }).join("");
@@ -229,6 +228,117 @@ export class ProfilePage {
     const next = document.getElementById("profile-next");
     if (previous) previous.disabled = profile.offset <= 0;
     if (next) next.disabled = !profile.hasMore;
+  }
+
+  _formatDateInput(value) {
+    const numeric = Number(value);
+    if (!Number.isFinite(numeric) || numeric <= 0) return "";
+    const date = new Date((numeric < 100000000000 ? numeric * 1000 : numeric));
+    if (Number.isNaN(date.getTime())) return "";
+    const pad = (number) => String(number).padStart(2, "0");
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
+      `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+  }
+
+  openItem(item) {
+    if (!item || !this.peek) return;
+    this._activeItem = item;
+    const badge = document.getElementById("peek-badge");
+    const title = document.getElementById("peek-title");
+    const body = document.getElementById("peek-body");
+    if (!body) return;
+    if (badge) badge.textContent = this.t("profile.detailBadge");
+    if (title) title.textContent = item.profile_key || this.t("profile.editTitle");
+    const groupName = item.source_group_name || (item.source_group_id
+      ? this.t("profile.groupWithId", item.source_group_id)
+      : this.t("profile.privateOrUnknown"));
+    body.innerHTML = `
+      <form class="profile-editor" id="profile-editor-form">
+        <div class="profile-editor-section">
+          <div class="peek-section-title">${esc(this.t("profile.editSection"))}</div>
+          <label class="form-label" for="profile-edit-key">${esc(this.t("profile.key"))}</label>
+          <input class="input" id="profile-edit-key" value="${esc(item.profile_key)}" readonly>
+          <label class="form-label" for="profile-edit-category">${esc(this.t("profile.category"))}</label>
+          <select class="select input" id="profile-edit-category">
+            ${["identity", "preference", "status", "task_preference", "constraint"].map((category) =>
+              `<option value="${category}"${category === item.category ? " selected" : ""}>${esc(this.t("profile.category." + category))}</option>`).join("")}
+          </select>
+          <label class="form-label" for="profile-edit-value">${esc(this.t("profile.value"))}</label>
+          <textarea class="input textarea" id="profile-edit-value" rows="5" maxlength="300">${esc(item.value)}</textarea>
+          <label class="form-label" for="profile-edit-confidence">${esc(this.t("profile.confidence"))}</label>
+          <input class="input" id="profile-edit-confidence" type="number" min="0" max="1" step="0.01" value="${esc(item.confidence == null ? "" : item.confidence)}">
+          <label class="form-label" for="profile-edit-expires">${esc(this.t("profile.expires"))}</label>
+          <input class="input" id="profile-edit-expires" type="datetime-local" value="${esc(this._formatDateInput(item.expires_at))}">
+          <small class="profile-editor-hint">${esc(this.t("profile.expiresHint"))}</small>
+        </div>
+        <div class="profile-editor-section profile-source-details">
+          <div class="peek-section-title">${esc(this.t("profile.sourceDetails"))}</div>
+          <div class="profile-detail-row"><span>${esc(this.t("profile.recentChat"))}</span><strong>${esc(groupName)}</strong></div>
+          <div class="profile-detail-row"><span>${esc(this.t("profile.sourceUser"))}</span><strong>${esc(item.source_sender_name || this.t("table.na"))}</strong></div>
+          <div class="profile-detail-row"><span>${esc(this.t("profile.scope"))}</span><code>${esc(item.profile_scope || this.t("table.na"))}</code></div>
+          <div class="profile-detail-row"><span>${esc(this.t("profile.sourceSession"))}</span><code>${esc(item.source_session_id || this.t("table.na"))}</code></div>
+          <div class="profile-detail-row"><span>${esc(this.t("profile.sourceMemory"))}</span><code>${esc(item.source_memory_id == null ? this.t("table.na") : item.source_memory_id)}</code></div>
+          <div class="profile-detail-row"><span>${esc(this.t("profile.updated"))}</span><strong>${esc(this._formatTime(item.updated_at))}</strong></div>
+        </div>
+        <div class="profile-editor-actions">
+          <button type="button" class="btn btn-danger" id="profile-editor-delete"><i data-lucide="trash-2" aria-hidden="true"></i><span>${esc(this.t("profile.delete"))}</span></button>
+          <button type="submit" class="btn btn-primary" id="profile-editor-save"><i data-lucide="save" aria-hidden="true"></i><span>${esc(this.t("common.save"))}</span></button>
+        </div>
+      </form>`;
+    this.peek.open(true);
+    const form = document.getElementById("profile-editor-form");
+    if (form) form.addEventListener("submit", (event) => {
+      event.preventDefault();
+      this.saveItem(item);
+    });
+    const deleteButton = document.getElementById("profile-editor-delete");
+    if (deleteButton) deleteButton.addEventListener("click", () => this.deleteItem(item.profile_scope, item.profile_key));
+    if (typeof window !== "undefined" && typeof window.lmHydrateIcons === "function") {
+      window.lmHydrateIcons();
+    }
+  }
+
+  async saveItem(item) {
+    if (!item || this._saving) return;
+    const value = document.getElementById("profile-edit-value")?.value?.trim() || "";
+    const category = document.getElementById("profile-edit-category")?.value || "";
+    const confidenceText = document.getElementById("profile-edit-confidence")?.value || "";
+    const expiresText = document.getElementById("profile-edit-expires")?.value || "";
+    const confidence = Number(confidenceText);
+    if (!value || !category || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+      this._showToast(this.t("profile.invalidFields"), true);
+      return;
+    }
+    let expiresAt = null;
+    if (expiresText) {
+      const millis = Date.parse(expiresText);
+      if (!Number.isFinite(millis)) {
+        this._showToast(this.t("profile.invalidExpiry"), true);
+        return;
+      }
+      expiresAt = millis / 1000;
+    }
+    this._saving = true;
+    const saveButton = document.getElementById("profile-editor-save");
+    if (saveButton) saveButton.disabled = true;
+    try {
+      await this.api.post("profiles/update", {
+        profile_scope: item.profile_scope,
+        profile_key: item.profile_key,
+        value,
+        category,
+        confidence,
+        expires_at: expiresAt,
+      }, { retries: 0 });
+      this._showToast(this.t("profile.updateSuccess"));
+      this.peek.close();
+      await this.fetch();
+    } catch (error) {
+      this._showToast(error && error.message ? error.message : this.t("profile.updateFailed"), true);
+    } finally {
+      this._saving = false;
+      if (saveButton) saveButton.disabled = false;
+    }
   }
 
   async deleteItem(scope, key) {
@@ -280,6 +390,7 @@ export class ProfilePage {
     const session = document.getElementById("profile-session");
     const key = document.getElementById("profile-key");
     const refresh = document.getElementById("profile-refresh");
+    const reset = document.getElementById("profile-reset");
     const previous = document.getElementById("profile-prev");
     const next = document.getElementById("profile-next");
     const body = document.getElementById("profiles-body");
@@ -297,6 +408,12 @@ export class ProfilePage {
       this._resetAndFetch();
     }, 300));
     if (refresh) refresh.addEventListener("click", () => this.fetch());
+    if (reset) reset.addEventListener("click", () => {
+      this.state.profile.scope = "";
+      this.state.profile.sessionId = "";
+      this.state.profile.key = "";
+      this._resetAndFetch();
+    });
     if (previous) previous.addEventListener("click", () => {
       if (this.state.profile.offset <= 0) return;
       this.state.profile.offset = Math.max(0, this.state.profile.offset - this.state.profile.limit);
@@ -309,8 +426,20 @@ export class ProfilePage {
     });
     if (body) body.addEventListener("click", (event) => {
       const button = event.target.closest(".profile-delete");
-      if (!button) return;
-      this.deleteItem(button.dataset.profileScope, button.dataset.profileKey);
+      if (button) {
+        event.stopPropagation();
+        this.deleteItem(button.dataset.profileScope, button.dataset.profileKey);
+        return;
+      }
+      const row = event.target.closest(".profile-row");
+      if (row) this.openItem(this.state.profile.items[Number(row.dataset.profileIndex)]);
+    });
+    if (body) body.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      const row = event.target.closest(".profile-row");
+      if (!row || event.target.closest("button")) return;
+      event.preventDefault();
+      this.openItem(this.state.profile.items[Number(row.dataset.profileIndex)]);
     });
   }
 }

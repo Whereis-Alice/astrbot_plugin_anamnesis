@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import re
 import time
 from typing import Any
@@ -14,6 +15,7 @@ from ..memory_scope import parse_value_list, resolve_event_identity
 from ..utils import extract_json_from_response
 
 _CATEGORIES = {"identity", "preference", "status", "task_preference", "constraint"}
+_CATEGORY_ORDER = ("identity", "preference", "status", "task_preference", "constraint")
 _KEY_PATTERN = re.compile(r"^[\w.-]{1,64}$", re.UNICODE)
 _CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f]+")
 
@@ -30,6 +32,50 @@ class UserProfileManager:
         self.store = conversation_manager.store
         self._schema_lock = asyncio.Lock()
         self._schema_ready = False
+
+    @staticmethod
+    def _clean_context_value(value: Any, *, max_length: int = 200) -> str | None:
+        """Keep event-derived display metadata safe and compact for WebUI use."""
+        if value is None:
+            return None
+        if not isinstance(value, (str, int, float)):
+            return None
+        text = _CONTROL_PATTERN.sub(" ", str(value)).strip()
+        if text.casefold() in {"n/a", "na", "unknown", "none", "null"}:
+            return None
+        return text[:max_length] or None
+
+    def _event_source_context(self, event: Any) -> dict[str, str | None]:
+        """Resolve the latest labels available on an AstrBot event."""
+        session_id = self._clean_context_value(
+            getattr(event, "unified_msg_origin", ""), max_length=512
+        )
+        group_id = None
+        group_name = None
+        message_obj = getattr(event, "message_obj", None)
+        group = getattr(message_obj, "group", None)
+        if group is not None:
+            group_id = self._clean_context_value(getattr(group, "group_id", None))
+            group_name = self._clean_context_value(getattr(group, "group_name", None))
+        getter = getattr(event, "get_group_id", None)
+        if not group_id and callable(getter):
+            try:
+                group_id = self._clean_context_value(getter())
+            except Exception:
+                group_id = None
+        sender_name = None
+        sender_getter = getattr(event, "get_sender_name", None)
+        if callable(sender_getter):
+            try:
+                sender_name = self._clean_context_value(sender_getter())
+            except Exception:
+                sender_name = None
+        return {
+            "source_session_id": session_id,
+            "source_group_id": group_id,
+            "source_group_name": group_name,
+            "source_sender_name": sender_name,
+        }
 
     @property
     def enabled(self) -> bool:
@@ -89,11 +135,21 @@ class UserProfileManager:
                         confidence REAL NOT NULL,
                         source_memory_id INTEGER,
                         source_session_id TEXT,
+                        source_group_id TEXT,
+                        source_group_name TEXT,
+                        source_sender_name TEXT,
                         updated_at REAL NOT NULL,
                         expires_at REAL,
                         PRIMARY KEY (profile_scope, profile_key)
                     )
                 """)
+                async with connection.execute("PRAGMA table_info(user_profiles)") as cursor:
+                    existing_columns = {row[1] for row in await cursor.fetchall()}
+                for column in ("source_group_id", "source_group_name", "source_sender_name"):
+                    if column not in existing_columns:
+                        await connection.execute(
+                            f"ALTER TABLE user_profiles ADD COLUMN {column} TEXT"
+                        )
                 await connection.execute("""
                     CREATE INDEX IF NOT EXISTS idx_user_profiles_scope
                     ON user_profiles(profile_scope, expires_at, updated_at DESC)
@@ -117,7 +173,8 @@ class UserProfileManager:
         limit = int(self.config_manager.get("user_profile.max_items", 40))
         async with connection.execute(
             """SELECT profile_key, category, value, confidence, source_memory_id,
-                      source_session_id, updated_at, expires_at
+                      source_session_id, source_group_id, source_group_name,
+                      source_sender_name, updated_at, expires_at
                FROM user_profiles
                WHERE profile_scope = ? AND (expires_at IS NULL OR expires_at > ?)
                ORDER BY (expires_at IS NOT NULL) ASC, confidence DESC,
@@ -155,9 +212,11 @@ class UserProfileManager:
                 await connection.execute(
                     """INSERT INTO user_profiles
                        (profile_scope, profile_key, category, value, confidence,
-                        source_memory_id, source_session_id, updated_at, expires_at)
+                       source_memory_id, source_session_id, source_group_id,
+                       source_group_name, source_sender_name, updated_at, expires_at)
                        SELECT ?, profile_key, category, value, confidence,
-                              source_memory_id, source_session_id, updated_at, expires_at
+                              source_memory_id, source_session_id, source_group_id,
+                              source_group_name, source_sender_name, updated_at, expires_at
                        FROM user_profiles
                        WHERE profile_scope IN (?, ?) AND source_session_id = ?
                        ON CONFLICT(profile_scope, profile_key) DO NOTHING""",
@@ -229,7 +288,8 @@ class UserProfileManager:
         row_params = [*params, limit, offset]
         async with connection.execute(
             f"""SELECT profile_scope, profile_key, category, value, confidence,
-                       source_memory_id, source_session_id, updated_at, expires_at
+                       source_memory_id, source_session_id, source_group_id,
+                       source_group_name, source_sender_name, updated_at, expires_at
                 FROM user_profiles {where}
                 ORDER BY updated_at DESC, profile_scope, profile_key
                 LIMIT ? OFFSET ?""",
@@ -260,6 +320,94 @@ class UserProfileManager:
             "profile_enabled": self.enabled,
             "scope_mode": self.config_manager.get("user_profile.scope_mode", "session"),
         }
+
+    async def update_for_web(
+        self,
+        profile_scope: str,
+        profile_key: str,
+        updates: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Update one exact profile row selected in the administrator WebUI."""
+        scope = str(profile_scope or "").strip()
+        key = str(profile_key or "").strip().casefold()
+        if not scope or not _KEY_PATTERN.fullmatch(key) or not isinstance(updates, dict):
+            return None
+
+        assignments: list[str] = []
+        params: list[Any] = []
+        if "value" in updates:
+            value = _CONTROL_PATTERN.sub(" ", str(updates.get("value") or "")).strip()
+            if (
+                not value
+                or len(value) > 300
+                or "<Anamnesis-Memory" in value
+                or "</Anamnesis-Memory" in value
+            ):
+                return None
+            assignments.append("value = ?")
+            params.append(value)
+        if "category" in updates:
+            category = str(updates.get("category") or "").strip().casefold()
+            if category not in _CATEGORIES:
+                return None
+            assignments.append("category = ?")
+            params.append(category)
+        if "confidence" in updates:
+            try:
+                confidence = float(updates.get("confidence"))
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
+                return None
+            assignments.append("confidence = ?")
+            params.append(confidence)
+        if "expires_at" in updates:
+            expires_at = updates.get("expires_at")
+            if expires_at in (None, ""):
+                normalized_expiry = None
+            else:
+                try:
+                    normalized_expiry = float(expires_at)
+                except (TypeError, ValueError):
+                    return None
+                if not math.isfinite(normalized_expiry) or normalized_expiry <= 0:
+                    return None
+            assignments.append("expires_at = ?")
+            params.append(normalized_expiry)
+        if not assignments:
+            return None
+
+        if not await self._ensure_schema():
+            return None
+        connection = self.store.connection
+        if connection is None:
+            return None
+        now = time.time()
+        assignments.append("updated_at = ?")
+        params.extend((now, scope, key))
+        async with self.store._write_lock:
+            try:
+                cursor = await connection.execute(
+                    f"UPDATE user_profiles SET {', '.join(assignments)} "
+                    "WHERE profile_scope = ? AND profile_key = ?",
+                    params,
+                )
+                if cursor.rowcount != 1:
+                    await connection.rollback()
+                    return None
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+        async with connection.execute(
+            """SELECT profile_scope, profile_key, category, value, confidence,
+                      source_memory_id, source_session_id, source_group_id,
+                      source_group_name, source_sender_name, updated_at, expires_at
+               FROM user_profiles WHERE profile_scope = ? AND profile_key = ?""",
+            (scope, key),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
 
     async def delete_for_web(self, profile_scope: str, profile_key: str) -> int:
         """Delete one exact profile row selected in the administrator WebUI."""
@@ -331,7 +479,8 @@ class UserProfileManager:
         now = time.time()
         ttl_days = int(self.config_manager.get("user_profile.volatile_ttl_days", 7))
         max_items = int(self.config_manager.get("user_profile.max_items", 40))
-        source_session_id = str(getattr(event, "unified_msg_origin", "") or "")
+        source_context = self._event_source_context(event)
+        source_session_id = source_context["source_session_id"] or ""
         async with self.store._write_lock:
             try:
                 await connection.execute(
@@ -343,13 +492,17 @@ class UserProfileManager:
                     await connection.execute(
                         """INSERT INTO user_profiles
                            (profile_scope, profile_key, category, value, confidence,
-                            source_memory_id, source_session_id, updated_at, expires_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           source_memory_id, source_session_id, source_group_id,
+                           source_group_name, source_sender_name, updated_at, expires_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                            ON CONFLICT(profile_scope, profile_key) DO UPDATE SET
                              category=excluded.category, value=excluded.value,
                              confidence=excluded.confidence,
                              source_memory_id=excluded.source_memory_id,
                              source_session_id=excluded.source_session_id,
+                             source_group_id=excluded.source_group_id,
+                             source_group_name=excluded.source_group_name,
+                             source_sender_name=excluded.source_sender_name,
                              updated_at=excluded.updated_at, expires_at=excluded.expires_at""",
                         (
                             scope,
@@ -359,10 +512,25 @@ class UserProfileManager:
                             fact["confidence"],
                             source_memory_id,
                             source_session_id,
+                            source_context["source_group_id"],
+                            source_context["source_group_name"],
+                            source_context["source_sender_name"],
                             now,
                             expires,
                         ),
                     )
+                await connection.execute(
+                    """UPDATE user_profiles
+                       SET source_group_id = ?, source_group_name = ?,
+                           source_sender_name = ?
+                       WHERE profile_scope = ?""",
+                    (
+                        source_context["source_group_id"],
+                        source_context["source_group_name"],
+                        source_context["source_sender_name"],
+                        scope,
+                    ),
+                )
                 await connection.execute(
                     """DELETE FROM user_profiles WHERE profile_scope = ? AND profile_key IN (
                          SELECT profile_key FROM user_profiles WHERE profile_scope = ?
@@ -441,6 +609,34 @@ class UserProfileManager:
                 raise
         return count
 
+    async def touch_source_context(self, event: Any) -> None:
+        """Refresh the latest group/user label for an existing profile scope."""
+        scope = self.scope_for_event(event)
+        if not scope or not await self._ensure_schema():
+            return
+        context = self._event_source_context(event)
+        connection = self.store.connection
+        if connection is None:
+            return
+        async with self.store._write_lock:
+            try:
+                await connection.execute(
+                    """UPDATE user_profiles
+                       SET source_group_id = ?, source_group_name = ?,
+                           source_sender_name = ?
+                       WHERE profile_scope = ?""",
+                    (
+                        context["source_group_id"],
+                        context["source_group_name"],
+                        context["source_sender_name"],
+                        scope,
+                    ),
+                )
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+
     async def format_for_injection(self, event: Any) -> str:
         if not self.enabled:
             return ""
@@ -483,6 +679,7 @@ class UserProfileManager:
         sender_id = str(sender_getter() if callable(sender_getter) else "").strip()
         if not sender_id:
             return 0
+        await self.touch_source_context(event)
         user_lines = []
         for message in messages:
             role = (

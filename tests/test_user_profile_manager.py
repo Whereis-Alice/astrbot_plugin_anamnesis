@@ -133,6 +133,40 @@ async def test_web_listing_filters_scope_session_key_and_exact_delete(profile_ma
 
 
 @pytest.mark.asyncio
+async def test_web_listing_keeps_recent_group_context(profile_manager):
+    event = _event("alice", "qq", "qq:GroupMessage:42")
+    event.message_obj = SimpleNamespace(
+        group=SimpleNamespace(group_id="42", group_name="夜猫子游戏群")
+    )
+    await profile_manager.upsert_facts(
+        event, [_fact("favorite_game", "塞尔达")], source_memory_id=7
+    )
+    item = (await profile_manager.list_for_web())["items"][0]
+    assert item["source_group_id"] == "42"
+    assert item["source_group_name"] == "夜猫子游戏群"
+    assert item["source_sender_name"] == "alice"
+
+
+@pytest.mark.asyncio
+async def test_web_update_changes_only_exact_profile(profile_manager):
+    event = _event("alice")
+    await profile_manager.upsert_facts(
+        event, [_fact("favorite_game", "塞尔达")], source_memory_id=7
+    )
+    scope = profile_manager.scope_for_event(event)
+    updated = await profile_manager.update_for_web(
+        scope,
+        "favorite_game",
+        {"value": "马力欧", "category": "preference", "confidence": 0.88, "expires_at": None},
+    )
+    assert updated is not None
+    assert updated["value"] == "马力欧"
+    assert updated["confidence"] == 0.88
+    assert await profile_manager.update_for_web(scope, "missing", {"value": "x"}) is None
+    assert (await profile_manager.get_profile(event))[0]["value"] == "马力欧"
+
+
+@pytest.mark.asyncio
 async def test_profile_scope_platform_and_isolated_session(profile_manager):
     qq = _event("same-id", "qq", "qq:GroupMessage:42")
     telegram = _event("same-id", "telegram", "telegram:GroupMessage:42")

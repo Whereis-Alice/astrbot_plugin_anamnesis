@@ -1290,7 +1290,7 @@ class TestRouteRegistration:
         plugin = FakePlugin()
         api = PluginPageApi(plugin)
         api.register_routes()
-        assert len(plugin._api_routes) == 22
+        assert len(plugin._api_routes) == 23
 
         paths = {route for route, _, _, _ in plugin._api_routes}
         prefix = PAGE_API_PREFIX
@@ -1303,6 +1303,7 @@ class TestRouteRegistration:
         assert f"{prefix}/memories/batch-delete" in paths
         assert f"{prefix}/profiles" in paths
         assert f"{prefix}/profiles/delete" in paths
+        assert f"{prefix}/profiles/update" in paths
         assert f"{prefix}/recall/test" in paths
         assert f"{prefix}/graph/overview" in paths
         assert f"{prefix}/graph/query" in paths
@@ -1365,6 +1366,37 @@ class TestProfiles:
             with _patch_page_request(req):
                 assert (await api.delete_profile())["status"] == "error"
         manager.delete_for_web.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_update_passes_only_supported_fields(self, api):
+        manager = SimpleNamespace(
+            update_for_web=AsyncMock(return_value={"profile_key": "washer", "value": "45 分钟"})
+        )
+        api.plugin.user_profile_manager = manager
+        req = _mock_page_request(
+            get_json={
+                "profile_scope": " scope-1 ", "profile_key": " washer ",
+                "value": "45 分钟", "category": "preference", "confidence": 0.9,
+                "expires_at": None, "ignored": "not forwarded",
+            }
+        )
+        with _patch_page_request(req):
+            result = await api.update_profile()
+        assert result["status"] == "ok"
+        manager.update_for_web.assert_awaited_once_with(
+            "scope-1", "washer",
+            {"value": "45 分钟", "category": "preference", "confidence": 0.9, "expires_at": None},
+        )
+
+    @pytest.mark.asyncio
+    async def test_update_rejects_missing_fields(self, api):
+        manager = SimpleNamespace(update_for_web=AsyncMock())
+        api.plugin.user_profile_manager = manager
+        for payload in ({"profile_scope": "scope"}, {"profile_scope": "scope", "profile_key": "key"}, ["scope"]):
+            req = _mock_page_request(get_json=payload)
+            with _patch_page_request(req):
+                assert (await api.update_profile())["status"] == "error"
+        manager.update_for_web.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_component_missing(self, api):

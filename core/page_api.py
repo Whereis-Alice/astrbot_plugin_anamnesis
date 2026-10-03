@@ -129,6 +129,12 @@ class PluginPageApi:
             "Anamnesis Page delete user profile item",
         )
         register(
+            f"{PAGE_API_PREFIX}/profiles/update",
+            self.update_profile,
+            ["POST"],
+            "Anamnesis Page update user profile item",
+        )
+        register(
             f"{PAGE_API_PREFIX}/recall/test",
             self.test_recall,
             ["POST"],
@@ -318,6 +324,37 @@ class PluginPageApi:
         except Exception:
             logger.exception("删除用户档案失败")
             return self.utils.error("删除用户档案失败，请查看插件日志")
+
+    async def update_profile(self):
+        """Update one exact profile fact selected in the WebUI."""
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        profile_manager = getattr(self.plugin, "user_profile_manager", None)
+        if profile_manager is None:
+            return self.utils.error("用户档案组件尚未初始化")
+        payload = await request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return self.utils.error("请求内容必须是 JSON 对象")
+        scope = self.utils.optional_text(payload.get("profile_scope"))
+        key = self.utils.optional_text(payload.get("profile_key"))
+        if not scope or not key:
+            return self.utils.error("必须提供 profile_scope 和 profile_key")
+        updates = {
+            field: payload[field]
+            for field in ("value", "category", "confidence", "expires_at")
+            if field in payload
+        }
+        if not updates:
+            return self.utils.error("没有可更新的档案字段")
+        try:
+            updated = await profile_manager.update_for_web(scope, key, updates)
+            if not updated:
+                return self.utils.error("档案条目不存在或字段无效")
+            return self.utils.ok(updated)
+        except Exception:
+            logger.exception("更新用户档案失败")
+            return self.utils.error("更新用户档案失败，请查看插件日志")
 
     async def test_recall(self):
         """测试记忆召回功能"""
