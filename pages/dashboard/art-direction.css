@@ -725,6 +725,65 @@ input[type="range"] {
   border-top: 1px solid var(--border-normal);
 }
 
+/* User profile administration */
+
+.profiles-page-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.profile-status {
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.profile-status.is-enabled { color: var(--success); }
+.profile-status.is-disabled { color: var(--warning); }
+
+.profile-scope-note {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg-tint);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.profile-scope-note.hidden { display: none; }
+
+.profile-filter-bar { flex-shrink: 0; }
+.profile-filter-bar #profile-scope { min-width: 260px; max-width: 34%; }
+.profile-filter-bar #profile-session { min-width: 200px; max-width: 28%; }
+.profile-filter-bar #profile-key { min-width: 180px; }
+
+.profile-table-container { flex: 1; min-height: 160px; }
+.profile-table { min-width: 1510px; }
+.profile-table th:nth-child(1) { width: 150px; }
+.profile-table th:nth-child(2) { width: 110px; }
+.profile-table th:nth-child(3) { width: 300px; }
+.profile-table th:nth-child(4) { width: 260px; }
+.profile-table th:nth-child(5) { width: 220px; }
+.profile-table th:nth-child(6) { width: 90px; }
+.profile-table th:nth-child(7),
+.profile-table th:nth-child(8) { width: 150px; }
+.profile-table th:nth-child(9) { width: 100px; }
+.profile-table tbody tr { cursor: default; }
+.profile-table .profile-value-cell { white-space: normal; overflow-wrap: anywhere; line-height: 1.45; }
+.profile-table .profile-action-cell { text-align: right; }
+.profile-table .profile-delete { white-space: nowrap; }
+
+@media (max-width: 700px) {
+  .profiles-page-body { overflow: visible; }
+  .profile-filter-bar #profile-scope,
+  .profile-filter-bar #profile-session,
+  .profile-filter-bar #profile-key { width: 100%; min-width: 0; max-width: none; }
+  .profile-table-container { min-height: 360px; }
+}
+
 /* Recall */
 
 .recall-form-section {

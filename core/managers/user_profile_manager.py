@@ -56,11 +56,18 @@ class UserProfileManager:
             return None
         scope = f"anamnesis:profile:{platform or 'unknown'}:{identity}"
         session_id = str(getattr(event, "unified_msg_origin", "") or "")
+        scope_mode = str(
+            self.config_manager.get("user_profile.scope_mode", "session")
+        ).strip().casefold()
+        # Never downgrade the default session boundary to a cross-chat user
+        # boundary when an adapter fails to supply its chat origin.
+        if scope_mode == "session" and not session_id:
+            return None
         isolated = parse_value_list(
             self.config_manager.get("filtering_settings.isolated_sessions", "")
         )
-        if session_id and session_id in isolated:
-            scope += f":isolated:{session_id}"
+        if session_id and (scope_mode == "session" or session_id in isolated):
+            scope += f":session:{session_id}"
         return scope
 
     async def _ensure_schema(self) -> bool:
@@ -103,6 +110,7 @@ class UserProfileManager:
         scope = self.scope_for_event(event)
         if not scope or not await self._ensure_schema():
             return []
+        await self._migrate_legacy_scope_for_event(event, scope)
         connection = self.store.connection
         if connection is None:
             return []
@@ -118,6 +126,162 @@ class UserProfileManager:
         ) as cursor:
             rows = await cursor.fetchall()
         return [dict(row) for row in rows]
+
+    async def _migrate_legacy_scope_for_event(self, event: Any, scope: str) -> None:
+        """Move 3.2.0 user-scoped rows only into their original chat scope.
+
+        Earlier profiles defaulted to a cross-chat user scope. The stored
+        source_session_id lets us migrate without copying one chat's facts into
+        another. Existing rows in the new scope take precedence.
+        """
+        session_id = str(getattr(event, "unified_msg_origin", "") or "")
+        suffix = f":session:{session_id}"
+        if not session_id or not scope.endswith(suffix):
+            return
+        legacy_scope = scope[: -len(suffix)]
+        legacy_isolated = f"{legacy_scope}:isolated:{session_id}"
+        connection = self.store.connection
+        if connection is None:
+            return
+        async with connection.execute(
+            """SELECT 1 FROM user_profiles
+               WHERE profile_scope IN (?, ?) AND source_session_id = ? LIMIT 1""",
+            (legacy_scope, legacy_isolated, session_id),
+        ) as cursor:
+            if await cursor.fetchone() is None:
+                return
+        async with self.store._write_lock:
+            try:
+                await connection.execute(
+                    """INSERT INTO user_profiles
+                       (profile_scope, profile_key, category, value, confidence,
+                        source_memory_id, source_session_id, updated_at, expires_at)
+                       SELECT ?, profile_key, category, value, confidence,
+                              source_memory_id, source_session_id, updated_at, expires_at
+                       FROM user_profiles
+                       WHERE profile_scope IN (?, ?) AND source_session_id = ?
+                       ON CONFLICT(profile_scope, profile_key) DO NOTHING""",
+                    (scope, legacy_scope, legacy_isolated, session_id),
+                )
+                await connection.execute(
+                    """DELETE FROM user_profiles
+                       WHERE profile_scope IN (?, ?) AND source_session_id = ?""",
+                    (legacy_scope, legacy_isolated, session_id),
+                )
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+
+    async def list_for_web(
+        self,
+        *,
+        profile_scope: str | None = None,
+        source_session_id: str | None = None,
+        key_query: str | None = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> dict[str, Any]:
+        """List profile rows and safe filter options for the administrator WebUI."""
+        if not await self._ensure_schema():
+            return {
+                "items": [],
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "scopes": [],
+                "session_ids": [],
+            }
+        connection = self.store.connection
+        if connection is None:
+            return {
+                "items": [],
+                "total": 0,
+                "limit": limit,
+                "offset": offset,
+                "scopes": [],
+                "session_ids": [],
+            }
+
+        clauses: list[str] = []
+        params: list[Any] = []
+        if profile_scope:
+            clauses.append("profile_scope = ?")
+            params.append(profile_scope)
+        if source_session_id:
+            clauses.append("source_session_id = ?")
+            params.append(source_session_id)
+        if key_query:
+            clauses.append("profile_key LIKE ? ESCAPE '\\'")
+            escaped = (
+                key_query.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            params.append(f"%{escaped}%")
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        async with connection.execute(
+            f"SELECT COUNT(*) AS count FROM user_profiles {where}", params
+        ) as cursor:
+            count_row = await cursor.fetchone()
+        total = int(count_row["count"] if count_row else 0)
+
+        row_params = [*params, limit, offset]
+        async with connection.execute(
+            f"""SELECT profile_scope, profile_key, category, value, confidence,
+                       source_memory_id, source_session_id, updated_at, expires_at
+                FROM user_profiles {where}
+                ORDER BY updated_at DESC, profile_scope, profile_key
+                LIMIT ? OFFSET ?""",
+            row_params,
+        ) as cursor:
+            rows = await cursor.fetchall()
+
+        async with connection.execute(
+            """SELECT DISTINCT profile_scope FROM user_profiles
+               WHERE profile_scope IS NOT NULL AND profile_scope <> ''
+               ORDER BY profile_scope"""
+        ) as cursor:
+            scope_rows = await cursor.fetchall()
+        async with connection.execute(
+            """SELECT DISTINCT source_session_id FROM user_profiles
+               WHERE source_session_id IS NOT NULL AND source_session_id <> ''
+               ORDER BY source_session_id"""
+        ) as cursor:
+            session_rows = await cursor.fetchall()
+
+        return {
+            "items": [dict(row) for row in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+            "scopes": [row["profile_scope"] for row in scope_rows],
+            "session_ids": [row["source_session_id"] for row in session_rows],
+            "profile_enabled": self.enabled,
+            "scope_mode": self.config_manager.get("user_profile.scope_mode", "session"),
+        }
+
+    async def delete_for_web(self, profile_scope: str, profile_key: str) -> int:
+        """Delete one exact profile row selected in the administrator WebUI."""
+        scope = str(profile_scope or "").strip()
+        key = str(profile_key or "").strip().casefold()
+        if not scope or not _KEY_PATTERN.fullmatch(key) or not await self._ensure_schema():
+            return 0
+        connection = self.store.connection
+        if connection is None:
+            return 0
+        async with self.store._write_lock:
+            try:
+                cursor = await connection.execute(
+                    "DELETE FROM user_profiles WHERE profile_scope = ? AND profile_key = ?",
+                    (scope, key),
+                )
+                count = cursor.rowcount
+                await connection.commit()
+            except BaseException:
+                await connection.rollback()
+                raise
+        return count
 
     @staticmethod
     def _normalize_fact(item: Any) -> dict[str, Any] | None:
@@ -217,6 +381,7 @@ class UserProfileManager:
         scope = self.scope_for_event(event)
         if not scope or not await self._ensure_schema():
             return 0
+        await self._migrate_legacy_scope_for_event(event, scope)
         connection = self.store.connection
         if connection is None:
             return 0

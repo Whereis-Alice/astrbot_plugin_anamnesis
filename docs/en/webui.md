@@ -15,12 +15,15 @@ AstrBot `4.24.2` or later is recommended. Older versions can still run the plugi
 | Area | Purpose |
 | --- | --- |
 | Memory management | Inspect and filter memories; edit summaries, topics, key facts, status, and importance; batch-delete; import and export |
+| User profiles | Inspect per-chat user profiles, filter by scope, source chat, and key, and delete one exact item |
 | Recall debugging | Enter a query and inspect returned memories and ranking |
 | Graph view | Browse entities, relationships, and memory connections |
 | System status | Review active, archived, and deleted counts plus graph, atom, importance, and session statistics |
 | Prompt management | Browse prompts by category, edit overrides, identify customized templates, and restore or load defaults |
 
 ## Memory details and lifecycle
+
+The User profiles page exposes all saved facts and is intended only for administrators with plugin-page access. Existing facts remain visible and deletable when extraction is off. By default, profiles are separated by platform, user identity, and `unified_msg_origin` chat origin, not by each new conversation record created by `/new`. Deleting a profile fact does not delete its associated normal memory.
 
 - Editing a summary, topic, or key fact rebuilds that memory's embedding, BM25, graph, atom, and related derived data. Status-only or importance-only edits do not unconditionally rebuild every index.
 - Memories above the source-retention threshold show source messages in the detail panel. When at least two source messages are available, the Dashboard can call the LLM to replace the memory with a new summary.

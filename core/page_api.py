@@ -11,6 +11,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from astrbot.api import logger
+from quart import request
+
 from .page_api_modules import (
     BackupHandler,
     ConsolidationHandler,
@@ -112,6 +115,18 @@ class PluginPageApi:
             self.batch_update_memories,
             ["POST"],
             "Anamnesis Page batch update memories",
+        )
+        register(
+            f"{PAGE_API_PREFIX}/profiles",
+            self.list_profiles,
+            ["GET"],
+            "Anamnesis Page user profiles",
+        )
+        register(
+            f"{PAGE_API_PREFIX}/profiles/delete",
+            self.delete_profile,
+            ["POST"],
+            "Anamnesis Page delete user profile item",
         )
         register(
             f"{PAGE_API_PREFIX}/recall/test",
@@ -251,6 +266,58 @@ class PluginPageApi:
         if error:
             return error
         return await self.memory_handler.batch_update_memories(ready["memory_engine"])
+
+    async def list_profiles(self):
+        """List independent user-profile facts for the administrator WebUI."""
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        profile_manager = getattr(self.plugin, "user_profile_manager", None)
+        if profile_manager is None:
+            return self.utils.error("用户档案组件尚未初始化")
+
+        args = request.args
+        try:
+            limit = max(1, min(500, int(args.get("limit", 200))))
+            offset = max(0, int(args.get("offset", 0)))
+        except (TypeError, ValueError):
+            return self.utils.error("limit 和 offset 必须是整数")
+        try:
+            data = await profile_manager.list_for_web(
+                profile_scope=self.utils.optional_text(args.get("scope")),
+                source_session_id=self.utils.optional_text(args.get("session_id")),
+                key_query=self.utils.optional_text(args.get("key")),
+                limit=limit,
+                offset=offset,
+            )
+            return self.utils.ok(data)
+        except Exception:
+            logger.exception("读取用户档案失败")
+            return self.utils.error("读取用户档案失败，请查看插件日志")
+
+    async def delete_profile(self):
+        """Delete one exact profile scope/key selected in the WebUI."""
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        profile_manager = getattr(self.plugin, "user_profile_manager", None)
+        if profile_manager is None:
+            return self.utils.error("用户档案组件尚未初始化")
+        payload = await request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return self.utils.error("请求内容必须是 JSON 对象")
+        scope = self.utils.optional_text(payload.get("profile_scope"))
+        key = self.utils.optional_text(payload.get("profile_key"))
+        if not scope or not key:
+            return self.utils.error("必须提供 profile_scope 和 profile_key")
+        try:
+            deleted = await profile_manager.delete_for_web(scope, key)
+            if not deleted:
+                return self.utils.error("档案条目不存在或已删除")
+            return self.utils.ok({"deleted": True, "count": deleted})
+        except Exception:
+            logger.exception("删除用户档案失败")
+            return self.utils.error("删除用户档案失败，请查看插件日志")
 
     async def test_recall(self):
         """测试记忆召回功能"""

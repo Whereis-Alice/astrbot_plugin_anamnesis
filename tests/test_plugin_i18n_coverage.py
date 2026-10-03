@@ -36,6 +36,10 @@ EXPECTED_OPTION_LABELS = {
             "user": "Per User",
             "global": "Global",
         },
+        "user_profile.scope_mode": {
+            "user": "Per User",
+            "session": "Per Chat Origin",
+        },
         "memory_consolidation.trigger": {
             "daily": "Daily",
             "reflection": "On Reflection",
@@ -74,6 +78,10 @@ EXPECTED_OPTION_LABELS = {
             "session": "По сессии",
             "user": "По пользователю",
             "global": "Глобально",
+        },
+        "user_profile.scope_mode": {
+            "user": "По пользователю",
+            "session": "По источнику чата",
         },
         "memory_consolidation.trigger": {
             "daily": "Ежедневно",

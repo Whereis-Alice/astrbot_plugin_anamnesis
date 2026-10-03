@@ -10,6 +10,7 @@ import {
   RecallPage,
   SystemPage,
   PromptPage,
+  ProfilePage,
   esc,
   statusPill,
   nodeBadge,
@@ -67,6 +68,7 @@ import {
   const recallPage = new RecallPage(state, api, peekPanel);
   const systemPage = new SystemPage(state, api);
   const promptPage = new PromptPage(state, api);
+  const profilePage = new ProfilePage(state, api, peekPanel);
 
   function hydrateIcons() {
     if (!window.lucide || typeof window.lucide.createIcons !== "function") return;
@@ -180,6 +182,7 @@ import {
     if (name === "recall") { /* 召回页面按需加载 */ }
     if (name === "system") systemPage.fetch();
     if (name === "prompts") promptPage.fetch();
+    if (name === "profiles") profilePage.fetch();
   }
 
   function normalizeLocale(locale) {
@@ -265,6 +268,7 @@ import {
       promptPage.render();
       promptPage.refreshEditorTitle();
     }
+    if (state.page === "profiles") profilePage.render();
 
     const peekPanelEl = document.getElementById("peek-panel");
     const peekVisible = peekPanelEl && peekPanelEl.classList.contains("visible");
@@ -328,6 +332,7 @@ import {
     memoryPage.initEventListeners();
     recallPage.initEventListeners();
     systemPage.initEventListeners();
+    profilePage.initEventListeners();
 
     document.getElementById("peek-close").addEventListener("click", () => peekPanel.close());
     document.getElementById("peek-overlay").addEventListener("click", () => peekPanel.close());

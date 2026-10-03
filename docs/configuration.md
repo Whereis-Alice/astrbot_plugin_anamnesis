@@ -130,16 +130,19 @@ Anamnesis 的默认配置已经适合大多数场景。真正需要调整的通�
 
 ## 用户个人档案（Beta）
 
-用户档案独立保存在 `conversations.db`，不参与 Top-K 排序；开启后会在普通记忆总结成功后，额外调用一次 LLM 从**当前发送者本人**的原话提取明确事实。每轮使用临时内容注入，普通记忆检索关闭或超时时仍可使用。`/new` 和 `/reset` 只清理短期对话，不会删除档案或长期记忆。
+用户档案独立保存在 `conversations.db`，不参与 Top-K 排序；开启后会在普通记忆总结成功后，额外调用一次 LLM 从**当前发送者本人**的原话提取明确事实。每轮使用临时内容注入，普通记忆检索关闭或超时时仍可使用。默认按平台、用户身份和 `unified_msg_origin` 聊天来源隔离：不同群聊/私聊不会共享档案。同一聊天中，`/new` 和 `/reset` 只清理短期对话，不会删除该聊天的档案或长期记忆；这里的“会话”不是每次 `/new` 生成的对话记录。
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
 | `user_profile.enabled` | `false` | 开关；关闭时不提取、不注入，也不会额外调用 LLM |
-| `user_profile.max_items` | `40` | 每名用户最多保留的档案事实数 |
+| `user_profile.scope_mode` | `session` | `session` 按聊天来源隔离；`user` 同平台同身份跨聊天共享。`filtering_settings.isolated_sessions` 中的聊天始终隔离 |
+| `user_profile.max_items` | `40` | 每个档案作用域最多保留的事实数 |
 | `user_profile.max_injection_chars` | `3000` | 单轮档案注入字符上限 |
 | `user_profile.volatile_ttl_days` | `7` | 当前状态等临时事实的有效天数 |
 | `user_profile.extraction_max_chars` | `12000` | 单次提取读取的本人发言上限 |
 | `user_profile.llm_max_retries` | `1` | 档案提取 LLM 的额外重试次数 |
+
+Dashboard 的“用户档案”页可查看所有已保存条目，按作用域、来源聊天和 key 筛选，并精确删除单条；此页仅供有插件页面权限的管理员使用。关闭 `user_profile.enabled` 后仍可查看和删除旧条目。升级前按用户共享的 3.2.0 档案，会在对应聊天首次读取时，根据记录的 `source_session_id` 迁移到原聊天，不会复制到其他聊天；切回 `user` 模式不会自动反向合并。
 
 `/anam profile` 查看当前用户的档案，`/anam profile-clear [key]` 删除指定条目或全部条目（不填 `key`）。这些命令在关闭档案功能后仍可用于查看或删除已经保存的数据。群聊中查看档案会公开回复，请在私聊中使用。`/anam forget <id>` 是管理员按 ID 删除普通记忆的命令；启用 Agent 删除工具后，模型也可在用户明确请求时按 ID 删除。命令、Dashboard 批量删除与 Agent 工具这三条显式删除路径都会清理来源于该记忆的档案条目。
 

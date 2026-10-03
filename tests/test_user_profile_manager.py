@@ -100,25 +100,106 @@ async def test_batch_source_delete_clears_only_selected_fact_origins(profile_man
 
 
 @pytest.mark.asyncio
+async def test_web_listing_filters_scope_session_key_and_exact_delete(profile_manager):
+    first = _event("alice", "qq", "qq:GroupMessage:42")
+    second = _event("bob", "qq", "qq:GroupMessage:43")
+    await profile_manager.upsert_facts(
+        first, [_fact("washer_runtime", "35 分钟")], source_memory_id=1
+    )
+    await profile_manager.upsert_facts(
+        second, [_fact("dryer_runtime", "20 分钟")], source_memory_id=2
+    )
+
+    scope = profile_manager.scope_for_event(first)
+    result = await profile_manager.list_for_web(
+        profile_scope=scope,
+        source_session_id=first.unified_msg_origin,
+        key_query="washer",
+        limit=10,
+        offset=0,
+    )
+    assert result["total"] == 1
+    assert result["items"][0]["profile_key"] == "washer_runtime"
+    assert set(result["session_ids"]) == {
+        first.unified_msg_origin,
+        second.unified_msg_origin,
+    }
+    assert result["scope_mode"] == "session"
+    assert (await profile_manager.list_for_web(limit=1, offset=1))["total"] == 2
+    assert await profile_manager.delete_for_web(scope, "not_present") == 0
+    assert await profile_manager.delete_for_web(scope, "washer_runtime") == 1
+    assert (await profile_manager.list_for_web(profile_scope=scope))["total"] == 0
+    assert (await profile_manager.list_for_web())["total"] == 1
+
+
+@pytest.mark.asyncio
 async def test_profile_scope_platform_and_isolated_session(profile_manager):
     qq = _event("same-id", "qq", "qq:GroupMessage:42")
     telegram = _event("same-id", "telegram", "telegram:GroupMessage:42")
     assert profile_manager.scope_for_event(qq) != profile_manager.scope_for_event(
         telegram
     )
+    assert profile_manager.scope_for_event(qq) != profile_manager.scope_for_event(
+        _event("same-id", "qq", "qq:GroupMessage:43")
+    )
+    user_config = ConfigManager({"user_profile": {"enabled": True, "scope_mode": "user"}})
+    shared = UserProfileManager(
+        user_config, SimpleNamespace(store=profile_manager.store)
+    )
+    assert shared.scope_for_event(qq) == shared.scope_for_event(
+        _event("same-id", "qq", "qq:GroupMessage:43")
+    )
     isolated_config = ConfigManager(
         {
-            "user_profile": {"enabled": True},
+            "user_profile": {"enabled": True, "scope_mode": "user"},
             "filtering_settings": {"isolated_sessions": "qq:GroupMessage:42"},
         }
     )
     isolated = UserProfileManager(
         isolated_config, SimpleNamespace(store=profile_manager.store)
     )
-    assert isolated.scope_for_event(qq) != profile_manager.scope_for_event(qq)
+    assert isolated.scope_for_event(qq) == profile_manager.scope_for_event(qq)
+    assert isolated.scope_for_event(qq) != shared.scope_for_event(qq)
     assert isolated.scope_for_event(
         _event("same-id", "qq", "qq:GroupMessage:43")
     ) != isolated.scope_for_event(qq)
+    assert profile_manager.scope_for_event(_event(session="")) is None
+
+
+@pytest.mark.asyncio
+async def test_new_conversation_in_same_chat_retains_profile(profile_manager):
+    first = _event("alice", session="qq:GroupMessage:42")
+    first.conversation_id = "old-conversation"
+    after_new = _event("alice", session="qq:GroupMessage:42")
+    after_new.conversation_id = "new-conversation"
+    await profile_manager.upsert_facts(first, [_fact()], source_memory_id=10)
+
+    assert profile_manager.scope_for_event(first) == profile_manager.scope_for_event(
+        after_new
+    )
+    assert [row["profile_key"] for row in await profile_manager.get_profile(after_new)] == [
+        "washer_runtime"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_legacy_user_scope_migrates_only_its_source_session(profile_manager):
+    current = _event("alice", "qq", "qq:GroupMessage:42")
+    another = _event("alice", "qq", "qq:GroupMessage:43")
+    legacy_config = ConfigManager({"user_profile": {"enabled": True, "scope_mode": "user"}})
+    legacy = UserProfileManager(
+        legacy_config, SimpleNamespace(store=profile_manager.store)
+    )
+    await legacy.upsert_facts(current, [_fact("washer_runtime", "35 分钟")], source_memory_id=10)
+    await legacy.upsert_facts(another, [_fact("other_fact", "另一群的事实")], source_memory_id=11)
+
+    assert [row["profile_key"] for row in await profile_manager.get_profile(current)] == [
+        "washer_runtime"
+    ]
+    assert [row["profile_key"] for row in await profile_manager.get_profile(another)] == [
+        "other_fact"
+    ]
+    assert await legacy.get_profile(current) == []
 
 
 @pytest.mark.asyncio

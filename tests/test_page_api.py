@@ -1286,11 +1286,11 @@ class TestEnsurePluginReady:
 
 
 class TestRouteRegistration:
-    def test_registers_all_ten_routes(self):
+    def test_registers_all_routes(self):
         plugin = FakePlugin()
         api = PluginPageApi(plugin)
         api.register_routes()
-        assert len(plugin._api_routes) == 20
+        assert len(plugin._api_routes) == 22
 
         paths = {route for route, _, _, _ in plugin._api_routes}
         prefix = PAGE_API_PREFIX
@@ -1301,6 +1301,8 @@ class TestRouteRegistration:
         assert f"{prefix}/memories/export" in paths
         assert f"{prefix}/memories/import" in paths
         assert f"{prefix}/memories/batch-delete" in paths
+        assert f"{prefix}/profiles" in paths
+        assert f"{prefix}/profiles/delete" in paths
         assert f"{prefix}/recall/test" in paths
         assert f"{prefix}/graph/overview" in paths
         assert f"{prefix}/graph/query" in paths
@@ -1310,6 +1312,65 @@ class TestRouteRegistration:
 
     def test_route_prefix_contains_plugin_name(self):
         assert PLUGIN_NAME in PAGE_API_PREFIX
+
+
+class TestProfiles:
+    @pytest.mark.asyncio
+    async def test_list_passes_filters_and_pagination(self, api):
+        manager = SimpleNamespace(list_for_web=AsyncMock(return_value={"items": [], "total": 0}))
+        api.plugin.user_profile_manager = manager
+        req = _mock_page_request(
+            args={"scope": " scope-1 ", "session_id": " session-1 ",
+                  "key": " washer ", "limit": "25", "offset": "50"}
+        )
+        with _patch_page_request(req):
+            result = await api.list_profiles()
+
+        assert result == {"status": "ok", "data": {"items": [], "total": 0}}
+        manager.list_for_web.assert_awaited_once_with(
+            profile_scope="scope-1", source_session_id="session-1",
+            key_query="washer", limit=25, offset=50,
+        )
+
+    @pytest.mark.asyncio
+    async def test_list_rejects_invalid_pagination_and_unready_component(self, api):
+        req = _mock_page_request(args={"limit": "bad"})
+        with _patch_page_request(req):
+            assert (await api.list_profiles())["status"] == "error"
+        api.plugin.user_profile_manager = SimpleNamespace(list_for_web=AsyncMock())
+        req = _mock_page_request(args={"limit": "9999", "offset": "-3"})
+        with _patch_page_request(req):
+            await api.list_profiles()
+        api.plugin.user_profile_manager.list_for_web.assert_awaited_once_with(
+            profile_scope=None, source_session_id=None, key_query=None,
+            limit=500, offset=0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_delete_requires_exact_scope_and_key(self, api):
+        manager = SimpleNamespace(delete_for_web=AsyncMock(return_value=1))
+        api.plugin.user_profile_manager = manager
+        req = _mock_page_request(get_json={"profile_scope": " scope-1 ", "profile_key": " washer "})
+        with _patch_page_request(req):
+            result = await api.delete_profile()
+        assert result == {"status": "ok", "data": {"deleted": True, "count": 1}}
+        manager.delete_for_web.assert_awaited_once_with("scope-1", "washer")
+
+    @pytest.mark.asyncio
+    async def test_delete_rejects_missing_or_non_object_payload(self, api):
+        manager = SimpleNamespace(delete_for_web=AsyncMock())
+        api.plugin.user_profile_manager = manager
+        for payload in ({"profile_scope": "s"}, ["s", "key"]):
+            req = _mock_page_request(get_json=payload)
+            with _patch_page_request(req):
+                assert (await api.delete_profile())["status"] == "error"
+        manager.delete_for_web.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_component_missing(self, api):
+        with _patch_page_request(_mock_page_request()):
+            assert (await api.list_profiles())["status"] == "error"
+            assert (await api.delete_profile())["status"] == "error"
 
 
 @pytest.mark.asyncio

@@ -484,8 +484,15 @@
         "type": "bool",
         "default": false
       },
+      "scope_mode": {
+        "description": "档案隔离模式",
+        "hint": "session：同一用户按 unified_msg_origin 聊天来源隔离（默认），/new 不清除此来源的档案；user：同一平台用户跨不同聊天共享。配置了 filtering_settings.isolated_sessions 的会话始终单独隔离。",
+        "type": "string",
+        "options": ["session", "user"],
+        "default": "session"
+      },
       "max_items": {
-        "description": "每位用户最多档案条数",
+        "description": "每个档案作用域最多条数",
         "type": "int",
         "default": 40,
         "slider": {"min": 1, "max": 200, "step": 1}

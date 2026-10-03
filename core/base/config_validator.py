@@ -170,6 +170,11 @@ class UserProfileConfig(BaseModel):
     """Independent per-user fact profile, disabled until explicitly enabled."""
 
     enabled: bool = Field(default=False, description="是否维护和注入用户个人档案")
+    scope_mode: str = Field(
+        default="session",
+        pattern="^(user|session)$",
+        description="档案作用域：user 跨普通会话共享，session 按会话隔离",
+    )
     max_items: int = Field(default=40, ge=1, le=200)
     max_injection_chars: int = Field(default=3000, ge=500, le=20000)
     volatile_ttl_days: int = Field(default=7, ge=1, le=3650)

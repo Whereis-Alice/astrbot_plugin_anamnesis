@@ -40,6 +40,10 @@
             <i data-lucide="braces" aria-hidden="true"></i>
             <span data-i18n="nav.prompts">Prompts</span>
           </button>
+          <button class="nav-item" data-page="profiles" data-i18n-aria="nav.profiles">
+            <i data-lucide="contact-round" aria-hidden="true"></i>
+            <span data-i18n="nav.profiles">User Profiles</span>
+          </button>
         </nav>
         <div class="sidebar-divider"></div>
         <div class="sidebar-footer">
@@ -302,6 +306,61 @@
                 <button class="btn btn-secondary" id="prompt-cancel-btn"><i data-lucide="x" aria-hidden="true"></i><span data-i18n="common.cancel">Cancel</span></button>
                 <button class="btn btn-danger btn-sm" id="prompt-reset-btn"><i data-lucide="rotate-ccw" aria-hidden="true"></i><span data-i18n="prompt.reset">Reset to Default</span></button>
                 <button class="btn btn-primary" id="prompt-save-btn"><i data-lucide="save" aria-hidden="true"></i><span data-i18n="common.save">Save</span></button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- Page: User Profiles -->
+        <section class="page" id="page-profiles">
+          <header class="page-header">
+            <div class="page-heading"><span class="page-index">06</span><span class="page-title" data-i18n="nav.profiles">User Profiles</span></div>
+            <div class="page-actions">
+              <span class="profile-status" id="profile-status"></span>
+              <button class="btn btn-secondary btn-sm" id="profile-refresh" data-i18n-title="profile.refreshTitle">
+                <i data-lucide="refresh-cw" aria-hidden="true"></i>
+                <span data-i18n="common.refresh">Refresh</span>
+              </button>
+            </div>
+          </header>
+          <div class="page-body profiles-page-body">
+            <div class="profile-scope-note hidden" id="profile-scope-note"></div>
+            <div class="filter-bar profile-filter-bar">
+              <select id="profile-scope" class="select input" data-i18n-title="profile.scopeTitle">
+                <option value="" data-i18n="profile.allScopes">All scopes</option>
+              </select>
+              <select id="profile-session" class="select input" data-i18n-title="profile.sessionTitle">
+                <option value="" data-i18n="profile.allSessions">All source sessions</option>
+              </select>
+              <input type="text" id="profile-key" class="input" data-i18n-placeholder="profile.keyPh" placeholder="Filter by profile key..." />
+            </div>
+            <div class="table-container profile-table-container">
+              <div class="table-scroll" id="profiles-scroll">
+                <table class="data-table profile-table" id="profiles-table">
+                  <thead>
+                    <tr>
+                      <th data-i18n="profile.key">Key</th>
+                      <th data-i18n="profile.category">Category</th>
+                      <th data-i18n="profile.value">Value</th>
+                      <th data-i18n="profile.scope">Scope</th>
+                      <th data-i18n="profile.sourceSession">Source session</th>
+                      <th data-i18n="profile.confidence">Confidence</th>
+                      <th data-i18n="profile.updated">Updated</th>
+                      <th data-i18n="profile.expires">Expires</th>
+                      <th class="profile-action-cell" data-i18n="table.actions">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="profiles-body">
+                    <tr><td colspan="9" class="table-empty" data-i18n="common.loading">Loading...</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="pagination">
+                <div class="pagination-controls">
+                  <button class="btn btn-sm btn-ghost" id="profile-prev" disabled><i data-lucide="arrow-left" aria-hidden="true"></i><span data-i18n="pagination.prev">Previous</span></button>
+                  <span class="pagination-info" id="profile-pagination-info" data-i18n="common.page">Page 1/1 · 0 total</span>
+                  <button class="btn btn-sm btn-ghost" id="profile-next" disabled><span data-i18n="pagination.next">Next</span><i data-lucide="arrow-right" aria-hidden="true"></i></button>
+                </div>
               </div>
             </div>
           </div>

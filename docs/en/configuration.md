@@ -130,16 +130,19 @@ The write tool is powerful and depends on model discipline. Start with active re
 
 ## User profiles (Beta)
 
-Profiles live separately in `conversations.db` and bypass top-k ranking. When enabled, each successful conversation summary triggers an extra LLM call to extract explicit facts from the current sender's own messages. The profile is injected as temporary context even if normal retrieval is disabled or times out. `/new` and `/reset` clear short-term context, not the profile or long-term memories.
+Profiles live separately in `conversations.db` and bypass top-k ranking. When enabled, each successful conversation summary triggers an extra LLM call to extract explicit facts from the current sender's own messages. The profile is injected as temporary context even if normal retrieval is disabled or times out. By default, profiles are separated by platform, user identity, and the `unified_msg_origin` chat origin, so separate groups and private chats do not share facts. Within the same chat, `/new` and `/reset` clear short-term context but not that chat's profile or long-term memories. “Session” here means chat origin, not a new conversation record created by `/new`.
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `user_profile.enabled` | `false` | Off means no extraction, injection, or extra LLM call |
-| `user_profile.max_items` | `40` | Maximum facts per user |
+| `user_profile.scope_mode` | `session` | `session` separates chat origins; `user` shares within one platform and identity. Chats in `filtering_settings.isolated_sessions` always remain separate |
+| `user_profile.max_items` | `40` | Maximum facts per profile scope |
 | `user_profile.max_injection_chars` | `3000` | Per-request profile injection limit |
 | `user_profile.volatile_ttl_days` | `7` | Lifetime of temporary status facts |
 | `user_profile.extraction_max_chars` | `12000` | Maximum source text per extraction |
 | `user_profile.llm_max_retries` | `1` | Additional LLM extraction retries |
+
+The Dashboard “User profiles” page lists saved facts, filters by scope, source chat, and key, and deletes one exact item at a time. It is intended for administrators with plugin-page access. Existing facts remain visible and deletable when extraction is off. On first read in the matching chat, 3.2.0 user-scoped facts migrate to their recorded `source_session_id` chat only; switching back to `user` mode does not merge them back automatically.
 
 Use `/anam profile` to inspect your own profile and `/anam profile-clear [key]` to delete a key or your entire profile (omit `key`). These commands remain available while extraction is disabled. In a group, profile output is public; use a private chat for inspection. `/anam forget <id>` is the administrator's exact-ID memory deletion command. The optional Agent deletion tool also requires an exact ID and an explicit user request. The command, Dashboard batch deletion, and Agent tool all remove profile facts sourced from deleted memories.
 
