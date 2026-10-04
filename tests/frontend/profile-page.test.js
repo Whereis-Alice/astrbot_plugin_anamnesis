@@ -94,6 +94,11 @@ test("profile page lists scoped facts, escapes stored text, and paginates", asyn
     }]);
     assert.match(elements["profiles-body"].innerHTML, /favorite_food/);
     assert.match(elements["profiles-body"].innerHTML, /rice &amp; &lt;script&gt;/);
+    // Layout wrappers must stay inside td; browser fixture verifies computed CSS.
+    assert.match(elements["profiles-body"].innerHTML, /<td class="profile-fact-cell"[^>]*><div class="profile-fact-content">/);
+    assert.match(elements["profiles-body"].innerHTML, /<td class="profile-value-cell"[^>]*><div class="profile-value-content">/);
+    assert.match(elements["profiles-body"].innerHTML, /<td class="profile-chat-cell"[^>]*><div class="profile-chat-content">/);
+    assert.match(elements["profiles-body"].innerHTML, /class="btn btn-danger btn-sm profile-delete"[^>]*aria-label="profile.deleteTitle:/);
     assert.doesNotMatch(elements["profiles-body"].innerHTML, /<script>/);
     assert.match(elements["profile-scope-note"].textContent, /profile.scopeMode.session/);
     assert.equal(elements["profile-prev"].disabled, true);

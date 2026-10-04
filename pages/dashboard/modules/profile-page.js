@@ -209,11 +209,11 @@ export class ProfilePage {
         : this.t("profile.privateOrUnknown"));
       const senderName = item.source_sender_name || this.t("table.na");
       return '<tr class="profile-row" tabindex="0" data-profile-index="' + index + '" aria-label="' + esc(item.profile_key) + '">' +
-        '<td class="profile-fact-cell" title="' + esc(item.profile_key) + '"><strong class="profile-key-cell cell-mono">' + esc(item.profile_key) + '</strong><span class="type-tag">' + esc(item.category) + "</span></td>" +
-        '<td class="profile-value-cell" title="' + esc(item.value) + '">' + esc(item.value) + "</td>" +
-        '<td class="profile-chat-cell" title="' + esc(groupName) + '"><strong>' + esc(groupName) + '</strong><small>' + esc(senderName) + "</small></td>" +
+        '<td class="profile-fact-cell" title="' + esc(item.profile_key) + '"><div class="profile-fact-content"><strong class="profile-key-cell cell-mono">' + esc(item.profile_key) + '</strong><span class="type-tag">' + esc(item.category) + "</span></div></td>" +
+        '<td class="profile-value-cell" title="' + esc(item.value) + '"><div class="profile-value-content">' + esc(item.value) + "</div></td>" +
+        '<td class="profile-chat-cell" title="' + esc(groupName + ' / ' + senderName) + '"><div class="profile-chat-content"><strong>' + esc(groupName) + '</strong><small>' + esc(senderName) + "</small></div></td>" +
         '<td class="cell-mono profile-updated-cell">' + esc(this._formatTime(item.updated_at)) + "</td>" +
-        '<td class="profile-action-cell"><button type="button" class="btn btn-danger btn-sm profile-delete" data-profile-scope="' + esc(item.profile_scope) + '" data-profile-key="' + esc(item.profile_key) + '" data-i18n-title="profile.deleteTitle" title="' + esc(this.t("profile.deleteTitle")) + '"><i data-lucide="trash-2" aria-hidden="true"></i><span>' + esc(this.t("profile.delete")) + "</span></button></td>" +
+        '<td class="profile-action-cell"><button type="button" class="btn btn-danger btn-sm profile-delete" data-profile-scope="' + esc(item.profile_scope) + '" data-profile-key="' + esc(item.profile_key) + '" data-i18n-title="profile.deleteTitle" title="' + esc(this.t("profile.deleteTitle")) + '" aria-label="' + esc(this.t("profile.deleteTitle")) + '"><i data-lucide="trash-2" aria-hidden="true"></i><span>' + esc(this.t("profile.delete")) + "</span></button></td>" +
         "</tr>";
     }).join("");
   }

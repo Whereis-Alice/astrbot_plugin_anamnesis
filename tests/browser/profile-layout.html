@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Profile layout browser regression</title>
+<style>
+  body { margin: 12px; font: 14px system-ui; background: #ececec; color: #111; }
+  iframe { display: block; width: 1280px; height: 800px; border: 1px solid #aaa; margin-top: 12px; }
+  pre { white-space: pre-wrap; }
+</style>
+<button id="run">Run layout and editor checks</button>
+<label>Preview width <select id="width"><option>1280</option><option>1622</option><option>1024</option><option>769</option><option>768</option><option>700</option><option>390</option><option>375</option></select></label>
+<pre id="results" role="status">Loading fixture…</pre>
+<iframe id="preview" title="Dashboard with synthetic profile data"></iframe>
+<script type="module">
+// Serve the repository root: python tests/browser/serve.py
+// Open /tests/browser/profile-layout.html. No real AstrBot API or data is used.
+const frame = document.getElementById('preview');
+const results = document.getElementById('results');
+window.addEventListener('unhandledrejection', event => {
+  results.textContent = `FAIL fixture: ${event.reason?.message || event.reason}`;
+});
+function fixtureBridge() {
+  const rows = Array.from({ length: 11 }, (_, index) => ({
+    profile_scope: `anamnesis:profile:qq:demo-${index}:session:default:GroupMessage:42`,
+    profile_key: index === 0 ? 'preferred_nickname' : `favorite_game_${index}`.repeat(index === 1 ? 5 : 1),
+    category: 'preference',
+    value: index === 0 ? '用户希望被称为小林' : '喜欢和朋友一起玩游戏，也喜欢分享周末活动。'.repeat(index === 1 ? 8 : 1),
+    confidence: 0.95,
+    source_session_id: 'default:GroupMessage:42',
+    source_group_id: '42',
+    source_group_name: index === 1 ? '这是一个很长的群聊名称用来检查窄屏排版' : '周末游戏交流群',
+    source_sender_name: `测试用户 ${index + 1}`,
+    source_memory_id: index + 100,
+    updated_at: 1791039600,
+    expires_at: null,
+  }));
+  window.profileFixturePosts = [];
+  window.AstrBotPluginPage = {
+    ready: async () => ({ isDark: true, locale: 'zh-CN' }),
+    getContext: () => ({ isDark: true, locale: 'zh-CN' }),
+    apiGet: async (path) => path === 'page/profiles' ? {
+      items: rows, total: rows.length, limit: 50, offset: 0,
+      scopes: rows.map(row => row.profile_scope), session_ids: [rows[0].source_session_id],
+      profile_enabled: true, scope_mode: 'session',
+    } : { nodes: [], edges: [], sessions: {} },
+    apiPost: async (path, body) => {
+      window.profileFixturePosts.push({ path, body });
+      const row = rows.find(row => row.profile_scope === body.profile_scope && row.profile_key === body.profile_key);
+      if (path === 'page/profiles/update' && row) return Object.assign(row, body);
+      throw new Error(`Unexpected fixture request: ${path}`);
+    },
+  };
+}
+const source = await (await fetch('../../pages/dashboard/index.html', { cache: 'no-store' })).text();
+const base = new URL('../../pages/dashboard/', location.href).href;
+// Reload the real assets too, even after switching from a cacheable dev server.
+const freshSource = source.replace(/(src|href)="(\.\/[^\"]+)"/g, `$1="$2?fixture=${Date.now()}"`);
+frame.srcdoc = freshSource.replace('<head>', `<head><base href="${base}"><script>(${fixtureBridge.toString()})();<\/script>`);
+async function until(predicate) {
+  const deadline = performance.now() + 15000;
+  while (!predicate()) {
+    if (performance.now() > deadline) throw new Error('Fixture timed out');
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+}
+// Stats are rendered only after the bridge and navigation listeners are ready.
+await until(() => frame.contentDocument?.getElementById('gs-total')?.textContent === '0');
+frame.contentWindow.setLanguage('zh', { persist: false });
+frame.contentDocument.querySelector('[data-page="profiles"]').click();
+await until(() => frame.contentDocument.querySelectorAll('.profile-row').length === 11);
+await frame.contentDocument.fonts.ready;
+const nextFrame = () => new Promise(resolve => frame.contentWindow.requestAnimationFrame(() => frame.contentWindow.requestAnimationFrame(resolve)));
+function require(condition, message) { if (!condition) throw new Error(message); }
+async function run() {
+  const lines = [];
+  document.getElementById('run').disabled = true;
+  for (const width of [1622, 1280, 1024, 769, 768, 700, 390, 375]) {
+    frame.style.width = `${width}px`;
+    await nextFrame();
+    try {
+      const doc = frame.contentDocument;
+      const win = frame.contentWindow;
+      const headers = [...doc.querySelectorAll('.profile-table th')];
+      require(doc.querySelectorAll('.profile-row').length === 11, 'fixture rows missing');
+      require(doc.querySelector('.profile-row').getBoundingClientRect().height > 0, 'table is hidden');
+      for (const row of doc.querySelectorAll('.profile-row')) {
+        [...row.cells].forEach((cell, index) => {
+          if (win.getComputedStyle(cell).display === 'none') return;
+          require(win.getComputedStyle(cell).display === 'table-cell', `column ${index + 1} is not table-cell`);
+          const box = cell.getBoundingClientRect();
+          const header = headers[index].getBoundingClientRect();
+          require(Math.abs(box.left - header.left) < 2 && Math.abs(box.width - header.width) < 2, `column ${index + 1} does not align`);
+        });
+        const action = row.querySelector('.profile-action-cell');
+        const button = row.querySelector('.profile-delete').getBoundingClientRect();
+        const box = action.getBoundingClientRect();
+        require(button.left >= box.left && button.right <= box.right, 'delete button clipped by cell');
+      }
+      const scroll = doc.getElementById('profiles-scroll');
+      require(scroll.scrollWidth <= scroll.clientWidth + 1, 'table overflows horizontally');
+      require(doc.documentElement.scrollWidth <= width + 1, 'page overflows horizontally');
+      lines.push(`PASS ${width}px: aligned cells, visible actions, no horizontal overflow`);
+    } catch (error) { lines.push(`FAIL ${width}px: ${error.message}`); }
+  }
+  frame.style.width = '1280px';
+  document.getElementById('width').value = '1280';
+  await nextFrame();
+  try {
+    const doc = frame.contentDocument;
+    doc.querySelector('.profile-row').click();
+    require(doc.getElementById('peek-panel').classList.contains('visible'), 'editor did not open');
+    require(doc.getElementById('profile-edit-value').value === '用户希望被称为小林', 'editor value differs');
+    doc.getElementById('profile-edit-value').value = '修改后的测试昵称';
+    doc.getElementById('profile-editor-save').click();
+    await until(() => !doc.getElementById('peek-panel').classList.contains('visible'));
+    await until(() => doc.querySelector('.profile-value-cell').textContent.includes('修改后的测试昵称'));
+    const post = frame.contentWindow.profileFixturePosts.at(-1);
+    require(post.path === 'page/profiles/update' && post.body.profile_key === 'preferred_nickname' &&
+      post.body.profile_scope === 'anamnesis:profile:qq:demo-0:session:default:GroupMessage:42', 'incorrect update target');
+    lines.push('PASS editor: row click, save exact scope/key, refreshed value');
+    // Reset the fixture value for reproducible repeated runs.
+    doc.querySelector('.profile-row').click();
+    doc.getElementById('profile-edit-value').value = '用户希望被称为小林';
+    doc.getElementById('profile-editor-save').click();
+    await until(() => !doc.getElementById('peek-panel').classList.contains('visible'));
+    await until(() => doc.querySelector('.profile-value-cell').textContent.includes('用户希望被称为小林'));
+  } catch (error) { lines.push(`FAIL editor: ${error.message}`); }
+  results.textContent = lines.join('\n');
+  document.getElementById('run').disabled = false;
+}
+document.getElementById('run').addEventListener('click', run);
+document.getElementById('width').addEventListener('change', event => { frame.style.width = `${event.target.value}px`; });
+await run();
+</script>
+</html>
