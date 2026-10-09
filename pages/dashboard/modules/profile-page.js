@@ -191,7 +191,7 @@ export class ProfilePage {
 
   _renderEmpty(message = this.t("common.noData")) {
     const body = document.getElementById("profiles-body");
-    if (body) body.innerHTML = '<tr><td colspan="5" class="table-empty">' + esc(message) + "</td></tr>";
+    if (body) body.innerHTML = '<tr><td colspan="4" class="table-empty">' + esc(message) + "</td></tr>";
   }
 
   _renderTable() {
@@ -203,19 +203,48 @@ export class ProfilePage {
       return;
     }
 
-    body.innerHTML = items.map((item, index) => {
-      const groupName = item.source_group_name || (item.source_group_id
-        ? this.t("profile.groupWithId", item.source_group_id)
-        : this.t("profile.privateOrUnknown"));
-      const senderName = item.source_sender_name || this.t("table.na");
-      return '<tr class="profile-row" tabindex="0" data-profile-index="' + index + '" aria-label="' + esc(item.profile_key) + '">' +
-        '<td class="profile-fact-cell" title="' + esc(item.profile_key) + '"><div class="profile-fact-content"><strong class="profile-key-cell cell-mono">' + esc(item.profile_key) + '</strong><span class="type-tag">' + esc(item.category) + "</span></div></td>" +
-        '<td class="profile-value-cell" title="' + esc(item.value) + '"><div class="profile-value-content">' + esc(item.value) + "</div></td>" +
-        '<td class="profile-chat-cell" title="' + esc(groupName + ' / ' + senderName) + '"><div class="profile-chat-content"><strong>' + esc(groupName) + '</strong><small>' + esc(senderName) + "</small></div></td>" +
-        '<td class="cell-mono profile-updated-cell">' + esc(this._formatTime(item.updated_at)) + "</td>" +
-        '<td class="profile-action-cell"><button type="button" class="btn btn-danger btn-sm profile-delete" data-profile-scope="' + esc(item.profile_scope) + '" data-profile-key="' + esc(item.profile_key) + '" data-i18n-title="profile.deleteTitle" title="' + esc(this.t("profile.deleteTitle")) + '" aria-label="' + esc(this.t("profile.deleteTitle")) + '"><i data-lucide="trash-2" aria-hidden="true"></i><span>' + esc(this.t("profile.delete")) + "</span></button></td>" +
-        "</tr>";
-    }).join("");
+    // Group facts by profile_scope so each user's identity is shown once as a
+    // group header instead of being repeated on every fact row.  Map preserves
+    // the server ordering (first occurrence wins); fact rows keep their original
+    // index into state.profile.items so edit/delete behaviour is unchanged.
+    const groups = new Map();
+    items.forEach((item, index) => {
+      const scope = item.profile_scope || "";
+      let group = groups.get(scope);
+      if (!group) {
+        group = { head: item, rows: [] };
+        groups.set(scope, group);
+      }
+      group.rows.push({ item, index });
+    });
+
+    const html = [];
+    groups.forEach((group) => {
+      html.push(this._renderGroupHeader(group));
+      group.rows.forEach(({ item, index }) => html.push(this._renderFactRow(item, index)));
+    });
+    body.innerHTML = html.join("");
+  }
+
+  _renderGroupHeader(group) {
+    const head = group.head || {};
+    const senderName = head.source_sender_name || this.t("table.na");
+    const groupName = head.source_group_name || (head.source_group_id
+      ? this.t("profile.groupWithId", head.source_group_id)
+      : this.t("profile.privateOrUnknown"));
+    return '<tr class="profile-group-header"><td class="profile-group-cell" colspan="4" title="' + esc(senderName + " / " + groupName) + '">' +
+      '<div class="profile-group-identity"><strong class="profile-group-user">' + esc(senderName) + "</strong>" +
+      '<span class="profile-group-chat">' + esc(groupName) + "</span>" +
+      '<span class="profile-group-count">' + esc(this.t("profile.groupFactCount", group.rows.length)) + "</span></div></td></tr>";
+  }
+
+  _renderFactRow(item, index) {
+    return '<tr class="profile-row" tabindex="0" data-profile-index="' + index + '" aria-label="' + esc(item.profile_key) + '">' +
+      '<td class="profile-fact-cell" title="' + esc(item.profile_key) + '"><div class="profile-fact-content"><strong class="profile-key-cell cell-mono">' + esc(item.profile_key) + '</strong><span class="type-tag">' + esc(item.category) + "</span></div></td>" +
+      '<td class="profile-value-cell" title="' + esc(item.value) + '"><div class="profile-value-content">' + esc(item.value) + "</div></td>" +
+      '<td class="cell-mono profile-updated-cell">' + esc(this._formatTime(item.updated_at)) + "</td>" +
+      '<td class="profile-action-cell"><button type="button" class="btn btn-danger btn-sm profile-delete" data-profile-scope="' + esc(item.profile_scope) + '" data-profile-key="' + esc(item.profile_key) + '" data-i18n-title="profile.deleteTitle" title="' + esc(this.t("profile.deleteTitle")) + '" aria-label="' + esc(this.t("profile.deleteTitle")) + '"><i data-lucide="trash-2" aria-hidden="true"></i><span>' + esc(this.t("profile.delete")) + "</span></button></td>" +
+      "</tr>";
   }
 
   _updatePagination() {

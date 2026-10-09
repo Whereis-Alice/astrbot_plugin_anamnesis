@@ -21,16 +21,18 @@ window.addEventListener('unhandledrejection', event => {
   results.textContent = `FAIL fixture: ${event.reason?.message || event.reason}`;
 });
 function fixtureBridge() {
-  const rows = Array.from({ length: 11 }, (_, index) => ({
-    profile_scope: `anamnesis:profile:qq:demo-${index}:session:default:GroupMessage:42`,
+  const groupTags = ['alpha', 'alpha', 'alpha', 'beta', 'beta', 'gamma', 'gamma', 'gamma', 'delta', 'delta', 'delta'];
+  const groupNames = { alpha: '周末游戏交流群', beta: '这是一个很长的群聊名称用来检查窄屏排版', gamma: '摄影交流群', delta: '读书分享会' };
+  const rows = groupTags.map((tag, index) => ({
+    profile_scope: `anamnesis:profile:qq:${tag}:session:default:GroupMessage:42`,
     profile_key: index === 0 ? 'preferred_nickname' : `favorite_game_${index}`.repeat(index === 1 ? 5 : 1),
     category: 'preference',
     value: index === 0 ? '用户希望被称为小林' : '喜欢和朋友一起玩游戏，也喜欢分享周末活动。'.repeat(index === 1 ? 8 : 1),
     confidence: 0.95,
     source_session_id: 'default:GroupMessage:42',
     source_group_id: '42',
-    source_group_name: index === 1 ? '这是一个很长的群聊名称用来检查窄屏排版' : '周末游戏交流群',
-    source_sender_name: `测试用户 ${index + 1}`,
+    source_group_name: groupNames[tag],
+    source_sender_name: `测试用户 ${tag}`,
     source_memory_id: index + 100,
     updated_at: 1791039600,
     expires_at: null,
@@ -75,6 +77,16 @@ function require(condition, message) { if (!condition) throw new Error(message);
 async function run() {
   const lines = [];
   document.getElementById('run').disabled = true;
+  try {
+    const doc = frame.contentDocument;
+    const headerCount = doc.querySelectorAll('.profile-group-header').length;
+    require(headerCount === 4, `expected 4 grouped headers, saw ${headerCount}`);
+    require(doc.querySelectorAll('.profile-row').length === 11, 'expected 11 fact rows after grouping');
+    require(!doc.querySelector('.profile-chat-cell'), 'legacy per-row chat cell should be gone');
+    const firstHeader = doc.querySelector('.profile-group-header');
+    require(firstHeader.textContent.includes('测试用户 alpha') && firstHeader.textContent.includes('周末游戏交流群'), 'group header should show identity once');
+    lines.push('PASS grouping: identity shown once per user, 4 headers / 11 facts');
+  } catch (error) { lines.push(`FAIL grouping: ${error.message}`); }
   for (const width of [1622, 1280, 1024, 769, 768, 700, 390, 375]) {
     frame.style.width = `${width}px`;
     await nextFrame();
@@ -117,7 +129,7 @@ async function run() {
     await until(() => doc.querySelector('.profile-value-cell').textContent.includes('修改后的测试昵称'));
     const post = frame.contentWindow.profileFixturePosts.at(-1);
     require(post.path === 'page/profiles/update' && post.body.profile_key === 'preferred_nickname' &&
-      post.body.profile_scope === 'anamnesis:profile:qq:demo-0:session:default:GroupMessage:42', 'incorrect update target');
+      post.body.profile_scope === 'anamnesis:profile:qq:alpha:session:default:GroupMessage:42', 'incorrect update target');
     lines.push('PASS editor: row click, save exact scope/key, refreshed value');
     // Reset the fixture value for reproducible repeated runs.
     doc.querySelector('.profile-row').click();

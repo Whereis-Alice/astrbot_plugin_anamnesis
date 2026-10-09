@@ -82,6 +82,7 @@
     "profile.recentChat": { zh: "最近群聊 / 用户", en: "Recent group / user", ru: "Последняя группа / пользователь" },
     "profile.groupWithId": { zh: "群聊 {0}", en: "Group {0}", ru: "Группа {0}" },
     "profile.privateOrUnknown": { zh: "私聊或未记录群名", en: "Private chat or group name unavailable", ru: "Личный чат или имя группы недоступно" },
+    "profile.groupFactCount": { zh: "{0} 条档案", en: "{0} facts", ru: "{0} фактов" },
     "profile.detailBadge": { zh: "用户档案", en: "User Profile", ru: "Профиль пользователя" },
     "profile.editTitle": { zh: "编辑用户档案", en: "Edit User Profile", ru: "Редактировать профиль" },
     "profile.editSection": { zh: "档案内容", en: "Profile fact", ru: "Факт профиля" },
