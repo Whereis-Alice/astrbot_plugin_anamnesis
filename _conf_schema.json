@@ -42,7 +42,7 @@
     "items": {
       "embedding_provider_id": {
         "description": "Embedding 模型 ID",
-        "hint": "用于生成记忆向量的 Embedding 模型 ID。留空使用 AstrBot 默认。可在 AstrBot 后台「LLM 配置」中查看已有的 Embedding Provider ID（如 openai_embedding）。",
+        "hint": "用于生成记忆向量的 Embedding 模型 ID。建议明确选择并保持模型稳定；留空会使用首个可用的 Embedding Provider。可在 AstrBot 后台「LLM 配置」中查看已有的 ID（如 openai_embedding）。",
         "type": "string",
         "default": ""
       },
@@ -52,6 +52,13 @@
         "type": "string",
         "_special": "select_provider",
         "default": ""
+      },
+      "llm_stream_mode": {
+        "description": "记忆处理流式调用",
+        "hint": "auto：先非流式，模型明确不支持时自动改用流式；always：始终流式；never：始终非流式。只保存完整响应，流中断时不写入记忆。",
+        "type": "string",
+        "options": ["auto", "always", "never"],
+        "default": "auto"
       }
     }
   },
@@ -149,6 +156,20 @@
           "max": 600.0,
           "step": 0.1
         }
+      },
+      "injection_max_chars": {
+        "description": "自动召回注入字符预算",
+        "hint": "单轮自动召回文本的总字符上限（包含说明与边界）；伪工具模式限制结果 JSON。默认 6000，0 表示不限。仅限制展示，不截断已存记忆。（允许范围：0–100000）",
+        "type": "int",
+        "default": 6000,
+        "slider": {"min": 0, "max": 100000, "step": 100}
+      },
+      "injection_entry_max_chars": {
+        "description": "自动召回单条展示上限",
+        "hint": "每条自动召回记忆的展示字符上限。默认 1200，0 表示不限；防止长导入记忆占满模型上下文。（允许范围：0–20000）",
+        "type": "int",
+        "default": 1200,
+        "slider": {"min": 0, "max": 20000, "step": 100}
       },
       "max_k": {
         "description": "主动检索最大数量",

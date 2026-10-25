@@ -40,11 +40,17 @@
       "hint": "Configure the AI models used by the memory system",
       "embedding_provider_id": {
         "description": "Embedding Model ID",
-        "hint": "The Embedding model ID used to generate memory vectors. Leave blank to use AstrBot default. You can find existing Embedding Provider IDs in the AstrBot admin panel under 'LLM Configuration' (e.g., openai_embedding)."
+        "hint": "The Embedding model ID used to generate memory vectors. Select it explicitly and keep the model stable; blank uses the first available Embedding Provider. Find IDs in the AstrBot admin panel under 'LLM Configuration' (e.g., openai_embedding)."
       },
       "llm_provider_id": {
         "description": "LLM Model ID",
         "hint": "The large language model ID used for summarizing conversations and evaluating memory importance. Leave blank to use AstrBot default. A model with strong reasoning capabilities is recommended."
+      },
+      "llm_stream_mode": {
+        "description": "Memory LLM Streaming",
+        "hint": "auto: try non-streaming first and switch only when explicitly unsupported; always: stream; never: non-stream. Only complete responses are saved; interrupted streams do not create memories.",
+        "options": {"auto": "Automatic", "always": "Always stream", "never": "Never stream"},
+        "labels": ["Automatic", "Always stream", "Never stream"]
       }
     },
     "session_manager": {
@@ -85,6 +91,14 @@
       "search_timeout_seconds": {
         "description": "Memory Retrieval Timeout (seconds)",
         "hint": "Maximum time to wait for automatic memory retrieval on each request. Default is 5 seconds; when exceeded, this turn skips memory injection without affecting the normal reply. Set to 0 for no timeout. Allowed range: 0-600."
+      },
+      "injection_max_chars": {
+        "description": "Automatic Recall Character Budget",
+        "hint": "Maximum characters per automatic memory injection including framing. Fake-tool mode limits the result JSON. Default 6000; 0 means unlimited. Stored memories remain complete. Range: 0-100000."
+      },
+      "injection_entry_max_chars": {
+        "description": "Per-Memory Display Limit",
+        "hint": "Maximum displayed characters per automatically recalled memory. Default 1200; 0 means unlimited. Range: 0-20000."
       },
       "max_k": {
         "description": "Max Active Retrieval Count",

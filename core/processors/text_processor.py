@@ -6,10 +6,38 @@
 import re
 import string
 import warnings
-from collections import Counter
+from collections import Counter, OrderedDict
 from pathlib import Path
 
 from ..models.default_stopwords import DEFAULT_STOPWORDS as FALLBACK_STOPWORDS
+
+_CJK_RUN = re.compile(r"[\u4e00-\u9fff]+")
+_EN_PUNCT_TABLE = str.maketrans("", "", string.punctuation)
+_CN_PUNCT_TABLE = str.maketrans(
+    "",
+    "",
+    (
+        "！？｡。＂＃＄％＆＇（）＊＋，－／：；＜＝＞＠［＼］＾＿｀｛｜｝～"
+        "｟｠｢｣､、〃《》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〾〿–—"
+        '‛""„‟…‧﹏'
+        "·・•●○◎◇◆□■△▲▽▼⊙⊕⊗⊘⊙⊚⊛⊝⊞⊟⊠⊡⊢⊣"
+    ),
+)
+
+
+def with_cjk_bigrams(tokens: list[str], text: str) -> list[str]:
+    """补充连续中文段的字符二元组，保留原词元顺序和词频。"""
+    merged = list(tokens)
+    seen = set(tokens)
+    for match in _CJK_RUN.finditer(text or ""):
+        run = match.group(0)
+        for index in range(len(run) - 1):
+            bigram = run[index : index + 2]
+            if bigram not in seen:
+                merged.append(bigram)
+                seen.add(bigram)
+    return merged
+
 
 try:
     import jieba
@@ -56,6 +84,18 @@ class TextProcessor:
         # 使用默认停用词(StopwordsManager 将在需要时异步加载)
         self.stopwords = set(self.DEFAULT_STOPWORDS)
 
+        # 只缓存查询规模的文本，避免长总结占用常驻内存。
+        self._token_cache: OrderedDict[tuple[str, bool], tuple[str, ...]] = (
+            OrderedDict()
+        )
+        self._token_cache_limit = 128
+        self._token_cache_max_chars = 2000
+        self._token_cache_generation = 0
+
+    def _invalidate_token_cache(self) -> None:
+        self._token_cache_generation += 1
+        self._token_cache.clear()
+
     async def async_init(self) -> None:
         """
         异步初始化，加载停用词文件
@@ -69,6 +109,7 @@ class TextProcessor:
             stopwords = await manager.load_stopwords()
             if stopwords:
                 self.stopwords.update(stopwords)
+                self._invalidate_token_cache()
 
     def tokenize(self, text: str, remove_stopwords: bool = True) -> list[str]:
         """
@@ -149,10 +190,26 @@ class TextProcessor:
     async def tokenize_async(
         self, text: str, remove_stopwords: bool = True
     ) -> list[str]:
-        """异步分词：将 CPU 密集型 jieba 分词卸载到线程池，避免阻塞事件循环。"""
+        """异步分词；短查询用有界 LRU 缓存复用，词典变更时失效。"""
         import asyncio
 
-        return await asyncio.to_thread(self.tokenize, text, remove_stopwords)
+        cacheable = isinstance(text, str) and len(text) <= self._token_cache_max_chars
+        key = (text, remove_stopwords)
+        if cacheable:
+            cached = self._token_cache.get(key)
+            if cached is not None:
+                self._token_cache.move_to_end(key)
+                return list(cached)
+
+        generation = self._token_cache_generation
+        tokens = await asyncio.to_thread(self.tokenize, text, remove_stopwords)
+        # 在途分词完成前词典可能已变化；旧结果不能写回新一代缓存。
+        if cacheable and generation == self._token_cache_generation:
+            self._token_cache[key] = tuple(tokens)
+            self._token_cache.move_to_end(key)
+            if len(self._token_cache) > self._token_cache_limit:
+                self._token_cache.popitem(last=False)
+        return tokens
 
     async def tokenize_batch_async(
         self, texts: list[str], remove_stopwords: bool = True
@@ -197,6 +254,7 @@ class TextProcessor:
                         stopwords.add(word)
 
             self.stopwords.update(stopwords)
+            self._invalidate_token_cache()
             return stopwords
 
         except Exception as e:
@@ -238,6 +296,7 @@ class TextProcessor:
                 f"已跳过 {len(failed_words)} 个无法添加到 jieba 的自定义词",
                 UserWarning,
             )
+        self._invalidate_token_cache()
 
     def add_stopwords(self, words: list[str]):
         """
@@ -247,6 +306,7 @@ class TextProcessor:
             words: 停用词列表
         """
         self.stopwords.update(words)
+        self._invalidate_token_cache()
 
     def remove_stopwords_from_list(self, words: list[str]):
         """
@@ -257,6 +317,7 @@ class TextProcessor:
         """
         for word in words:
             self.stopwords.discard(word)
+        self._invalidate_token_cache()
 
     def get_word_freq(self, texts: list[str]) -> dict[str, int]:
         """
@@ -319,16 +380,10 @@ class TextProcessor:
         text = re.sub(r"#\w+", "", text)
 
         # 3. 移除英文标点
-        text = text.translate(str.maketrans("", "", string.punctuation))
+        text = text.translate(_EN_PUNCT_TABLE)
 
         # 4. 移除中文标点
-        chinese_punctuation = (
-            "！？｡。＂＃＄％＆＇（）＊＋，－／：；＜＝＞＠［＼］＾＿｀｛｜｝～"
-            "｟｠｢｣､、〃《》「」『』【】〔〕〖〗〘〙〚〛〜〝〞〟〰〾〿–—"
-            '‛""„‟…‧﹏'
-            "·・•●○◎◇◆□■△▲▽▼⊙⊕⊗⊘⊙⊚⊛⊝⊞⊟⊠⊡⊢⊣"
-        )
-        text = text.translate(str.maketrans("", "", chinese_punctuation))
+        text = text.translate(_CN_PUNCT_TABLE)
 
         # 5. 移除多余空格,保留单个空格
         text = " ".join(text.split())
@@ -442,7 +497,7 @@ class TextProcessor:
             "今天 图书馆"
         """
         tokens = self.tokenize(text, remove_stopwords=True)
-        return " ".join(tokens)
+        return " ".join(with_cjk_bigrams(tokens, text))
 
     async def preprocess_for_bm25_async(self, text: str) -> str:
         """异步版 BM25 预处理：把同步 jieba 分词卸载到线程池（Bug H）。"""

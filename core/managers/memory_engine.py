@@ -368,8 +368,20 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         """Create and track a background task, auto-discarding on completion."""
         task = asyncio.create_task(coro)
         self._pending_tasks.add(task)
-        task.add_done_callback(self._pending_tasks.discard)
+        task.add_done_callback(self._on_background_task_done)
         return task
+
+    def _on_background_task_done(self, task: asyncio.Task) -> None:
+        """取回后台任务异常，保证失败可观测。"""
+        self._pending_tasks.discard(task)
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.error(
+                "[MemoryEngine] 后台任务失败: %s", error,
+                exc_info=(type(error), error, error.__traceback__),
+            )
 
     async def _create_tables(self):
         """创建数据库表

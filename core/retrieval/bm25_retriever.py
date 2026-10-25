@@ -9,12 +9,11 @@ from dataclasses import dataclass
 from typing import Any
 
 import aiosqlite
-
 from astrbot.api import logger
 
 from ...storage.alias_store import expand_query_tokens
 from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
-from ..processors.text_processor import TextProcessor
+from ..processors.text_processor import TextProcessor, with_cjk_bigrams
 
 
 @dataclass
@@ -147,7 +146,7 @@ class BM25Retriever:
         tokens = await self.text_processor.tokenize_async(
             content, remove_stopwords=True
         )
-        processed_content = " ".join(tokens)
+        processed_content = " ".join(with_cjk_bigrams(tokens, content))
 
         async with self._connect() as db:
             # 插入到FTS表
@@ -181,6 +180,7 @@ class BM25Retriever:
 
         # 预处理查询（异步卸载 jieba 分词到线程池）
         tokens = await self.text_processor.tokenize_async(query, remove_stopwords=True)
+        tokens = with_cjk_bigrams(tokens, query)
         if not tokens:
             return []
 
@@ -338,7 +338,7 @@ class BM25Retriever:
             tokens = await self.text_processor.tokenize_async(
                 content, remove_stopwords=True
             )
-            processed_content = " ".join(tokens)
+            processed_content = " ".join(with_cjk_bigrams(tokens, content))
 
             async with self._connect() as db:
                 # 先删除旧索引

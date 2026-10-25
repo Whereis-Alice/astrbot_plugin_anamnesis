@@ -104,6 +104,7 @@ async def test_text_processor_async_init_loads_builtin_stopwords(tmp_path: Path)
     assert processor.is_stopword("的")
     assert not (tmp_path / "stopwords_hit.txt").exists()
 
+
 # ── Bug H：CPU 密集分词的异步包装（避免阻塞事件循环）────────────────────────
 
 
@@ -187,3 +188,100 @@ async def test_async_wrappers_keep_remove_stopwords_flag():
 
     assert "编程" in kept[0]
     assert "编程" not in dropped[0]
+
+
+@pytest.mark.asyncio
+async def test_token_cache_returns_copies_and_separates_stopword_modes():
+    processor = TextProcessor()
+    processor.add_stopwords(["alpha"])
+    seen = _track_worker_thread(processor, "tokenize")
+    first = await processor.tokenize_async("alpha beta")
+    first.append("caller mutation")
+    assert await processor.tokenize_async("alpha beta") == ["beta"]
+    assert await processor.tokenize_async("alpha beta", remove_stopwords=False) == [
+        "alpha",
+        "beta",
+    ]
+    assert len(seen) == 2
+
+
+@pytest.mark.asyncio
+async def test_token_cache_invalidates_after_stopword_changes_and_loading(tmp_path):
+    processor = TextProcessor()
+    assert await processor.tokenize_async("alpha beta") == ["alpha", "beta"]
+    processor.add_stopwords(["alpha"])
+    assert await processor.tokenize_async("alpha beta") == ["beta"]
+    processor.remove_stopwords_from_list(["alpha"])
+    assert await processor.tokenize_async("alpha beta") == ["alpha", "beta"]
+    stopwords = tmp_path / "cache-stopwords.txt"
+    stopwords.write_text("beta\n", encoding="utf-8")
+    await processor.load_stopwords(str(stopwords))
+    assert await processor.tokenize_async("alpha beta") == ["alpha"]
+
+
+@pytest.mark.asyncio
+async def test_token_cache_invalidates_after_custom_word_changes(monkeypatch):
+    words = set()
+
+    class Dictionary:
+        @staticmethod
+        def add_word(word):
+            words.add(word)
+
+        @staticmethod
+        def cut_for_search(text):
+            return [text] if text in words else list(text)
+
+    monkeypatch.setattr(text_processor_mod, "JIEBA_AVAILABLE", True)
+    monkeypatch.setattr(text_processor_mod, "JIEBA_RUNTIME_DISABLED", False)
+    monkeypatch.setattr(text_processor_mod, "jieba", Dictionary)
+    processor = TextProcessor()
+    assert await processor.tokenize_async("雪菲", remove_stopwords=False) == [
+        "雪",
+        "菲",
+    ]
+    processor.add_custom_words(["雪菲"])
+    assert await processor.tokenize_async("雪菲", remove_stopwords=False) == ["雪菲"]
+
+
+@pytest.mark.asyncio
+async def test_token_cache_is_lru_bounded_and_skips_long_documents():
+    processor = TextProcessor()
+    processor._token_cache_limit = 2
+    seen = _track_worker_thread(processor, "tokenize")
+    for text in ["alpha", "beta", "alpha", "gamma", "beta"]:
+        await processor.tokenize_async(text)
+    assert len(seen) == 4, "recent alpha should survive while beta is evicted"
+    assert len(processor._token_cache) == 2
+    text = "long " * 500
+    await processor.tokenize_async(text)
+    await processor.tokenize_async(text)
+    assert len(seen) == 6
+    assert all(len(key[0]) <= 2000 for key in processor._token_cache)
+
+
+@pytest.mark.asyncio
+async def test_inflight_old_dictionary_result_cannot_repopulate_cache():
+    import asyncio
+
+    processor = TextProcessor()
+    started = threading.Event()
+    release = threading.Event()
+    original = processor.tokenize
+
+    def blocked(text, remove_stopwords=True):
+        result = original(text, remove_stopwords)
+        started.set()
+        assert release.wait(5)
+        return result
+
+    processor.tokenize = blocked
+    task = asyncio.create_task(processor.tokenize_async("alpha beta"))
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        processor.add_stopwords(["alpha"])
+    finally:
+        release.set()
+    assert await task == ["alpha", "beta"]
+    processor.tokenize = original
+    assert await processor.tokenize_async("alpha beta") == ["beta"]

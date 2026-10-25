@@ -154,6 +154,21 @@ class DecayScheduler:
         except ValueError:
             return 0
 
+    async def _apply_and_record_decay(self, days: int) -> bool:
+        """记录已成功提交的衰减，先于清理等可取消的后续维护。"""
+        if self.decay_rate > 0:
+            affected = await self.memory_engine.apply_daily_decay(self.decay_rate, days)
+            if affected < 0:
+                logger.error("[衰减调度] 衰减失败，保留今日未完成状态以便重试")
+                return False
+            logger.info(
+                f"[衰减调度] 衰减完成，影响 {affected} 条记忆，衰减天数: {days}"
+            )
+        else:
+            logger.info("[衰减调度] 衰减率为0，跳过衰减")
+        await self._set_last_decay_date(self._get_today_str())
+        return True
+
     async def _execute_decay(self, days: int = 1) -> bool:
         """
         执行衰减操作
@@ -165,15 +180,23 @@ class DecayScheduler:
             是否执行成功
         """
         try:
-            if self.decay_rate > 0:
-                affected = await self.memory_engine.apply_daily_decay(
-                    self.decay_rate, days
-                )
-                logger.info(
-                    f"[衰减调度] 衰减完成，影响 {affected} 条记忆，衰减天数: {days}"
-                )
-            else:
-                logger.info("[衰减调度] 衰减率为0，跳过衰减")
+            # 卸载取消时仍完成提交与日期记录，避免重启重复衰减同一批数据。
+            operation = asyncio.create_task(self._apply_and_record_decay(days))
+            try:
+                completed = await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                while not operation.done():
+                    try:
+                        await asyncio.shield(operation)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if not operation.cancelled():
+                    operation.exception()
+                raise
+            if not completed:
+                return False
 
             # 每日衰减后可选执行一次旧记忆清理
             if self.memory_engine.config.get("auto_cleanup_enabled", True):
@@ -202,8 +225,6 @@ class DecayScheduler:
                     logger.error(
                         f"[衰减调度] 自动清理失败: {cleanup_err}", exc_info=True
                     )
-
-            await self._set_last_decay_date(self._get_today_str())
 
             # 每日执行记忆整合
             if self.consolidation_manager is not None:

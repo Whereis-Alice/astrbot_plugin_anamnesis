@@ -13,7 +13,7 @@ from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, MessageEventResult, filter
 from astrbot.api.event.filter import PermissionType, permission_type
 from astrbot.api.provider import LLMResponse, ProviderRequest
-from astrbot.api.star import Context, Star, StarTools, register
+from astrbot.api.star import Context, Star, StarTools
 
 from .core.base.config_manager import ConfigManager
 from .core.command_handler import CommandHandler
@@ -86,13 +86,6 @@ elif _version_lt(_CURRENT_ASTRBOT_VERSION, _MIN_ASTRBOT_VERSION):
     )
 
 
-@register(
-    "Anamnesis",
-    "Whereis-Alice",
-    "An intelligent long-term memory plugin with a dynamic lifecycle for AstrBot.",
-    "3.2.4",
-    "https://github.com/Whereis-Alice/astrbot_plugin_anamnesis",
-)
 class AnamnesisPlugin(Star):
     """Anamnesis 插件主类"""
 

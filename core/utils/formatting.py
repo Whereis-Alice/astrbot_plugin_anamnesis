@@ -145,7 +145,15 @@ def _memory_metadata_rows(metadata: dict) -> list[str]:
     return [neutralize_memory_markers(row) for row in rows]
 
 
-def format_memories_for_injection(memories: list) -> str:
+def _clip_injection_text(text: str, limit: int) -> str:
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+def format_memories_for_injection(
+    memories: list, *, max_chars: int = 6000, entry_max_chars: int = 1200
+) -> str:
     """
     将检索到的记忆列表格式化为单个字符串，以便注入到 System Prompt。
     添加明确的说明文本，告知 LLM 这些是历史对话记忆。
@@ -177,6 +185,13 @@ def format_memories_for_injection(memories: list) -> str:
 
     header = f"{MEMORY_INJECTION_HEADER}\n{header_body}\n\n"
     footer = f"\n\n{footer_body}\n{MEMORY_INJECTION_FOOTER}"
+    if max_chars > 0 and len(header) + len(footer) >= max_chars:
+        # 自定义提示词过长时优先保留边界标记和内置说明。
+        header = f"{MEMORY_INJECTION_HEADER}\n{_get_default_injection_header()}\n\n"
+        footer = f"\n\n{_get_default_injection_footer()}\n{MEMORY_INJECTION_FOOTER}"
+        if len(header) + len(footer) >= max_chars:
+            return ""
+    remaining = max_chars - len(header) - len(footer) if max_chars > 0 else None
 
     logger.debug(
         f"[format_memories_for_injection] 记忆注入标记: 头部='{MEMORY_INJECTION_HEADER}', 尾部='{MEMORY_INJECTION_FOOTER}'"
@@ -242,6 +257,14 @@ def format_memories_for_injection(memories: list) -> str:
             entry_parts.append(display_content)
 
             entry = "\n".join(entry_parts)
+            entry = _clip_injection_text(entry, entry_max_chars)
+            separator_size = 2 if formatted_entries else 0
+            if remaining is not None:
+                available = remaining - separator_size
+                if available <= 0:
+                    break
+                entry = _clip_injection_text(entry, available)
+                remaining -= len(entry) + separator_size
             formatted_entries.append(entry)
 
             logger.debug(
@@ -280,6 +303,9 @@ def format_memories_for_fake_tool_call(
     k: int = 5,
     session_filtered: bool = True,
     persona_filtered: bool = True,
+    *,
+    max_chars: int = 6000,
+    entry_max_chars: int = 1200,
 ) -> list[dict]:
     """将检索到的记忆列表格式化为伪造的工具调用消息对。
 
@@ -334,7 +360,9 @@ def format_memories_for_fake_tool_call(
                 else metadata_raw
             )
 
-        display_content = _memory_injection_content(content, metadata)
+        display_content = _clip_injection_text(
+            _memory_injection_content(content, metadata), entry_max_chars
+        )
         serialized_results.append(
             {
                 "id": memory_id,
@@ -348,8 +376,7 @@ def format_memories_for_fake_tool_call(
             }
         )
 
-    tool_result_json = json.dumps(
-        {
+    result_payload = {
             "query": neutralize_memory_markers(query)[:200],
             "applied_filters": {
                 "session_filtered": session_filtered,
@@ -357,9 +384,29 @@ def format_memories_for_fake_tool_call(
             },
             "count": len(serialized_results),
             "results": serialized_results,
-        },
-        ensure_ascii=False,
-    )
+    }
+
+    def encode_result() -> str:
+        result_payload["count"] = len(serialized_results)
+        return json.dumps(result_payload, ensure_ascii=False)
+
+    tool_result_json = encode_result()
+    # 裁减条目而不是截断 JSON，保证伪工具响应始终可解析。
+    while max_chars > 0 and len(tool_result_json) > max_chars and serialized_results:
+        if len(serialized_results) > 1:
+            serialized_results.pop()
+        else:
+            item = serialized_results[0]
+            excess = len(tool_result_json) - max_chars
+            if len(item["content"]) <= excess:
+                serialized_results.clear()
+            else:
+                item["content"] = _clip_injection_text(
+                    item["content"], len(item["content"]) - excess
+                )
+        tool_result_json = encode_result()
+    if not serialized_results:
+        return []
 
     # 构造 assistant 消息（伪造的工具调用）
     assistant_msg: dict[str, Any] = {

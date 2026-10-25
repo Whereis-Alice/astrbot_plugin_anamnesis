@@ -342,6 +342,9 @@ class InitializerFinalizeMixin:
                     "include_source_time_tags": self.config_manager.get(
                         "reflection_engine.include_source_time_tags", True
                     ),
+                    "llm_stream_mode": self.config_manager.get(
+                        "provider_settings.llm_stream_mode", "auto"
+                    ),
                     # 记忆整合的合并提示词字符预算，避免超长输入撑爆上下文与内存。
                     "merge_input_char_budget": self.config_manager.get(
                         "memory_consolidation.merge_input_char_budget", 12000
@@ -447,7 +450,9 @@ class InitializerFinalizeMixin:
             raise InitializationError(f"初始化失败: {e}") from e
 
     async def _check_and_migrate_database(self):
-        """检查并执行数据库迁移"""
+        """检查迁移，默认要求备份；失败恢复备份并中止启动。"""
+        backup_path = None
+        migration_started = False
         try:
             if not self.db_migration:
                 logger.warning("数据库迁移管理器未初始化")
@@ -463,19 +468,50 @@ class InitializerFinalizeMixin:
 
             if self.config_manager.get("migration_settings.create_backup", True):
                 backup_path = await self.db_migration.create_backup()
-                if backup_path:
-                    logger.info(f"数据库备份已创建: {backup_path}")
+                if not backup_path:
+                    raise InitializationError(
+                        "迁移前备份失败，已中止迁移；请检查磁盘空间与文件权限"
+                    )
+                logger.info(f"数据库备份已创建: {backup_path}")
 
+            migration_started = True
             result = await self.db_migration.migrate(progress_callback=None)
 
             if result.get("success"):
                 logger.info(f"数据库迁移结果: {result.get('message')}")
                 logger.info(f"   耗时: {result.get('duration', 0):.2f}秒")
             else:
-                logger.error(f"数据库迁移失败: {result.get('message')}")
+                raise InitializationError(f"数据库迁移失败: {result.get('message')}")
 
         except Exception as e:
             logger.error(f"数据库迁移检查失败: {e}", exc_info=True)
+            restored = False
+            if migration_started and backup_path:
+                restored = await self._restore_db_backup(backup_path)
+            raise InitializationError(
+                str(e) + ("；已恢复迁移前备份" if restored else "")
+            ) from e
+
+    async def _restore_db_backup(self, backup_path: str) -> bool:
+        """通过 SQLite backup API 恢复迁移前数据，兼容已打开的连接。"""
+        try:
+            import aiosqlite
+
+            backup_file = Path(backup_path).resolve()
+            if not backup_file.is_file() or backup_file.stat().st_size < 100:
+                raise OSError("迁移备份不存在或为空，拒绝覆盖数据库")
+            # 只读打开，备份消失时不可新建空库并覆盖目标。
+            async with aiosqlite.connect(
+                backup_file.as_uri() + "?mode=ro", uri=True
+            ) as source:
+                async with aiosqlite.connect(self.db_migration.db_path) as dest:
+                    await dest.execute("PRAGMA busy_timeout = 30000")
+                    await source.backup(dest)
+            logger.warning("数据库已恢复到迁移前备份")
+            return True
+        except Exception:
+            logger.error("恢复迁移前备份失败", exc_info=True)
+            return False
 
     async def _auto_rebuild_index_if_needed(self):
         """Schedule index checking without blocking core plugin readiness."""

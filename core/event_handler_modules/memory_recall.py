@@ -396,15 +396,25 @@ class MemoryRecall:
                             f"{injection_method}: {fallback_reason}"
                         )
 
-                    memory_str = format_memories_for_injection(memory_list)
+                    format_options = {
+                        "max_chars": self.config_manager.get(
+                            "recall_engine.injection_max_chars", 6000
+                        ),
+                        "entry_max_chars": self.config_manager.get(
+                            "recall_engine.injection_entry_max_chars", 1200
+                        ),
+                    }
+                    memory_str = format_memories_for_injection(memory_list, **format_options)
 
                     if injection_method == "user_message_before":
-                        req.prompt = memory_str + "\n\n" + (req.prompt or "")
+                        if memory_str:
+                            req.prompt = memory_str + "\n\n" + (req.prompt or "")
                         logger.debug(
                             f"[{session_id}] 成功向用户消息前注入 {len(recalled_memories)} 条记忆"
                         )
                     elif injection_method == "user_message_after":
-                        req.prompt = (req.prompt or "") + "\n\n" + memory_str
+                        if memory_str:
+                            req.prompt = (req.prompt or "") + "\n\n" + memory_str
                         logger.debug(
                             f"[{session_id}] 成功向用户消息后注入 {len(recalled_memories)} 条记忆"
                         )
@@ -415,6 +425,7 @@ class MemoryRecall:
                             k=self.config_manager.get("recall_engine.top_k", 5),
                             session_filtered=recall_session_id is not None,
                             persona_filtered=use_persona_filtering,
+                            **format_options,
                         )
                         if fake_messages:
                             req.contexts.extend(fake_messages)
@@ -425,9 +436,10 @@ class MemoryRecall:
                     else:
                         # extra_user_content（推荐）：追加到用户消息末尾，
                         # 不影响前缀缓存且 mark_as_temp 后不污染对话历史
-                        req.extra_user_content_parts.append(
-                            TextPart(text=memory_str).mark_as_temp()
-                        )
+                        if memory_str:
+                            req.extra_user_content_parts.append(
+                                TextPart(text=memory_str).mark_as_temp()
+                            )
                         logger.debug(
                             f"[{session_id}] 成功向用户消息末尾注入 "
                             f"{len(recalled_memories)} 条记忆"

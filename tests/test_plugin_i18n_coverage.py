@@ -13,6 +13,9 @@ I18N_DIR = PROJECT_ROOT / ".astrbot-plugin" / "i18n"
 
 EXPECTED_OPTION_LABELS = {
     "en-US": {
+        "provider_settings.llm_stream_mode": {
+            "auto": "Automatic", "always": "Always stream", "never": "Never stream",
+        },
         "bot_language": {
             "zh": "Chinese",
             "en": "English",
@@ -54,6 +57,9 @@ EXPECTED_OPTION_LABELS = {
         },
     },
     "ru-RU": {
+        "provider_settings.llm_stream_mode": {
+            "auto": "Автоматически", "always": "Всегда потоковый", "never": "Без потока",
+        },
         "bot_language": {
             "zh": "Китайский",
             "en": "Английский",

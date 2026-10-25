@@ -11,6 +11,37 @@ from astrbot_plugin_anamnesis.storage.conversation_store import ConversationStor
 
 
 @pytest.mark.asyncio
+async def test_timestamp_ties_preserve_latest_selection_and_page_boundaries(tmp_path):
+    store = ConversationStore(str(tmp_path / "timestamp-ties.db"))
+    await store.initialize()
+    try:
+        ids = []
+        for index in range(6):
+            ids.append(await store.add_message(Message(
+                id=0,
+                session_id="ties",
+                role="user",
+                content=f"same-timestamp-{index}",
+                sender_id="sender",
+                timestamp=1700000000.0,
+            )))
+
+        # Latest LIMIT is applied before reversing into conversation order.
+        latest = await store.get_messages("ties", limit=3)
+        by_sender = await store.get_messages("ties", limit=3, sender_id="sender")
+        assert [message.id for message in latest] == ids[-3:]
+        assert [message.id for message in by_sender] == ids[-3:]
+        search = await store.search_messages("ties", "same-timestamp", limit=3)
+        assert [message.id for message in search] == list(reversed(ids[-3:]))
+
+        first = await store.get_messages_range("ties", offset=0, limit=3)
+        second = await store.get_messages_range("ties", offset=3, limit=3)
+        assert [message.id for message in first + second] == ids
+    finally:
+        await store.close()
+
+
+@pytest.mark.asyncio
 async def test_conversation_store_crud(tmp_path: Path):
     db_path = tmp_path / "conversations.db"
     store = ConversationStore(str(db_path))

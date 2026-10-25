@@ -20,10 +20,13 @@ Anamnesis defaults work for most users. The settings you usually need to touch a
 
 | Key | Default | Description |
 | --- | --- | --- |
-| `provider_settings.embedding_provider_id` | empty | Generates memory vectors. Empty means AstrBot's default embedding provider |
+| `provider_settings.embedding_provider_id` | empty | Generates memory vectors. Empty uses the first available Embedding Provider; explicit selection is recommended |
 | `provider_settings.llm_provider_id` | empty | Summarizes conversations and evaluates memory importance. Empty means AstrBot's default LLM |
+| `provider_settings.llm_stream_mode` | `auto` | Memory LLM calls: `auto` switches only after an explicit non-streaming incompatibility; `always` streams; `never` uses non-streaming |
 
-Try to keep the embedding model stable. If you change it and old memories recall poorly, run `/anam rebuild-index`.
+Select an Embedding Provider explicitly and keep its model stable. With a blank ID, the first available model may change with host configuration. If you change the model and old memories recall poorly, run `/anam rebuild-index`.
+
+Streaming accepts only a complete response returned by the Provider after the stream ends. Missing final responses or interrupted streams follow the existing retry policy and never save partial text as a memory. Network and authentication errors do not trigger automatic streaming. Request timeouts remain controlled by the Provider or caller.
 
 ## Session management
 
@@ -42,6 +45,8 @@ For very busy group chats, lower `context_window_size` or disable full group cap
 | --- | --- | --- |
 | `recall_engine.top_k` | `5` | Number of memories automatically recalled each turn |
 | `recall_engine.search_timeout_seconds` | `5.0` | Maximum seconds to wait for automatic retrieval; a timeout skips injection for that turn without affecting the reply, and `0` disables the timeout (range `0-600`) |
+| `recall_engine.injection_max_chars` | `6000` | Total character budget for automatic memory injection, including framing; fake-tool mode limits the result JSON. `0` disables the limit (range `0-100000`) |
+| `recall_engine.injection_entry_max_chars` | `1200` | Display character limit per automatically recalled memory. `0` disables the limit (range `0-20000`) |
 | `recall_engine.max_k` | `10` | Maximum results returned by active agent recall |
 | `recall_engine.importance_weight` | `1.0` | Importance weight in final ranking |
 | `recall_engine.min_importance_for_retrieval` | `0.0` | Minimum importance; `0` disables the filter |
@@ -60,6 +65,10 @@ For very busy group chats, lower `context_window_size` or disable full group cap
 Automatic recall waits up to 5 seconds by default so a slow Embedding provider, SQLite query, or FAISS search cannot hold up the LLM reply. Change `search_timeout_seconds` directly on the Anamnesis configuration page; 10–30 seconds is reasonable for a low-resource host or remote provider, while `0` restores the legacy unlimited-wait behavior. A timeout only skips memory injection for the current turn and does not affect later conversations.
 
 `extra_user_content` is the safest default. Gemini providers automatically fall back from `fake_tool_call` to `extra_user_content`. DeepSeek V4 thinking mode can now use normal `fake_tool_call` on recent AstrBot versions; the legacy `fake_tool_call_deepseek_v4` option is kept only as a compatibility alias and automatically falls back to `fake_tool_call`.
+
+Budgets shorten only the current display; stored memories remain complete. User profiles use the separate `user_profile.max_injection_chars` limit. Plain-text injection preserves complete boundary markers and is skipped if the budget cannot fit its framing. Fake-tool mode preserves valid JSON and an accurate result count.
+
+In 3.3.0, BM25 adds adjacent character pairs inside continuous Chinese segments to reduce segmentation mismatches such as “西湖” versus “西湖区”. Insert, edit, and query paths use the same rule. Run `/anam rebuild-index` to apply it immediately to old indexes; rebuilding calls the Embedding Provider and may take time and incur charges. See the [upstream review](/en/upstream-review-2026-10-25) for this update's scope.
 
 ## Memory isolation
 
@@ -180,6 +189,8 @@ For relationship-heavy use, increase graph-route weight or set `expansion_hops` 
 | `forgetting_agent.cleanup_importance_threshold` | `0.3` | Importance threshold for cleanup candidates |
 
 With automatic archiving enabled, source documents remain visible and restorable in the Dashboard. Restoring regenerates the embedding and rebuilds BM25, graph, and memory-atom indexes.
+
+With `migration_settings.create_backup` enabled, a backup failure aborts migration. Failed migrations attempt to restore the backup and stop initialization. Failed daily decay remains eligible for retry, with the whole write batch rolled back. Decay updates only importance and access count, preserving concurrent access times and other metadata.
 
 `migration_settings` only covers in-place schema upgrades of this plugin's own database at startup. It is unrelated to `/anam migrate`, which copies data over from the old LivingMemory plugin; see [Commands](/en/commands) for that.
 

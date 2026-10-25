@@ -195,7 +195,12 @@ class MemoryConsolidationManager:
     ) -> list[list[dict[str, Any]]]:
         granularity = cfg.get("granularity", "session")
         if granularity == "semantic":
-            groups = await self._group_semantic(candidates, cfg)
+            semantic_groups = await self._group_semantic(candidates, cfg)
+            groups = [
+                scope_group
+                for semantic_group in semantic_groups
+                for scope_group in self._group_by_session(semantic_group)
+            ]
         else:
             groups = self._group_by_session(candidates)
 
@@ -241,12 +246,13 @@ class MemoryConsolidationManager:
     def _group_by_session(
         self, candidates: list[dict[str, Any]]
     ) -> list[list[dict[str, Any]]]:
-        grouped: dict[str, list[dict[str, Any]]] = {}
+        grouped: dict[tuple[str, Any], list[dict[str, Any]]] = {}
         for mem in candidates:
             session_id = mem["metadata"].get("session_id")
             if not session_id:
                 continue
-            grouped.setdefault(str(session_id), []).append(mem)
+            key = (str(session_id), mem["metadata"].get("persona_id"))
+            grouped.setdefault(key, []).append(mem)
         return list(grouped.values())
 
     async def _group_semantic(
@@ -300,6 +306,10 @@ class MemoryConsolidationManager:
     async def _consolidate_group(
         self, group: list[dict[str, Any]], cfg: dict[str, Any]
     ) -> dict[str, Any]:
+        scope_groups = self._group_by_session(group)
+        if len(scope_groups) != 1 or len(scope_groups[0]) != len(group):
+            raise RuntimeError("整合组必须包含同一会话、同一人格的记忆")
+
         merged = await self.memory_processor.merge_memories(group)
 
         summary = merged["summary"]
@@ -312,18 +322,17 @@ class MemoryConsolidationManager:
         # 新摘要，绝不能跟着一起归档/删除，否则信息真的丢了。旧版返回值没有
         # skipped_ids 键时退化为「全部参与」，保持向后兼容。
         skipped_ids = set(merged.get("skipped_ids") or [])
-        kept = [mem for mem in group if mem["id"] not in skipped_ids] or list(group)
+        kept = [mem for mem in group if mem["id"] not in skipped_ids]
+        if not kept:
+            raise RuntimeError("本组没有实际参与合并的记忆，取消整合")
         if skipped_ids:
             logger.warning(
                 f"[记忆整合] 本组有 {len(skipped_ids)} 条记忆因输入预算未参与合并，"
                 f"保持原状不做归档/删除: {sorted(skipped_ids, key=str)}"
             )
 
-        session_id = None
-        persona_id = None
-        if cfg.get("granularity", "session") == "session":
-            session_id = kept[0]["metadata"].get("session_id")
-            persona_id = kept[0]["metadata"].get("persona_id")
+        session_id = kept[0]["metadata"].get("session_id")
+        persona_id = kept[0]["metadata"].get("persona_id")
 
         old_ids = [mem["id"] for mem in kept]
         metadata = {
@@ -344,16 +353,43 @@ class MemoryConsolidationManager:
             metadata=metadata,
         )
 
-        if cfg.get("keep_original", "archive") == "archive":
-            removed = await self.memory_engine.archive_memories(old_ids)
-        else:
-            removed = await self.memory_engine.batch_delete_memories(old_ids)
+        try:
+            if cfg.get("keep_original", "archive") == "archive":
+                removed = await self.memory_engine.archive_memories(old_ids)
+            else:
+                removed = await self.memory_engine.batch_delete_memories(old_ids)
+            if removed != len(old_ids):
+                raise RuntimeError(
+                    f"整合来源清理不完整: expected={len(old_ids)}, removed={removed}"
+                )
+        except Exception:
+            await self._rollback_if_sources_intact(new_id, old_ids)
+            raise
 
         logger.info(
             f"[记忆整合] 整合 {len(old_ids)} 条记忆 -> 新记忆 {new_id}，"
             f"{cfg.get('keep_original', 'archive')} {removed} 条旧记忆"
         )
         return {"new_id": new_id, "merged": len(old_ids), "removed": removed}
+
+    async def _rollback_if_sources_intact(
+        self, new_id: int, source_ids: list[int]
+    ) -> None:
+        """仅在所有来源仍可召回时撤销新结果，避免部分清理后丢失唯一副本。"""
+        try:
+            for source_id in source_ids:
+                source = await self.memory_engine.get_memory(source_id)
+                if not source:
+                    logger.warning(f"[记忆整合] 来源 {source_id} 已移除，保留合并记忆 {new_id}")
+                    return
+                metadata = self.memory_engine._safe_json_dict(source.get("metadata"))
+                if str(metadata.get("status") or "active") != "active":
+                    logger.warning(f"[记忆整合] 来源 {source_id} 已归档，保留合并记忆 {new_id}")
+                    return
+            if not await self.memory_engine.delete_memory(new_id):
+                logger.error(f"[记忆整合] 撤销合并记忆 {new_id} 失败")
+        except Exception:
+            logger.error(f"[记忆整合] 无法确认来源完整性，保留合并记忆 {new_id}", exc_info=True)
 
 
 __all__ = ["MemoryConsolidationManager"]

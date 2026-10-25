@@ -66,6 +66,7 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         self.context = context
         self._llm_provider = llm_provider
         self.config = config or {}
+        self._stream_only_providers: set[str] = set()
 
         # 身份加固：先过滤不可信的发送者身份，再把可信昵称锚定进事实文本。
         self.identity_guard = IdentityGuard(self.config)
@@ -327,16 +328,50 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         Returns:
             LLM 响应文本
         """
+        stream_mode = self.config.get("llm_stream_mode", "auto")
+        if stream_mode not in ("auto", "always", "never"):
+            stream_mode = "auto"
         last_error = None
         for attempt in range(max_retries):
             try:
                 provider = self._get_current_llm_provider()
                 if not provider:
                     raise RuntimeError("LLM Provider 不可用")
-                response = await provider.text_chat(
-                    prompt=prompt, system_prompt=system_prompt
+                provider_config = getattr(provider, "provider_config", None)
+                provider_id = (
+                    provider_config.get("id") if isinstance(provider_config, dict) else None
                 )
-                return response.completion_text
+                provider_key = str(provider_id) if provider_id else str(id(provider))
+                use_stream = stream_mode == "always" or (
+                    stream_mode == "auto" and provider_key in self._stream_only_providers
+                )
+                if not use_stream:
+                    try:
+                        response = await provider.text_chat(
+                            prompt=prompt, system_prompt=system_prompt
+                        )
+                        return response.completion_text
+                    except Exception as error:
+                        if stream_mode != "auto" or not self._requires_streaming(error):
+                            raise
+                        logger.warning("[MemoryProcessor] 模型仅支持流式，尝试流式调用")
+
+                stream_chat = getattr(provider, "text_chat_stream", None)
+                if not callable(stream_chat):
+                    raise RuntimeError("当前 Provider 不支持 text_chat_stream")
+                completion_text = None
+                async for chunk in stream_chat(prompt=prompt, system_prompt=system_prompt):
+                    if getattr(chunk, "is_chunk", True) is False:
+                        text = getattr(chunk, "completion_text", None)
+                        if isinstance(text, str) and text.strip():
+                            completion_text = text
+                if completion_text is None:
+                    raise RuntimeError("流式调用未返回完整响应，不保存不完整记忆")
+                if stream_mode == "auto":
+                    if len(self._stream_only_providers) >= 64:
+                        self._stream_only_providers.clear()
+                    self._stream_only_providers.add(provider_key)
+                return completion_text
             except Exception as e:
                 last_error = e
                 if attempt == max_retries - 1:
@@ -350,6 +385,19 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
         if last_error:
             raise last_error
         raise RuntimeError("LLM 调用失败，未捕获到具体异常")
+
+    @staticmethod
+    def _requires_streaming(error: Exception) -> bool:
+        """普通网络/认证错误保持原重试，仅识别明确的非流式不支持错误。"""
+        message = str(error).lower()
+        non_stream_unsupported = (
+            any(token in message for token in ("non-stream", "non_stream", "nonstream", "非流式"))
+            and any(token in message for token in ("not support", "unsupported", "only support", "不支持", "仅支持"))
+        )
+        return non_stream_unsupported or any(phrase in message for phrase in (
+            "only supports streaming", "only support streaming",
+            "stream=true is required", "streaming is required", "仅支持流式",
+        ))
 
     # ---------- JSON 修复辅助 ----------
 

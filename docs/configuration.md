@@ -20,10 +20,13 @@ Anamnesis 的默认配置已经适合大多数场景。真正需要调整的通�
 
 | 配置项 | 默认 | 说明 |
 | --- | --- | --- |
-| `provider_settings.embedding_provider_id` | 空 | 用于向量化记忆。留空使用 AstrBot 默认 Embedding Provider |
+| `provider_settings.embedding_provider_id` | 空 | 用于向量化记忆。留空使用首个可用的 Embedding Provider，建议显式选择 |
 | `provider_settings.llm_provider_id` | 空 | 用于总结对话和评估记忆重要性。留空使用 AstrBot 默认 LLM |
+| `provider_settings.llm_stream_mode` | `auto` | 记忆处理的 LLM 调用方式：`auto` 遇到明确不支持非流式的错误才转流式，`always` 始终流式，`never` 始终非流式 |
 
-建议 Embedding 模型保持稳定，不要频繁更换。更换 Embedding 后，如发现旧记忆召回异常，可执行 `/anam rebuild-index`。
+建议明确设置 Embedding Provider 并保持模型稳定，不要频繁更换；留空时首个可用模型可能随宿主配置变动。更换 Embedding 后，如发现旧记忆召回异常，可执行 `/anam rebuild-index`。
+
+流式模式仅接受 Provider 在流结束时返回的完整响应。缺少完整响应或流中断会按原重试策略处理，不会把半截正文写成记忆；网络错误、鉴权错误不会触发自动转流式。请求超时仍由 Provider 或调用方控制。
 
 ## 会话管理
 
@@ -42,6 +45,8 @@ Anamnesis 的默认配置已经适合大多数场景。真正需要调整的通�
 | --- | --- | --- |
 | `recall_engine.top_k` | `5` | 每轮自动召回的记忆数量 |
 | `recall_engine.search_timeout_seconds` | `5.0` | 每轮自动检索最多等待的秒数；超时则跳过本轮记忆注入但不影响回复，设为 `0` 表示不限时（范围 `0–600`） |
+| `recall_engine.injection_max_chars` | `6000` | 单轮自动记忆注入的总字符预算，含说明和边界；伪工具模式限制结果 JSON，`0` 不限（范围 `0–100000`） |
+| `recall_engine.injection_entry_max_chars` | `1200` | 单条自动召回记忆的展示长度上限，`0` 不限（范围 `0–20000`） |
 | `recall_engine.max_k` | `10` | Agent 主动检索工具允许返回的最大数量 |
 | `recall_engine.importance_weight` | `1.0` | 重要性在最终排序中的权重 |
 | `recall_engine.min_importance_for_retrieval` | `0.0` | 最低重要性阈值，`0` 表示不过滤 |
@@ -60,6 +65,10 @@ Anamnesis 的默认配置已经适合大多数场景。真正需要调整的通�
 自动召回默认最多等待 5 秒，主要用于避免慢速 Embedding、SQLite 或 FAISS 检索阻塞 LLM 回复。可以在 AstrBot 的 Anamnesis 配置页直接调整 `search_timeout_seconds`；低配或远程 Provider 可提高到 10–30 秒，若希望完全沿用旧的不限时行为则填 `0`。超时只跳过当前轮的记忆注入，不会取消或影响后续对话。
 
 `extra_user_content` 是最稳妥的默认注入方式。Gemini Provider 下选择 `fake_tool_call` 会自动降级到 `extra_user_content`；DeepSeek V4 thinking 模式现在可以直接使用普通 `fake_tool_call`，旧的 `fake_tool_call_deepseek_v4` 仅作为兼容别名保留，并会自动回退到 `fake_tool_call`。
+
+长度预算只裁剪本轮展示，数据库中的原文保持完整，用户档案仍使用独立的 `user_profile.max_injection_chars`。普通文本保留完整边界标记；预算小到容不下说明时跳过注入。伪工具模式保留可解析的 JSON 与准确的结果数量。
+
+3.3.0 的 BM25 会为连续中文段补充相邻双字词，缓解“西湖”与“西湖区”等分词差异。新增、编辑和查询使用同一规则；旧索引若要立即获得此改善，可手动执行 `/anam rebuild-index`。重建会调用 Embedding Provider，请留意耗时和费用。此次上游适配的范围见[更新评估](/upstream-review-2026-10-25)。
 
 ## 记忆隔离
 
@@ -180,6 +189,8 @@ Dashboard 的“用户档案”页可查看所有已保存条目，默认紧凑�
 | `forgetting_agent.cleanup_importance_threshold` | `0.3` | 清理候选的重要性阈值 |
 
 生产使用建议保持备份和迁移备份开启。启用自动归档后，原始文档仍可在 Dashboard 查看和恢复，恢复时会重新生成 Embedding 并重建 BM25、图谱和记忆原子索引。
+
+当 `migration_settings.create_backup` 开启时，备份失败会中止迁移；迁移失败会尝试恢复备份并中止启动。每日衰减失败不会记为今日已完成，写入整批回滚以便重试；衰减只更新重要性和访问计数，保留并发访问时间等其他元数据。
 
 `migration_settings` 只负责本插件数据库的结构升级，即启动时把旧版本的库升级到当前 schema。它与从旧插件 LivingMemory 搬运数据的 `/anam migrate` 是两件不同的事，后者见[命令速查](/commands)。
 

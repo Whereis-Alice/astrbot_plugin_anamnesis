@@ -34,6 +34,8 @@ _INJECTION_CLEANUP_PATTERN = re.compile(
 class EventHandler:
     """事件处理器"""
 
+    _SHUTDOWN_TIMEOUT_SECONDS = 10.0
+
     def __init__(
         self,
         context: Any,
@@ -124,12 +126,22 @@ class EventHandler:
             logger.error(f"[{session_id}] 清空插件会话上下文失败: {e}", exc_info=True)
 
     async def shutdown(self):
-        """关闭事件处理器，等待所有存储任务完成"""
+        """关闭事件处理器，限时等待存储任务，超时后取消。"""
         self._shutting_down = True
         self._memory_reflection.set_shutting_down(True)
-        if self._storage_tasks:
-            logger.info(f"等待 {len(self._storage_tasks)} 个存储任务完成...")
-            await asyncio.gather(*self._storage_tasks, return_exceptions=True)
-            self._storage_tasks.clear()
+        tasks = list(self._storage_tasks)
+        pending = [task for task in tasks if not task.done()]
+        if pending:
+            logger.info(f"等待 {len(pending)} 个存储任务完成（最多 10 秒）...")
+            _, still_running = await asyncio.wait(
+                pending, timeout=self._SHUTDOWN_TIMEOUT_SECONDS
+            )
+            for task in still_running:
+                task.cancel()
+            if still_running:
+                logger.warning(f"取消 {len(still_running)} 个超时存储任务")
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._storage_tasks.clear()
         self._storage_sessions_inflight.clear()
         logger.info("EventHandler 已关闭")

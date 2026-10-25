@@ -13,8 +13,8 @@
 2. 写盘在单线程 executor 中执行 ``faiss.write_index``：流式写盘，不额外占用
    与索引等量的内存；先写同目录临时文件再 ``os.replace`` 原子覆盖，同卷
    rename 原子，进程中途被杀不会留下写了一半的索引文件。含非 ASCII 字符的
-   Windows 路径由插件已有的 ``faiss.write_index`` monkey-patch 负责桥接
-   （见 core/plugin_initializer_faiss.py）；
+   Windows 路径由共享的 ``write_index_safe`` 显式桥接，
+   不依赖全局 monkey-patch；
 3. 防抖合并：``save_index`` 只标记脏并排一个延迟落盘任务，任务醒来时若已有
    更新的落盘请求（序号守卫）就直接跳过，于是窗口内的多次变更只写盘一次。
 
@@ -31,11 +31,11 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import functools
-import os
-import tempfile
 from typing import Any
 
 from astrbot.api import logger
+
+from .utils.faiss_path_bridge import write_index_safe
 
 _PERSISTER_ATTR = "_async_index_persister"
 # 会被变更锁包裹的索引写方法（save_index 单独整体替换）
@@ -50,21 +50,7 @@ def _write_index_atomic(index: Any, path: str) -> None:
     同目录临时文件 + os.replace：保证 rename 同卷原子，进程中途被杀
     也不会留下写了一半的索引文件。
     """
-    import faiss
-
-    dirname = os.path.dirname(path) or "."
-    os.makedirs(dirname, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(prefix=".anam_faiss_", suffix=".tmp", dir=dirname)
-    os.close(fd)
-    try:
-        faiss.write_index(index, tmp_path)
-        os.replace(tmp_path, path)
-    finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
+    write_index_safe(index, path)
 
 
 class AsyncIndexPersister:

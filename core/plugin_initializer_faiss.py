@@ -4,14 +4,29 @@ PluginInitializer 的 InitializerFaissMixin 拆分模块
 """
 
 from .base.exceptions import InitializationError
-from astrbot.core.db.vec_db.faiss_impl.vec_db import FaissVecDB  # noqa: F401 (global in _load_faiss_vec_db_class)
 from astrbot.api import logger
 import os
-import shutil
 import subprocess
 import sys
-import tempfile
 from importlib import metadata
+from typing import Any
+
+from .utils.faiss_path_bridge import (
+    bridge_installed,
+    needs_bridge,
+    read_index_safe,
+    safe_temp_dir,
+    safe_temp_file,
+    write_index_safe,
+)
+
+# Bind after the CPU probe and bridge installation, including the first call.
+FaissVecDB: Any = None
+
+# Keep old private helper entrypoints available to tests and embedders.
+_needs_bridge = needs_bridge
+_safe_temp_dir = safe_temp_dir
+_make_temp_file = safe_temp_file
 
 
 class InitializerFaissMixin:
@@ -89,10 +104,11 @@ class InitializerFaissMixin:
 
     def _load_faiss_vec_db_class(self):
         global FaissVecDB
-        if FaissVecDB is not None:
+        if FaissVecDB is not None and bridge_installed():
             return FaissVecDB
 
-        self._check_faiss_runtime()
+        if FaissVecDB is None:
+            self._check_faiss_runtime()
         try:
             import faiss as _faiss
 
@@ -101,60 +117,33 @@ class InitializerFaissMixin:
 
             def _patched_read_index(path: str, *args, **kwargs):
                 if isinstance(path, (str, bytes, os.PathLike)) and _needs_bridge(path):
-                    tmp = _make_temp_file("_faiss_read")
-                    try:
-                        shutil.copy2(path, tmp)
-                        return _orig_read(tmp, *args, **kwargs)
-                    finally:
-                        if os.path.exists(tmp):
-                            try:
-                                os.remove(tmp)
-                            except OSError:
-                                pass
+                    return read_index_safe(path, *args, _reader=_orig_read, **kwargs)
                 return _orig_read(path, *args, **kwargs)
 
             def _patched_write_index(index, path, *args, **kwargs) -> None:
                 # 仅在第二个参数为路径类对象 且 Windows 非 ASCII 时桥接；
                 # 否则原样转发（如 VectorIOWriter / FILE* 等非路径对象）
                 if isinstance(path, (str, bytes, os.PathLike)) and _needs_bridge(path):
-                    dirname = os.path.dirname(path)
-                    if dirname:
-                        os.makedirs(dirname, exist_ok=True)
-                    tmp = _make_temp_file("_faiss_write")
-                    try:
-                        _orig_write(index, tmp, *args, **kwargs)
-                        # os.replace 原子覆盖，同卷 rename 跨卷 copy+delete
-                        try:
-                            os.replace(tmp, path)
-                        except OSError:
-                            shutil.copy2(tmp, path)
-                            try:
-                                os.remove(tmp)
-                            except OSError:
-                                pass
-                    finally:
-                        if os.path.exists(tmp):
-                            try:
-                                os.remove(tmp)
-                            except OSError:
-                                pass
-                    return
+                    return write_index_safe(index, path, *args, _writer=_orig_write, **kwargs)
                 _orig_write(index, path, *args, **kwargs)
 
             _faiss.read_index = _patched_read_index
             _faiss.write_index = _patched_write_index
+            _patched_read_index.__anam_ascii_bridge__ = True
+            _patched_write_index.__anam_ascii_bridge__ = True
 
-            from astrbot.core.db.vec_db.faiss_impl.vec_db import (
-                FaissVecDB as LoadedFaissVecDB,
-            )
+            if FaissVecDB is None:
+                from astrbot.core.db.vec_db.faiss_impl.vec_db import (
+                    FaissVecDB as LoadedFaissVecDB,
+                )
+                FaissVecDB = LoadedFaissVecDB
         except (ImportError, ModuleNotFoundError, SystemError, OSError) as exc:
             raise InitializationError(
                 "FAISS 初始化失败，无法加载 AstrBot FaissVecDB。"
                 "请检查 faiss-cpu 安装状态和 CPU 指令集兼容性。"
             ) from exc
 
-        FaissVecDB = LoadedFaissVecDB
-        return LoadedFaissVecDB
+        return FaissVecDB
 
     async def _check_and_fix_dimension_mismatch(self, index_path: str) -> bool:
         """
@@ -242,22 +231,7 @@ class InitializerFaissMixin:
 
         monkey-patch 已覆盖全局 faiss.read_index，此方法作为显式后备。
         """
-        if not _needs_bridge(index_path):
-            import faiss
-
-            return faiss.read_index(index_path)
-        tmp = _make_temp_file("_faiss_read")
-        try:
-            shutil.copy2(index_path, tmp)
-            import faiss
-
-            return faiss.read_index(tmp)
-        finally:
-            if os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
+        return read_index_safe(index_path)
 
 
 _FAISS_GENERIC_FALLBACK_MARKERS = (
@@ -275,35 +249,6 @@ _FAISS_GENERIC_FALLBACK_MARKERS = (
 
 
 # 顶层辅助函数（自 plugin_initializer.py 迁移）
-def _needs_bridge(path: str) -> bool:
-    """判断是否需要 ASCII 临时文件桥接。"""
-    path = os.fspath(path)
-    return os.name == "nt" and not path.isascii()
-
-def _safe_temp_dir() -> str:
-    """返回保证纯 ASCII 且可写的临时目录。"""
-    if os.name == "nt":
-        root = os.environ.get("SystemRoot", r"C:\Windows")
-        temp_dir = os.path.join(root, "Temp")
-        if (
-            temp_dir.isascii()
-            and os.path.isdir(temp_dir)
-            and os.access(temp_dir, os.W_OK)
-        ):
-            return temp_dir
-        tmp = tempfile.gettempdir()
-        if tmp.isascii():
-            return tmp
-        raise OSError("_safe_temp_dir: 无法找到可写的纯 ASCII 临时目录")
-    return tempfile.gettempdir()
-
-def _make_temp_file(prefix: str) -> str:
-    """创建 Faiss 桥接临时文件，返回纯 ASCII 路径。"""
-    safe_dir = _safe_temp_dir()
-    fd, path = tempfile.mkstemp(prefix=f"{prefix}_", suffix=".faiss", dir=safe_dir)
-    os.close(fd)
-    return path
-
 def _sanitize_path(path: str) -> str:
     """脱敏路径：非 ASCII 部分替换为 [***]，避免日志泄露中文用户名。"""
     path = os.fspath(path)

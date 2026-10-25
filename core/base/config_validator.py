@@ -53,6 +53,14 @@ class RecallEngineConfig(BaseModel):
         le=600.0,
         description="自动记忆检索超时时间（秒），设为 0 表示不限时",
     )
+    injection_max_chars: int = Field(
+        default=6000, ge=0, le=100000,
+        description="自动召回注入字符预算，0 表示不限；伪工具模式限制结果 JSON",
+    )
+    injection_entry_max_chars: int = Field(
+        default=1200, ge=0, le=20000,
+        description="自动召回单条记忆展示字符上限，0 表示不限",
+    )
     max_k: int = Field(
         default=10, ge=1, le=50, description="Agent 主动检索时允许的最大返回数量"
     )
@@ -225,6 +233,10 @@ class ProviderConfig(BaseModel):
         default=None, description="Embedding Provider ID"
     )
     llm_provider_id: str | None = Field(default=None, description="LLM Provider ID")
+    llm_stream_mode: str = Field(
+        default="auto", pattern="^(auto|always|never)$",
+        description="记忆处理 LLM 调用方式：auto 自动回退、always 流式、never 非流式",
+    )
 
 
 class ImportanceDecayConfig(BaseModel):

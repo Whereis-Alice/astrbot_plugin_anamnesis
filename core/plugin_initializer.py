@@ -285,7 +285,10 @@ class PluginInitializer(InitializerFaissMixin, InitializerFinalizeMixin):
                         "id",
                         self.embedding_provider.provider_config.get("id", "unknown"),
                     )
-                    logger.info(f"未指定 Embedding Provider，使用默认的: {provider_id}")
+                    logger.warning(
+                        f"Embedding Provider 未明确配置或不可用，使用首个可用的: {provider_id}；"
+                        "建议显式设置 provider_settings.embedding_provider_id，避免更换模型后旧向量不匹配"
+                    )
             else:
                 self.embedding_provider = None
                 if not silent:

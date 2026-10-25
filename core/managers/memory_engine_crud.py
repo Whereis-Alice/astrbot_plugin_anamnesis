@@ -19,6 +19,7 @@ import aiosqlite
 
 from ...storage.alias_store import AliasStore
 from ...storage.atom_store import AtomStore
+from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
 
 
 class MemoryEngineCrudMixin:
@@ -1025,14 +1026,14 @@ class MemoryEngineCrudMixin:
             days: 衰减天数（用于补偿错过的天数）
 
         Returns:
-            int: 受影响的记忆数量
+            int: 受影响的记忆数量；失败返回 -1，调度器应保留重试机会
         """
         if decay_rate <= 0 or days <= 0:
             return 0
 
         if self.db_connection is None:
             logger.error("[衰减] 数据库连接未初始化")
-            return 0
+            return -1
 
         try:
             if decay_rate >= 1:
@@ -1056,8 +1057,8 @@ class MemoryEngineCrudMixin:
 
             safe_json_dict = self._safe_json_dict
 
-            def _compute_updates() -> list[tuple[str, int]]:
-                updates: list[tuple[str, int]] = []
+            def _compute_updates() -> list[tuple[float, int]]:
+                updates: list[tuple[float, int]] = []
                 for row in rows:
                     metadata = safe_json_dict(row["metadata"])
                     importance = clamp_float(metadata.get("importance"), default=0.5)
@@ -1076,16 +1077,7 @@ class MemoryEngineCrudMixin:
                         1 - 0.5 * access_factor * recent_access_factor
                     )
                     decay_factor = (1 - effective_decay_rate) ** days
-                    metadata["importance"] = max(
-                        0.01,
-                        round(importance * decay_factor, 4),
-                    )
-                    metadata["access_count"] = int(
-                        access_count * access_decay_multiplier
-                    )
-                    updates.append(
-                        (json.dumps(metadata, ensure_ascii=False), int(row["id"]))
-                    )
+                    updates.append((decay_factor, int(row["id"])))
                 return updates
 
             # 卸载逐行 JSON 解析与数值计算，避免阻塞事件循环。
@@ -1094,13 +1086,76 @@ class MemoryEngineCrudMixin:
             if not updates:
                 return 0
 
-            await self.db_connection.executemany(
-                "UPDATE documents SET metadata = ? WHERE id = ?",
-                updates,
-            )
+            sql = """
+                UPDATE documents
+                SET metadata = json_set(
+                    metadata,
+                    '$.importance', MAX(0.01, ROUND(
+                        MIN(1.0, MAX(0.0, anam_finite_number(
+                            json_extract(metadata, '$.importance'), 0.5
+                        ))) * ?, 4
+                    )),
+                    '$.access_count', CAST(
+                        anam_finite_number(json_extract(metadata, '$.access_count'), 0)
+                        * ? AS INTEGER
+                    )
+                )
+                WHERE id = ? AND json_valid(metadata)
+                  AND MIN(1.0, MAX(0.0, anam_finite_number(
+                      json_extract(metadata, '$.importance'), 0.5
+                  ))) < ?
+                """
+            parameters = [
+                (factor, access_decay_multiplier, doc_id, protected_threshold)
+                for factor, doc_id in updates
+            ]
 
-            await self.db_connection.commit()
-            affected = len(updates)
+            async def write_decay(connection):
+                await connection.create_function(
+                    "anam_finite_number", 2, safe_float, deterministic=True
+                )
+                await connection.execute("SAVEPOINT anam_daily_decay")
+                try:
+                    cursor = await connection.executemany(sql, parameters)
+                    await connection.execute("RELEASE SAVEPOINT anam_daily_decay")
+                    return cursor.rowcount
+                except BaseException:
+                    # 本批次任一步失败都撤销衰减，避免重试时前半批被重复衰减。
+                    await connection.execute("ROLLBACK TO SAVEPOINT anam_daily_decay")
+                    await connection.execute("RELEASE SAVEPOINT anam_daily_decay")
+                    raise
+
+            async def finish_decay(connection):
+                # aiosqlite 入队的提交不会随 await 取消而撤销。保护事务收尾，
+                # 让调用方拿到确定结果，避免取消打断 RELEASE 后错误地重试。
+                transaction = asyncio.create_task(write_decay(connection))
+                try:
+                    return await asyncio.shield(transaction)
+                except asyncio.CancelledError:
+                    while not transaction.done():
+                        try:
+                            await asyncio.shield(transaction)
+                        except asyncio.CancelledError:
+                            continue
+                        except Exception:
+                            break
+                    # 取回事务异常，但取消仍应传播。
+                    if not transaction.cancelled():
+                        error = transaction.exception()
+                        if error is None:
+                            self._invalidate_search_cache()
+                    raise
+
+            db_path = getattr(self, "db_path", None)
+            if db_path:
+                # 与多步记忆写入隔离，衰减不会提交/回滚主连接上的其它工作。
+                async with aiosqlite.connect(
+                    db_path, **sqlite_connect_kwargs(self.config)
+                ) as connection:
+                    await configure_sqlite_connection(connection, self.config)
+                    affected = await finish_decay(connection)
+            else:
+                affected = await finish_decay(self.db_connection)
 
             logger.info(
                 f"[衰减] 批量衰减完成: 衰减率={decay_rate}, 天数={days}, "
@@ -1114,7 +1169,7 @@ class MemoryEngineCrudMixin:
             raise
         except Exception as e:
             logger.error(f"[衰减] 批量衰减失败: {e}", exc_info=True)
-            return 0
+            return -1
 
     async def update_access_time(self, memory_id: int) -> bool:
         """
