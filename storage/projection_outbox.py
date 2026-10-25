@@ -61,6 +61,31 @@ class ProjectionOutbox:
             cursor = await db.execute("DELETE FROM memory_projection_jobs WHERE memory_id=? AND revision=?", (memory_id, revision))
             return cursor.rowcount == 1
 
+    @staticmethod
+    def _live_atoms(atoms, metadata):
+        """Use the same TTL and parent-scope policy as live fact retrieval."""
+        now, live = time.time(), []
+        for atom in atoms:
+            try:
+                expiry = float(atom.expires_at)
+            except (TypeError, ValueError, OverflowError):
+                continue
+            if (
+                getattr(atom.status, "value", atom.status) != "active"
+                or not math.isfinite(expiry)
+                or expiry <= now
+            ):
+                continue
+            if any(
+                getattr(atom, key, None) is not None
+                and metadata.get(key) is not None
+                and getattr(atom, key) != metadata[key]
+                for key in ("session_id", "persona_id")
+            ):
+                continue
+            live.append(atom)
+        return live
+
     async def repair(self, limit=10):
         engine = self.engine
         repaired, failed = 0, []
@@ -94,13 +119,31 @@ class ProjectionOutbox:
                         if not callable(get) or not callable(getattr(embedding, "delete", None)) or not callable(getattr(embedding, "insert", None)):
                             raise ValueError("宿主缺少索引同步接口，请执行完整索引重建")
                         vector = np.asarray(await get(snapshot["text"]), dtype=np.float32)
+                        if (
+                            vector.ndim != 1
+                            or not vector.size
+                            or not np.isfinite(vector).all()
+                        ):
+                            raise ValueError(
+                                "Embedding 返回无效向量，保留旧索引并等待重试"
+                            )
+                        dimensions = (
+                            getattr(embedding, "dimension", None),
+                            getattr(getattr(embedding, "index", None), "d", None),
+                        )
+                        if any(
+                            isinstance(dimension, int) and dimension > 0 and vector.size != dimension
+                            for dimension in dimensions
+                        ):
+                            raise ValueError(
+                                "Embedding 维度与现有索引不一致，请执行完整索引重建"
+                            )
                         await embedding.delete([memory_id])
                         await embedding.insert(vector, memory_id)
                         await engine.bm25_retriever.add_document(memory_id, snapshot["text"], snapshot["metadata"])
                         if engine.graph_memory_manager:
                             atoms = await engine.atom_store.get_by_parent(memory_id) if engine.atom_store else []
-                            live_atoms = [atom for atom in atoms if getattr(atom.status, "value", atom.status) == "active"
-                                          and math.isfinite(float(atom.expires_at)) and atom.expires_at > time.time()]
+                            live_atoms = self._live_atoms(atoms, snapshot["metadata"])
                             atom_backed = engine.atom_enabled and (atoms or snapshot["metadata"].get("atom_types"))
                             if atom_backed and not live_atoms:
                                 await engine.graph_memory_manager.delete_memory(memory_id)

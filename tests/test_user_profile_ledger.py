@@ -1,5 +1,6 @@
 """Profile authority, evidence and review boundaries use real SQLite."""
 
+import json
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -250,3 +251,46 @@ async def test_replaying_evidence_does_not_renew_ttl_or_reopen_rejected_proposal
     await manager.upsert_facts(event(), [fact("不再喝茶")], source_memory_id=11)
     row = await current(manager)
     assert not row["pending"] and row["revision"] == result["revision"]
+
+
+@pytest.mark.asyncio
+async def test_fresh_evidence_renews_an_expired_pending_status_without_replay(manager):
+    await manager.upsert_facts(event(), [fact()], source_memory_id=10)
+    await manager.upsert_facts(event(), [fact("最近失眠", category="status")], source_memory_id=11)
+    row = await current(manager)
+    claim = row["pending"][0]["claim_id"]
+    expired = int(time.time()) - 100
+    await manager.store.connection.execute(
+        "UPDATE user_profile_claims SET snapshot=json_set(snapshot,'$.expires_at',?) WHERE claim_id=?", (expired, claim))
+    await manager.store.connection.commit()
+    await manager.upsert_facts(event(), [fact("最近失眠", category="status")], source_memory_id=11)
+    assert (await current(manager))["pending"][0]["expires_at"] == expired
+
+    await manager.upsert_facts(event(), [fact("最近失眠", category="status")], source_memory_id=12)
+    renewed = await current(manager)
+    pending = renewed["pending"][0]
+    assert pending["claim_id"] == claim
+    assert pending["expires_at"] > time.time() and pending["can_accept"]
+    assert len(pending["evidence"]) == 2
+    result = await manager.review_for_web(renewed["profile_scope"], "drink", claim_id=claim,
+                                          action="accept", expected_revision=renewed["revision"])
+    assert result["value"] == "最近失眠"
+
+
+@pytest.mark.asyncio
+async def test_unprotected_acceptance_uses_the_candidates_source_not_the_old_fact(manager):
+    manager.config_manager.values["user_profile.manual_override_enabled"] = False
+    await manager.upsert_facts(event(), [fact("旧资料")], source_memory_id=10)
+    await manager.upsert_facts(event(), [fact("新说法")], source_memory_id=11)
+    row = await current(manager)
+    result = await manager.review_for_web(row["profile_scope"], "drink", claim_id=row["pending"][0]["claim_id"],
+                                          action="accept", expected_revision=row["revision"])
+    assert result["value"] == "新说法" and not result["manual_override"]
+    assert result["source_memory_id"] == 11
+    assert {item["source_memory_id"] for item in result["evidence"]} == {11}
+    assert await manager.delete_by_source_memory(10) == 0
+    assert (await manager.get_profile(event()))[0]["value"] == "新说法"
+    assert await manager.delete_by_source_memory(11) == 1
+    assert await manager.get_profile(event()) == []
+    async with manager.store.connection.execute("SELECT value,snapshot FROM user_profile_claims") as cursor:
+        assert all(item[0] == "[来源已删除]" and json.loads(item[1]) == {} for item in await cursor.fetchall())

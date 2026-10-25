@@ -16,9 +16,10 @@ from .temporal_retrieval import search_with_time
 def ranking_metrics(actual_ids: list[int], expected_ids: list[int], k: int) -> dict:
     """Standard Hit@K, Precision@K, Recall@K and reciprocal first-hit rank."""
     expected = set(expected_ids)
-    # Duplicate predictions cannot earn multiple true positives.
-    actual = list(dict.fromkeys(actual_ids))[:k]
-    hits = sum(memory_id in expected for memory_id in actual)
+    # Duplicates consume ranks without earning extra true positives. Slice
+    # before counting unique hits so no prediction beyond K enters Top-K.
+    actual = actual_ids[:k]
+    hits = len(set(actual) & expected)
     reciprocal = next(
         (
             1.0 / rank

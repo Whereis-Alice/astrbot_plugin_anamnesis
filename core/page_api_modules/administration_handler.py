@@ -68,11 +68,7 @@ class AdministrationPageMixin:
             elif action in ("restore", "purge"):
                 result = await service.restore(operation_id, actor=actor, purge=action == "purge")
             elif action == "remove":
-                operation = await service._owned(operation_id, actor, allow_expired=True)
-                if operation["status"] not in ("purged", "restored", "rolled_back", "failed", "stale", "preview"):
-                    raise ValueError("保留中的删除快照或运行中操作不能直接清理")
-                await service.store.remove(operation_id)
-                result = {"removed": True}
+                result = await service.remove_operation(operation_id, actor=actor)
             elif action == "preview":
                 result = await service.preview_correction(payload.get("memory_id"), payload.get("instruction"), actor=actor,
                                                           new_content=payload.get("new_content"))

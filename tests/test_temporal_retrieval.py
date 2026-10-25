@@ -61,6 +61,15 @@ def test_dst_calendar_day_is_not_fixed_86400_seconds():
     assert value.end - value.start == 23 * 3600
 
 
+@pytest.mark.parametrize("month,last", [(2, 28), (4, 30), (9, 30)])
+def test_explicit_month_on_31st_does_not_keep_reference_day(month, last):
+    now = datetime(2026, 10, 31, 12, tzinfo=timezone.utc)
+    result = parse_time_range(f"2026年{month}月的记录", now=now, timezone_name="UTC")
+    assert result.start == datetime(2026, month, 1, tzinfo=timezone.utc).timestamp()
+    expected_end = datetime(2026, month, last, tzinfo=timezone.utc).timestamp() + 86400
+    assert result.end == expected_end
+
+
 @pytest.mark.parametrize(
     "query", ["以前喜欢什么", "上次说了什么", "最近怎么样", "咖啡"]
 )

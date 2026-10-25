@@ -198,7 +198,7 @@ def parse_time_range(
     match = re.search(r"(?<!\d)(\d{4})年(\d{1,2})月(?!\d)", text)
     if match:
         start = _month_start(
-            today.replace(year=int(match.group(1)), month=int(match.group(2)))
+            today.replace(year=int(match.group(1)), month=int(match.group(2)), day=1)
         )
         return result(start, _month_start(start, 1), match.group(0))
     for phrase, year_offset in (("前年", -2), ("去年", -1), ("今年", 0)):

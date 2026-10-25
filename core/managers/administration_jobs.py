@@ -285,7 +285,8 @@ class AdministrationJobsMixin:
                 elif job["kind"] == "projection":
                     result = await self.projection.repair(limit=10)
                 else:
-                    result = await self._run_episode_job(job)
+                    await self._run_episode_job(job)
+                    return  # Event and completion result commit together.
                 await self.store.update(
                     operation_id,
                     status="partial" if result.get("failed_count") else "completed",
@@ -297,13 +298,15 @@ class AdministrationJobsMixin:
                     self.store.update(
                         operation_id,
                         status="interrupted" if self._closing else "cancelled",
+                        expected_status=("queued", "running"),
                     )
                 )
             )
             raise
         except Exception as exc:  # noqa: BLE001 -- persist provider/storage failure for administrator retry
             await self.store.update(
-                operation_id, status="failed", result={"error": str(exc)[:1000]}
+                operation_id, status="failed", result={"error": str(exc)[:1000]},
+                expected_status=("queued", "running"),
             )
 
     async def _run_import_job(self, job):
@@ -385,12 +388,14 @@ class AdministrationJobsMixin:
         if job["status"] == "preparing":
             raise ValueError("任务仍在准备中，请等待分块与任务清单完成")
         if action == "cancel":
+            if job["status"] not in ("queued", "running"):
+                raise ValueError("只有排队中或运行中的任务可以取消")
             task = self._jobs.get(operation_id)
             if task:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
             else:
-                await self.store.update(operation_id, status="cancelled")
+                await self.store.update(operation_id, status="cancelled", expected_status=("queued", "running"))
         elif action == "retry":
             self.require(job["kind"])
             if (
@@ -564,7 +569,12 @@ class AdministrationJobsMixin:
                         time.time(),
                     ),
                 )
-            return {"episode_id": episode_id, "memory_ids": ids, "title": title.strip()}
+                published = {"episode_id": episode_id, "memory_ids": ids, "title": title.strip()}
+                updated = await self.store.update_in_transaction(db, job["id"], status="completed",
+                    result=published, expected_status=("running",))
+                if updated != 1:
+                    raise ValueError("任务状态已变化，未发布事件")
+            return published
 
     async def list_episodes(
         self, *, session_id=None, persona_id=None, limit=100, include_stale=True

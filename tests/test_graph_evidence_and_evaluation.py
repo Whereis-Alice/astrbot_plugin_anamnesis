@@ -107,6 +107,14 @@ def test_metrics_distinguish_hit_precision_recall_and_reciprocal_rank():
     assert ranking_metrics([], [], 3)["correct_empty"] is True
 
 
+def test_duplicate_predictions_consume_ranks_and_do_not_extend_top_k():
+    outside = ranking_metrics([99, 99, 1], [1], 2)
+    assert outside["hit_at_k"] == 0 and outside["reciprocal_rank"] == 0
+    inside = ranking_metrics([99, 99, 1], [1], 3)
+    assert inside["reciprocal_rank"] == pytest.approx(1 / 3)
+    assert ranking_metrics([1, 1, 1], [1], 3)["precision_at_k"] == pytest.approx(1 / 3)
+
+
 @pytest.mark.asyncio
 async def test_evaluation_uses_read_only_retrievers_and_includes_failures_in_quality():
     retriever = SimpleNamespace(

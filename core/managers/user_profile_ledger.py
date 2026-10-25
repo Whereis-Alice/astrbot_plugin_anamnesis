@@ -166,6 +166,11 @@ class UserProfileLedgerMixin:
                 candidate = await cursor.fetchone()
             claim = candidate[0] if candidate else await self._insert_claim(connection, snapshot, "direct_user", "pending")
             changed = await self._add_evidence(connection, claim, snapshot, quote)
+            if candidate and changed:
+                # A new observation may renew a volatile proposal. Replaying
+                # the same source/quote leaves both expiry and revision intact.
+                await connection.execute("UPDATE user_profile_claims SET snapshot=?,updated_at=? WHERE claim_id=?",
+                                         (json.dumps(snapshot, ensure_ascii=False), time.time(), claim))
             if not candidate or changed:
                 await connection.execute("UPDATE user_profiles SET revision=revision+1 WHERE profile_scope=? AND profile_key=?", (scope, key))
             if not candidate:
@@ -181,9 +186,15 @@ class UserProfileLedgerMixin:
                                    current["current_claim_id"] if current else None, claim, "automatic")
         await self._prune_ledger(connection, scope, key)
 
-    async def _manual_ledger_update(self, connection: Any, before: dict[str, Any], after: dict[str, Any]) -> None:
+    async def _manual_ledger_update(self, connection: Any, before: dict[str, Any], after: dict[str, Any],
+                                    supporting_evidence: list[dict[str, Any]] | None = None) -> None:
         scope, key = before["profile_scope"], before["profile_key"]
         manual = bool(self.config_manager.get("user_profile.manual_override_enabled", True)) or bool(before["manual_override"])
+        source_keys = ("source_memory_id", "source_session_id", "source_group_id", "source_group_name", "source_sender_name")
+        if supporting_evidence:
+            # Account/context columns stay current, but provenance follows the
+            # accepted statement rather than the statement it replaces.
+            after.update({key: supporting_evidence[0].get(key) for key in source_keys})
         claim = await self._insert_claim(connection, after, "manual", "current")
         # Administrator confirmation is independent support. Historical chat
         # evidence remains with the previous claim, rather than being relabelled.
@@ -191,6 +202,10 @@ class UserProfileLedgerMixin:
             independent = {**after, "source_memory_id": None, "suppressed": 0}
             await self._add_evidence(connection, claim, independent, "")
             after["suppressed"] = 0
+        elif supporting_evidence is not None:
+            for evidence in supporting_evidence:
+                source = {**after, **{key: evidence.get(key) for key in source_keys}, "suppressed": evidence["suppressed"]}
+                await self._add_evidence(connection, claim, source, evidence["quote"])
         else:
             await self._add_evidence(connection, claim, after, "")
         await connection.execute("UPDATE user_profile_claims SET state='superseded',updated_at=? WHERE claim_id=?",
@@ -300,12 +315,13 @@ class UserProfileLedgerMixin:
                         await connection.execute("UPDATE user_profiles SET revision=revision+1 WHERE profile_scope=? AND profile_key=?", (profile_scope, profile_key))
                     else:
                         snapshot = json.loads(candidate["snapshot"])
-                        if (snapshot.get("expires_at") and snapshot["expires_at"] <= time.time()) or not await self._live_evidence(await self._claim_evidence(connection, claim_id)):
+                        evidence = await self._live_evidence(await self._claim_evidence(connection, claim_id))
+                        if (snapshot.get("expires_at") and snapshot["expires_at"] <= time.time()) or not evidence:
                             return None
                         # Keep current account directory metadata; a proposal
                         # from old traffic must not replace the recent nickname.
                         after = {**current, **{key: snapshot[key] for key in ("value", "category", "confidence", "expires_at", "display_label") if key in snapshot}, "updated_at": time.time()}
-                        await self._manual_ledger_update(connection, current, after)
+                        await self._manual_ledger_update(connection, current, after, evidence)
                         await connection.execute("UPDATE user_profile_claims SET state='accepted',updated_at=? WHERE claim_id=?", (time.time(), claim_id))
                     await self._transition(connection, profile_scope, profile_key, action, current["current_claim_id"], claim_id, "administrator")
                 await connection.commit()
@@ -371,7 +387,7 @@ class UserProfileLedgerMixin:
                 # support and retain their administrator-entered value.
                 await connection.execute(
                     "UPDATE user_profile_claims SET value='[来源已删除]',snapshot='{}',state='withdrawn' "
-                    "WHERE profile_scope=? AND profile_key=? AND authority<>'manual' AND NOT EXISTS "
+                    "WHERE profile_scope=? AND profile_key=? AND NOT EXISTS "
                     "(SELECT 1 FROM user_profile_evidence e WHERE e.claim_id=user_profile_claims.claim_id)", (scope, key))
             await self._prune_ledger(connection, scope, key)
         return removed if delete else len(affected)

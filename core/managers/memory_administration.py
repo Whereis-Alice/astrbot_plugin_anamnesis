@@ -136,6 +136,17 @@ class MemoryAdministration(AdministrationJobsMixin):
             raise ValueError("恢复或确认期限已过")
         return operation
 
+    async def remove_operation(self, operation_id, *, actor="webui"):
+        """Check and remove under the guard shared with correction execution."""
+        async with memory_mutation_guard(self.engine):
+            operation = await self._owned(operation_id, actor, allow_expired=True)
+            if operation["status"] not in (
+                "purged", "restored", "rolled_back", "failed", "stale", "preview"
+            ) or operation["kind"] in ("import", "evaluation", "episode", "projection"):
+                raise ValueError("保留中的删除快照或运行中操作不能直接清理")
+            await self._settled(self.store.remove(operation_id))
+        return {"removed": True}
+
     async def restore(self, operation_id, *, actor="webui", purge=False):
         self.require("recovery")
         await self._owned(operation_id, actor, "delete", allow_expired=purge)
@@ -155,6 +166,15 @@ class MemoryAdministration(AdministrationJobsMixin):
                 continue
             memory_id, data = int(item["item_key"]), item["payload"]
             current = await self.snapshot(memory_id)
+            if purge and item["status"] == "purging" and current is None:
+                # The document deletion committed, but completion may not have.
+                # Only our durable purge intent authorizes clearing its snapshot.
+                manager = getattr(self.engine, "user_profile_manager", None)
+                if manager:
+                    await manager.delete_by_source_memory(memory_id)
+                await self.store.put_item(operation_id, memory_id, {}, status="purged")
+                restored.append(memory_id)
+                continue
             tagged = current and current["metadata"].get("recovery_operation_id") == operation_id
             # Reconcile an interrupted archive from the saved before snapshot.
             expected = data.get("after")
@@ -202,6 +222,7 @@ class MemoryAdministration(AdministrationJobsMixin):
                 conflicts.append(memory_id)
                 continue
             if purge:
+                await self.store.put_item(operation_id, memory_id, data, status="purging")
                 if not await self.engine.delete_memory(memory_id):
                     conflicts.append(memory_id)
                     continue

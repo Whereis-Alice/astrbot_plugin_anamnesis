@@ -186,3 +186,81 @@ async def test_initializer_missing_primary_schema_fails_fast(tmp_path):
     engine = SimpleNamespace(db_path=str(tmp_path / "invalid.db"), config={})
     with pytest.raises(sqlite3.OperationalError, match="documents"):
         await ProjectionOutbox(engine).initialize()
+
+
+@pytest.mark.asyncio
+async def test_graph_projection_filters_foreign_scope_and_persona_atoms(projection):
+    await add(
+        projection,
+        {
+            "status": "active",
+            "session_id": "scope",
+            "persona_id": "p",
+            "atom_types": ["preference"],
+        },
+    )
+    legacy = MemoryAtom(
+        parent_memory_id=1, content="legacy", expires_at=time.time() + 100
+    )
+    scoped = MemoryAtom(
+        parent_memory_id=1,
+        content="scoped",
+        session_id="scope",
+        persona_id="p",
+        expires_at=time.time() + 100,
+    )
+    projection.engine.atom_store.get_by_parent.return_value = [
+        legacy,
+        scoped,
+        MemoryAtom(
+            parent_memory_id=1,
+            content="foreign scope",
+            session_id="other",
+            persona_id="p",
+            expires_at=time.time() + 100,
+        ),
+        MemoryAtom(
+            parent_memory_id=1,
+            content="foreign persona",
+            session_id="scope",
+            persona_id="other",
+            expires_at=time.time() + 100,
+        ),
+    ]
+    assert (await projection.repair())["repaired"] == 1
+    args = projection.engine.graph_memory_manager.index_memory.await_args.args
+    assert args[1] == "legacy\nscoped" and args[3] == [legacy, scoped]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_vector", [[], [float("nan"), 0.2], [[0.1, 0.2]], [0.1]]
+)
+async def test_invalid_embedding_preserves_existing_vector_until_valid_retry(
+    projection, invalid_vector
+):
+    await add(projection)
+    embedding = projection.engine.faiss_db.embedding_storage
+    embedding.index = SimpleNamespace(d=2)
+    provider = projection.engine.faiss_db.embedding_provider
+    provider.get_embedding_with_retry.return_value = invalid_vector
+    result = await projection.repair()
+    assert result["failed_count"] == 1 and result["repaired"] == 0
+    embedding.delete.assert_not_awaited()
+    embedding.insert.assert_not_awaited()
+    assert await projection.pending()
+    provider.get_embedding_with_retry.return_value = [0.1, 0.2]
+    assert (await projection.repair())["repaired"] == 1
+
+
+@pytest.mark.asyncio
+async def test_projection_checks_storage_declared_dimension_before_deletion(projection):
+    await add(projection)
+    embedding = projection.engine.faiss_db.embedding_storage
+    # AstrBot validates storage.dimension in insert(), independently of the
+    # loaded FAISS index.d; a stale model config can make the two disagree.
+    embedding.dimension, embedding.index = 3, SimpleNamespace(d=2)
+    result = await projection.repair()
+    assert result["failed_count"] == 1 and result["repaired"] == 0
+    embedding.delete.assert_not_awaited()
+    assert await projection.pending()

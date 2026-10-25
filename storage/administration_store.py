@@ -159,14 +159,27 @@ class AdministrationStore:
         async with self.connection() as db:
             return self.decode(await (await db.execute("SELECT * FROM memory_admin_operations WHERE id=?", (operation_id,))).fetchone())
 
-    async def update(self, operation_id, *, status=None, result=None, payload=None):
+    async def update(self, operation_id, *, status=None, result=None, payload=None, expected_status=None):
+        async with self.connection(write=True) as db:
+            return await self.update_in_transaction(db, operation_id, status=status,
+                result=result, payload=payload, expected_status=expected_status)
+
+    async def update_in_transaction(self, db, operation_id, *, status=None, result=None, payload=None, expected_status=None):
+        """Publish operation results together with their durable side effects."""
         fields, args = ["updated_at=?", "revision=revision+1"], [time.time()]
         for key, value in (("status", status), ("result", result), ("payload", payload)):
             if value is not None:
                 fields.append(key + "=?")
                 args.append(self._encode(value) if key != "status" else value)
-        async with self.connection(write=True) as db:
-            await db.execute("UPDATE memory_admin_operations SET " + ",".join(fields) + " WHERE id=?", (*args, operation_id))
+        conditions = "id=?"
+        args.append(operation_id)
+        if expected_status is not None:
+            if not expected_status:
+                raise ValueError("需要提供允许的任务状态")
+            conditions += " AND status IN (" + ",".join("?" for _ in expected_status) + ")"
+            args.extend(expected_status)
+        cursor = await db.execute("UPDATE memory_admin_operations SET " + ",".join(fields) + " WHERE " + conditions, args)
+        return cursor.rowcount
 
     async def list(self, *, kind=None, limit=100):
         async with self.connection() as db:

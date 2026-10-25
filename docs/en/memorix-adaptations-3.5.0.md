@@ -2,7 +2,7 @@
 
 This release adapts mechanisms from Memorix 1.4.0 within Anamnesis's existing identity, scope, persona and lifecycle boundaries.
 
-Use **3.5.1** for an additional concurrency fix: historical alias backfill reads through an independent connection and closes page cursors promptly, protecting the mutation connection from stale WAL snapshots. The features and defaults below still apply.
+Use **3.5.2** for the 3.5.1 historical alias concurrency fix plus fixes for fresh profile evidence and accepted provenance, concurrent administration actions, interrupted purge recovery, atomic event publication, month parsing, ranking metrics and projection validation. The features and defaults below still apply.
 
 Profiles remain disabled by default. Enabled profiles retain explicit self-report and verbatim-evidence validation. Manual edits have independent priority; changed automatic values enter review by default. The directory shows current values, proposals, history and multiple original evidence sources. Version checks protect edits and review actions. Administrator display aliases never merge accounts.
 
