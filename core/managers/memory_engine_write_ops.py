@@ -430,6 +430,7 @@ class MemoryEngineWriteOpsMixin:
             # Expired atom-backed parents must not consume the reserved recent
             # slots and displace valid results from the relevance routes.
             recent = await lifecycle_filter(recent)
+            recent = self._filter_by_retrieval_policy(recent)
         return recent[:count]
 
     async def _merge_recent_memories(

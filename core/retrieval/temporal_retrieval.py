@@ -197,16 +197,19 @@ async def temporal_atom_evidence(
         + " AND ".join(parent_conditions)
         + ")"
     )
-    async with (
-        _read_connection(engine) as connection,
-        connection.execute(
-            "SELECT id,content,event_time FROM memory_atoms WHERE "
+    async with _read_connection(engine) as connection:
+        async with connection.execute("PRAGMA table_info(memory_atoms)") as cursor:
+            atom_type_column = (
+                "atom_type" if any(row[1] == "atom_type" for row in await cursor.fetchall())
+                else "NULL"
+            )
+        async with connection.execute(
+            f"SELECT id,content,event_time,{atom_type_column} FROM memory_atoms WHERE "
             + " AND ".join(clauses)
             + " ORDER BY event_time DESC,id DESC",
             values,
-        ) as cursor,
-    ):
-        rows = await cursor.fetchall()
+        ) as cursor:
+            rows = await cursor.fetchall()
     valid = [
         row
         for row in rows
@@ -214,13 +217,19 @@ async def temporal_atom_evidence(
     ]
     if not valid:
         return None
-    return {
+    evidence = {
         "content": "\n".join(dict.fromkeys(str(row[1]) for row in valid)),
+        "retrieved_atom_ids": [int(row[0]) for row in valid],
         "temporal_atom_ids": [int(row[0]) for row in valid],
         "temporal_time_start": min(row[2] for row in valid),
         "temporal_time_end": max(row[2] for row in valid),
         "temporal_time_basis": "atom_event_time",
     }
+    # Match the final range-selected content, rather than the parent-wide
+    # lifecycle projection. Missing legacy types retain their existing policy.
+    if all(row[3] is not None for row in valid):
+        evidence["atom_types"] = list(dict.fromkeys(str(row[3]).casefold() for row in valid))
+    return evidence
 
 
 async def direct_time_candidates(
@@ -470,6 +479,8 @@ async def _semantic_candidates(engine, query, cap, scope, persona, *, record_acc
     lifecycle = getattr(engine, "filter_recall_lifecycle", None)
     if callable(lifecycle):
         results = await lifecycle(results)
+        if callable(policy):
+            results = policy(results)
     recent = getattr(engine, "_merge_recent_memories", None)
     if callable(recent):
         results = await recent(results, cap, scope, persona)
@@ -713,6 +724,8 @@ async def search_with_time(
         lifecycle = getattr(memory_engine, "filter_recall_lifecycle", None)
         if needs_recheck and callable(lifecycle):
             memories = await lifecycle(memories)
+            if callable(policy):
+                memories = policy(memories)
         if temporal_marks:
             refreshed = []
             for item in memories:
@@ -733,6 +746,8 @@ async def search_with_time(
                     }
                     refreshed.append(replace(item, content=content, metadata=metadata))
             memories = refreshed
+            if callable(policy):
+                memories = policy(memories)
         if needs_recheck:
             memories = [
                 item

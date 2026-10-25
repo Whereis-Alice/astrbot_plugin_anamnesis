@@ -647,6 +647,7 @@ class MemoryEngineCrudMixin:
             lifecycle_filter = getattr(self, "filter_recall_lifecycle", None)
             if callable(lifecycle_filter):
                 cached_results = await lifecycle_filter(cached_results)
+            cached_results = self._filter_by_retrieval_policy(cached_results)
             self._schedule_access_updates([result.doc_id for result in cached_results])
             return cached_results
 
@@ -695,6 +696,7 @@ class MemoryEngineCrudMixin:
         if callable(lifecycle_filter):
             results = await lifecycle_filter(results)
 
+        results = self._filter_by_retrieval_policy(results)
         # 异步更新访问时间(不阻塞返回)
         if results:
             self._schedule_access_updates([r.doc_id for r in results])

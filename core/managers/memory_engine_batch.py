@@ -16,6 +16,7 @@ from ...storage.atom_store import AtomStore
 from ...storage.sqlite_utils import configure_sqlite_connection
 from ..atom_evidence import atom_scope_matches_parent
 from ..processors.atom_classifier import classify_atoms
+from ..utils.embedding_utils import validate_embedding_vector
 from ..utils.number_utils import clamp_float, safe_float
 from .memory_mutation import (
     memory_mutation_task,
@@ -378,10 +379,8 @@ class MemoryEngineBatchMixin:
         get_embedding = getattr(provider, "get_embedding_with_retry", None)
         if not callable(get_embedding):
             get_embedding = getattr(provider, "get_embedding", None)
-        if not callable(embedding_insert) or not callable(get_embedding):
+        if not callable(embedding_insert) or not callable(embedding_delete) or not callable(get_embedding):
             raise RuntimeError("当前 AstrBot 不支持恢复已归档向量")
-
-        import numpy as np
 
         content = str(memory.get("text") or "")
         vector_inserted = False
@@ -393,7 +392,10 @@ class MemoryEngineBatchMixin:
         restore_marker = json.dumps(metadata["restored_at"], allow_nan=False)
         metadata.pop("archived_at", None)
         try:
-            vector = np.asarray(await get_embedding(content), dtype=np.float32)
+            vector = validate_embedding_vector(await get_embedding(content), embedding_storage)
+            # Archive cleanup may have failed or left an old persisted copy.
+            # Validate first, then replace every occurrence of this memory ID.
+            await embedding_delete([memory_id])
             vector_inserted = True
             await embedding_insert(vector, memory_id)
             if self.bm25_retriever is None:

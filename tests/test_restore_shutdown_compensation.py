@@ -217,6 +217,7 @@ async def test_repeated_cancellation_waits_for_restore_compensation(
     inserting, cleaning, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
     embedding_delete = engine.faiss_db.embedding_storage.delete
     embedding_insert = engine.faiss_db.embedding_storage.insert
+    delete_phases = []
 
     async def inserted_and_waiting(*args):
         await embedding_insert(*args)
@@ -224,6 +225,12 @@ async def test_repeated_cancellation_waits_for_restore_compensation(
         await asyncio.Future()
 
     async def paused_cleanup(*args):
+        # Same-ID restoration now clears the old vector before inserting.
+        # Only pause the compensation that follows the suspended insert.
+        if not inserting.is_set():
+            delete_phases.append("prepare")
+            return await embedding_delete(*args)
+        delete_phases.append("compensate")
         cleaning.set()
         await release.wait()
         return await embedding_delete(*args)
@@ -235,8 +242,10 @@ async def test_repeated_cancellation_waits_for_restore_compensation(
     restoration = asyncio.create_task(engine.restore_memory(memory_id))
     try:
         await asyncio.wait_for(inserting.wait(), 5)
+        assert delete_phases == ["prepare"]
         restoration.cancel()
         await asyncio.wait_for(cleaning.wait(), 5)
+        assert delete_phases == ["prepare", "compensate"]
         restoration.cancel()
         await asyncio.sleep(0)
         restoration.cancel()
@@ -245,6 +254,7 @@ async def test_repeated_cancellation_waits_for_restore_compensation(
         release.set()
         with pytest.raises(asyncio.CancelledError):
             await asyncio.wait_for(restoration, 5)
+        assert delete_phases == ["prepare", "compensate"]
         assert (await service.snapshot(memory_id)) == before
         assert (await read_record(engine.db_path, memory_id))[1] == []
         assert not engine._memory_mutation_lock.locked()

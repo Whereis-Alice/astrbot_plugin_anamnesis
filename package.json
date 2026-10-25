@@ -1,6 +1,6 @@
 {
   "name": "astrbot-plugin-anamnesis-docs",
-  "version": "3.5.14",
+  "version": "3.5.15",
   "private": true,
   "type": "module",
   "scripts": {

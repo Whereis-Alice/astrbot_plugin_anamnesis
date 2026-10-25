@@ -15,6 +15,7 @@ from ..core.managers.memory_mutation import (
     index_projection_guard,
     memory_mutation_guard,
 )
+from ..core.utils.embedding_utils import validate_embedding_vector
 from .administration_store import AdministrationStore
 
 
@@ -92,31 +93,11 @@ class ProjectionOutbox:
                         if engine.graph_memory_manager:
                             await engine.graph_memory_manager.delete_memory(memory_id)
                     else:
-                        import numpy as np
                         provider = getattr(engine.faiss_db, "embedding_provider", None)
                         get = getattr(provider, "get_embedding_with_retry", None) or getattr(provider, "get_embedding", None)
                         if not callable(get) or not callable(getattr(embedding, "delete", None)) or not callable(getattr(embedding, "insert", None)):
                             raise ValueError("宿主缺少索引同步接口，请执行完整索引重建")
-                        vector = np.asarray(await get(snapshot["text"]), dtype=np.float32)
-                        if (
-                            vector.ndim != 1
-                            or not vector.size
-                            or not np.isfinite(vector).all()
-                        ):
-                            raise ValueError(
-                                "Embedding 返回无效向量，保留旧索引并等待重试"
-                            )
-                        dimensions = (
-                            getattr(embedding, "dimension", None),
-                            getattr(getattr(embedding, "index", None), "d", None),
-                        )
-                        if any(
-                            isinstance(dimension, int) and dimension > 0 and vector.size != dimension
-                            for dimension in dimensions
-                        ):
-                            raise ValueError(
-                                "Embedding 维度与现有索引不一致，请执行完整索引重建"
-                            )
+                        vector = validate_embedding_vector(await get(snapshot["text"]), embedding)
                         await embedding.delete([memory_id])
                         await embedding.insert(vector, memory_id)
                         await engine.bm25_retriever.add_document(memory_id, snapshot["text"], snapshot["metadata"])

@@ -108,6 +108,12 @@ class MemoryEngineEvidenceMixin:
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_atoms'"
         ) as cursor:
             present = await cursor.fetchone() is not None
+        atom_type_column = "NULL"
+        if present:
+            async with self.db_connection.execute("PRAGMA table_info(memory_atoms)") as cursor:
+                if any(row[1] == "atom_type" for row in await cursor.fetchall()):
+                    atom_type_column = "atom_type"
+        self._recall_atom_type_column = atom_type_column
         self._recall_atom_table_present = present
         return present
 
@@ -120,7 +126,9 @@ class MemoryEngineEvidenceMixin:
             batch = ids[start : start + 500]
             async with self.db_connection.execute(
                 "SELECT id, parent_memory_id, content, status, expires_at, "
-                "session_id, persona_id FROM memory_atoms WHERE parent_memory_id IN "
+                "session_id, persona_id, "
+                f"{getattr(self, '_recall_atom_type_column', 'NULL')} "
+                "FROM memory_atoms WHERE parent_memory_id IN "
                 f"({','.join('?' for _ in batch)}) ORDER BY id",
                 batch,
             ) as cursor:
@@ -254,6 +262,10 @@ class MemoryEngineEvidenceMixin:
                 "time_tags": [],
                 "retrieved_atom_ids": [int(row[0]) for row in live],
             }
+            if all(row[7] is not None for row in live):
+                display_metadata["atom_types"] = list(dict.fromkeys(
+                    str(row[7]).casefold() for row in live
+                ))
             filtered.append(self._recall_copy_result(result, content, display_metadata))
         return filtered
 

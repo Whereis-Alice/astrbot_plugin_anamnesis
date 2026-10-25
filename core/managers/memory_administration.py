@@ -114,16 +114,18 @@ class MemoryAdministration(AdministrationJobsMixin):
         operation_id = await self._create("delete", actor, {"memory_ids": ids, "reason": str(reason)[:500]}, "running")
         deleted, failed = [], []
         for memory_id in ids:
-            snapshot = await self.snapshot(memory_id)
-            if snapshot is None or snapshot["metadata"].get("status", "active") != "active":
-                failed.append({"id": memory_id, "error": "记忆不存在或已经归档"})
-                continue
-            raw = json.dumps(snapshot, ensure_ascii=False)
-            if len(raw.encode()) > self.option("memory_administration.max_snapshot_kib", 1024)*1024:
-                failed.append({"id": memory_id, "error": "记忆及来源超过恢复快照预算"})
-                continue
-            await self.store.put_item(operation_id, memory_id, {"before": snapshot}, status="prepared")
             try:
+                snapshot = await self.snapshot(memory_id)
+                if snapshot is None or snapshot["metadata"].get("status", "active") != "active":
+                    failed.append({"id": memory_id, "error": "记忆不存在或已经归档"})
+                    continue
+                raw = json.dumps(snapshot, ensure_ascii=False)
+                if len(raw.encode()) > self.option("memory_administration.max_snapshot_kib", 1024)*1024:
+                    failed.append({"id": memory_id, "error": "记忆及来源超过恢复快照预算"})
+                    continue
+                # Reserve this source's recovery record before touching it.
+                # Capacity failure is local to this item; prior items remain recoverable.
+                await self.store.put_item(operation_id, memory_id, {"before": snapshot}, status="prepared")
                 # Tag before archiving. A process interruption remains traceable.
                 if not await self.engine.update_memory(memory_id, {"metadata": {"recovery_operation_id": operation_id}}):
                     raise ValueError("记忆标记失败")
@@ -131,13 +133,20 @@ class MemoryAdministration(AdministrationJobsMixin):
                 await self.store.put_item(operation_id, memory_id, {"before": snapshot, "tagged": tagged}, status="prepared")
                 if await self.engine.archive_memories([memory_id]) != 1:
                     raise ValueError("归档失败")
+                deleted.append(memory_id)
                 after = await self.snapshot(memory_id)
                 await self.store.put_item(operation_id, memory_id, {"before": snapshot, "after": after, "fingerprint": fingerprint(after)}, status="deleted")
-                deleted.append(memory_id)
             except Exception as exc:  # noqa: BLE001 -- retain per-item recovery data after adapter failure
                 failed.append({"id": memory_id, "error": str(exc)[:300]})
         result = {"operation_id": operation_id, "deleted_ids": deleted, "failed": failed, "recoverable": True}
-        await self.store.update(operation_id, status="completed" if not failed else "partial", result=result)
+        try:
+            await self.store.update(operation_id, status="completed" if not failed else "partial", result=result)
+        except ValueError:
+            # Status does not consume the content quota. Keep every durable item
+            # even when the final summary cannot fit, and return the actual outcome.
+            await self.store.update(operation_id, status="partial")
+            result["result_persisted"] = False
+            logger.warning("删除操作 %s 的结果超过管理容量，已保留快照并标为部分完成", operation_id)
         return result
 
     async def _owned(self, operation_id, actor, kind=None, *, allow_expired=False):

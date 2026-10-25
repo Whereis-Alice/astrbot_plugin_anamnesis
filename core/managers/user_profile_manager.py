@@ -534,6 +534,17 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
         return len(normalized)
 
     async def delete_profile(self, event: Any, key: str | None = None) -> int:
+        # Preserve omitted/empty-string whole-scope deletion, but never let a
+        # malformed specified key become an unrestricted ledger deletion.
+        if key is not None:
+            if not isinstance(key, str):
+                return 0
+            if key:
+                key = key.strip().casefold()
+                if not _KEY_PATTERN.fullmatch(key):
+                    return 0
+            else:
+                key = None
         scope = self.scope_for_event(event)
         if not scope or not await self._ensure_schema():
             return 0
@@ -543,18 +554,18 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
             return 0
         async with self.store._write_lock:
             try:
-                if key:
+                if key is not None:
                     cursor = await connection.execute(
                         "DELETE FROM user_profiles WHERE profile_scope = ? AND profile_key = ?",
-                        (scope, key.strip().casefold()),
+                        (scope, key),
                     )
                 else:
                     cursor = await connection.execute(
                         "DELETE FROM user_profiles WHERE profile_scope = ?", (scope,)
                     )
                 count = cursor.rowcount
-                await self._delete_ledger_keys(connection, scope, key.strip().casefold() if key else None)
-                await self._commit_profile_invalidation(scope=scope, key=key.strip().casefold() if key else None)
+                await self._delete_ledger_keys(connection, scope, key)
+                await self._commit_profile_invalidation(scope=scope, key=key)
             except BaseException:
                 await connection.rollback()
                 raise
