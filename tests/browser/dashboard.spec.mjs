@@ -46,7 +46,7 @@ try {
   assert.equal(await frame.locator('.profile-fact-card').count(), 2); passes.push('PASS keyboard: user buttons switch identity with Enter');
   await frame.locator('[data-profile-user="0"]').click(); await frame.locator('.profile-fact-card').nth(10).waitFor();
   await frame.locator('.profile-fact-source').first().locator('summary').click();
-  await frame.locator('[data-source-memory]').first().click();
+  await frame.locator('.profile-fact-source').first().locator('[data-source-memory]').click();
   await frame.locator('#peek-title').filter({hasText:'100'}).waitFor();
   assert.match(await frame.locator('#peek-body').innerText(), /用户希望我记住偏好/);
   passes.push('PASS provenance: source memory and record reason are readable');

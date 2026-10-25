@@ -349,6 +349,9 @@ class MemoryEngine(MemoryEngineOperationsMixin, MemoryEngineEvidenceMixin, Memor
 
     async def close(self):
         """关闭数据库连接和清理资源"""
+        administration = getattr(self, "memory_administration", None)
+        if administration is not None:
+            await administration.close()
         if self.atom_lifecycle_manager is not None:
             await self.atom_lifecycle_manager.stop()
         if self._access_flush_task is not None:

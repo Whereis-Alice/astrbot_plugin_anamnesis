@@ -8,6 +8,7 @@ import json
 import math
 import sqlite3
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aiosqlite
@@ -877,11 +878,15 @@ class MemoryEngineCrudMixin:
         importance: float,
         expected_memory: dict[str, Any] | None = None,
         expected_source: list[dict[str, Any]] | None = None,
+        preserved_atom_lifecycle: list[dict[str, Any]] | None = None,
+        prepared_callback: Callable[[int, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> int:
         """Replace one memory and rebuild all derived data with a new ID."""
         operation = memory_mutation_task(self, self._replace_memory_impl(
             memory_id, content=content, metadata=metadata, importance=importance,
             expected_memory=expected_memory, expected_source=expected_source,
+            preserved_atom_lifecycle=preserved_atom_lifecycle,
+            prepared_callback=prepared_callback,
         ))
         try:
             return await asyncio.shield(operation)
@@ -902,6 +907,8 @@ class MemoryEngineCrudMixin:
         self, memory_id: int, *, content: str, metadata: dict[str, Any], importance: float,
         expected_memory: dict[str, Any] | None = None,
         expected_source: list[dict[str, Any]] | None = None,
+        preserved_atom_lifecycle: list[dict[str, Any]] | None = None,
+        prepared_callback: Callable[[int, dict[str, Any]], Awaitable[None]] | None = None,
     ) -> int:
         current = await self._replacement_snapshot(memory_id)
         if not current:
@@ -943,8 +950,8 @@ class MemoryEngineCrudMixin:
                 session_id=session_id,
                 persona_id=persona_id,
             )
-            old_snapshots = current_metadata.get("archived_atom_lifecycle")
-            if current_metadata.get("status", "active") != "archived" or not isinstance(old_snapshots, list):
+            old_snapshots = preserved_atom_lifecycle if preserved_atom_lifecycle is not None else current_metadata.get("archived_atom_lifecycle")
+            if preserved_atom_lifecycle is None and (current_metadata.get("status", "active") != "archived" or not isinstance(old_snapshots, list)):
                 old_snapshots = await self.snapshot_archived_atom_lifecycle(memory_id)
             lifecycle_by_key = {
                 (row.get("content"), row.get("atom_type")): row
@@ -953,7 +960,7 @@ class MemoryEngineCrudMixin:
             for atom in atoms:
                 previous = lifecycle_by_key.get((atom.content, atom.atom_type.value))
                 if previous is None:
-                    if current_metadata.get("atom_types") and atom.content in (current_metadata.get("key_facts") or []):
+                    if preserved_atom_lifecycle is not None or (current_metadata.get("atom_types") and atom.content in (current_metadata.get("key_facts") or [])):
                         # Maintenance may have purged its atom while the historical
                         # summary remains. An unrelated edit cannot restate it.
                         atom.status = AtomStatus.FORGOTTEN
@@ -1010,6 +1017,10 @@ class MemoryEngineCrudMixin:
                 await self._delete_graph_and_atoms_for_batch([new_memory_id])
             if not self._replacement_snapshot_matches(await self._replacement_snapshot(memory_id), current):
                 raise RuntimeError("记忆在处理期间已修改，请刷新后重试")
+            # Save the recovery journal while the original still exists. A
+            # failed journal write follows the existing new-copy compensation.
+            if prepared_callback is not None:
+                await prepared_callback(new_memory_id, await self._replacement_snapshot(new_memory_id))
             if not await self.delete_memory(memory_id):
                 raise RuntimeError("旧记忆删除失败")
             self._invalidate_search_cache()

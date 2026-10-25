@@ -12,6 +12,7 @@ import {
   PromptPage,
   ProfilePage,
   SettingsPage,
+  AdministrationPage,
   esc,
   statusPill,
   nodeBadge,
@@ -71,6 +72,7 @@ import {
   const promptPage = new PromptPage(state, api);
   const profilePage = new ProfilePage(state, api, peekPanel);
   const settingsPage = new SettingsPage(state, api);
+  const administrationPage = new AdministrationPage(state, api, peekPanel);
 
   function hydrateIcons() {
     if (!window.lucide || typeof window.lucide.createIcons !== "function") return;
@@ -186,6 +188,7 @@ import {
     if (name === "prompts") promptPage.fetch();
     if (name === "profiles") profilePage.fetch();
     if (name === "settings") settingsPage.fetch();
+    if (name === "administration") administrationPage.fetch().catch(error => console.error(error));
   }
 
   function normalizeLocale(locale) {
@@ -338,6 +341,7 @@ import {
     systemPage.initEventListeners();
     profilePage.initEventListeners();
     settingsPage.initEventListeners();
+    administrationPage.initEventListeners();
 
     document.getElementById("peek-close").addEventListener("click", () => peekPanel.close());
     document.getElementById("peek-overlay").addEventListener("click", () => peekPanel.close());

@@ -133,6 +133,49 @@ test("an older save response cannot close a newer profile editor", async () => {
   assert.equal(elements["profile-edit-value"].value, "second unsaved draft");
 });
 
+test("profile proposals and evidence escape source text and explain manual priority", () => {
+  const { page, state, elements } = setup({});
+  state.profile.user = { ...user, manual_alias: "管理员备注 <svg>", observed_names: ["共同昵称"] };
+  state.profile.items = [{ ...facts[0], authority: "manual", manual_override: 1, revision: 3,
+    evidence: [{ source_memory_id: 42, quote: "原话 <script>引用", active: false, source_group_name: "原群" }],
+    pending: [{ claim_id: 5, value: "候选 <img>", can_accept: false, evidence: [] }],
+    history: [{ value: "旧值 <iframe>", state: "superseded", evidence: [] }] }];
+  page.renderDetail();
+  const html = elements["profile-reader"].innerHTML;
+  assert.match(html, /管理员备注 &lt;svg&gt;/);
+  assert.match(html, /候选 &lt;img&gt;/);
+  assert.match(html, /原话 &lt;script&gt;引用/);
+  assert.match(html, /旧值 &lt;iframe&gt;/);
+  assert.match(html, /data-profile-review="accept"[^>]+ disabled/);
+  assert.match(html, /data-profile-review="unlock"/);
+  assert.doesNotMatch(html, /<(script|iframe|img|svg)>/);
+});
+
+test("proposal acceptance sends exact scope/key/claim/revision and requires actual click confirmation", async () => {
+  const posts = [], item = { ...facts[0], revision: 6 };
+  const { page, state, peek } = setup({ async post(path, body, options) { posts.push({ path, body, options }); }, async get() { return { items: [], total: 0 }; } });
+  state.profile.user = user; state.profile.identity = user.identity;
+  peek.confirmed = false;
+  await page.reviewItem(item, "accept", "31");
+  assert.equal(posts.length, 0);
+  peek.confirmed = true;
+  await page.reviewItem(item, "accept", "31");
+  assert.deepEqual(posts[0], { path: "profiles/review", body: { profile_scope: "scope:A", profile_key: "favorite_food", action: "accept", claim_id: 31, expected_revision: 6 }, options: { retries: 0 } });
+});
+
+test("old review completion cannot close a newer profile editor", async () => {
+  let finish, started, closes = 0;
+  const posting = new Promise(resolve => { started = resolve; });
+  const { page, peek, state } = setup({ post() { started(); return new Promise(resolve => { finish = resolve; }); }, async get() { return { items: [], total: 0 }; } });
+  peek.close = () => { closes++; };
+  state.profile.identity = user.identity; state.profile.user = user;
+  const review = page.reviewItem({ ...facts[0], revision: 8 }, "reject", "99");
+  await posting;
+  page.openItem(facts[1]);
+  finish({}); await review;
+  assert.equal(closes, 0);
+});
+
 test("an older confirmed delete cannot close a newer profile editor", async () => {
   let finish, started;
   const posting = new Promise(resolve => { started = resolve; });

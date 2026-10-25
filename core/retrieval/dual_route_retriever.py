@@ -8,6 +8,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from .graph_evidence import graph_evidence
 from .graph_retriever import GraphRetriever
 from .hybrid_retriever import HybridResult, HybridRetriever
 from .vector_search import query_embedding_scope
@@ -156,6 +157,8 @@ class DualRouteRetriever:
         self.dynamic_route_weighting = bool(
             self.config.get("dynamic_route_weighting", True)
         )
+        self.graph_evidence_enabled = bool(self.config.get("graph_evidence_enabled", False))
+        self.graph_evidence_min_support = float(self.config.get("graph_evidence_min_support", 0.5))
 
     async def search(
         self,
@@ -209,6 +212,13 @@ class DualRouteRetriever:
                 pending_ids.append(doc_id)
 
         loaded = await self._load_memories_concurrently(pending_ids)
+        evidence_documents = {}
+        if self.graph_evidence_enabled:
+            # A graph-only candidate carries graph-entry text, which cannot
+            # serve as its own evidence. Load the authoritative parent text.
+            evidence_documents = {doc_id: loaded[doc_id] for doc_id in graph_map if doc_id in loaded}
+            evidence_documents.update(await self._load_memories_concurrently(
+                [doc_id for doc_id in graph_map if doc_id not in loaded]))
 
         merged_results: list[HybridResult] = []
         for doc_id in all_doc_ids:
@@ -239,6 +249,16 @@ class DualRouteRetriever:
                 raw_metadata = memory.get("metadata") or memory_metadata
                 memory_metadata = raw_metadata if isinstance(raw_metadata, dict) else {}
 
+            evidence_details = {}
+            if self.graph_evidence_enabled and graph_result is not None:
+                document = evidence_documents.get(doc_id) or {}
+                evidence_details = graph_evidence(query, graph_result.content,
+                    str(document.get("text") or ""), minimum_support=self.graph_evidence_min_support)
+                graph_signal *= evidence_details["graph_evidence_gate"]
+                # Weak graph evidence must not receive a full cross-channel
+                # bonus merely because both channels returned the document.
+                route_bonus *= evidence_details["graph_evidence_gate"]
+
             final_score = min(
                 1.0,
                 document_weight * doc_signal
@@ -251,6 +271,7 @@ class DualRouteRetriever:
                 score_breakdown.update(doc_result.score_breakdown)
             if graph_result and graph_result.score_breakdown:
                 score_breakdown.update(graph_result.score_breakdown)
+            score_breakdown.update(evidence_details)
             score_breakdown.update(
                 {
                     "document_route_score": round(doc_signal, 4),

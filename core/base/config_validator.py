@@ -42,6 +42,10 @@ class SessionManagerConfig(BaseModel):
 
 class RecallEngineConfig(BaseModel):
     """回忆引擎配置"""
+    temporal_retrieval_enabled: bool = True
+    temporal_candidate_limit: int = Field(default=500, ge=50, le=5000)
+    temporal_max_range_days: int = Field(default=3660, ge=1, le=36500)
+    temporal_timezone: str = ""
 
     top_k: int = Field(
         default=5, ge=0, le=50, description="返回记忆数量。设为 0 则跳过自动召回和注入"
@@ -176,6 +180,7 @@ class ReflectionEngineConfig(BaseModel):
 
 class AgentToolsConfig(BaseModel):
     """Agent 工具配置"""
+    enable_correction_plan_tool: bool = False
 
     enable_recall_tool: bool = Field(
         default=True, description="是否启用 Agent 主动回忆工具"
@@ -193,7 +198,7 @@ class AgentToolsConfig(BaseModel):
     recall_budget_seconds: float = Field(default=20, ge=1, le=600)
     recall_output_max_chars: int = Field(default=16000, ge=1000, le=100000)
     recall_candidate_limit: int = Field(default=100, ge=10, le=500)
-    forget_mode: str = Field(default="delete", pattern="^(delete|archive)$")
+    forget_mode: str = Field(default="delete", pattern="^(delete|archive|recoverable)$")
     forget_max_per_request: int = Field(default=3, ge=1, le=20)
     forget_cooldown_seconds: float = Field(default=2, ge=0, le=3600)
 
@@ -212,6 +217,36 @@ class UserProfileConfig(BaseModel):
     volatile_ttl_days: int = Field(default=7, ge=1, le=3650)
     extraction_max_chars: int = Field(default=12000, ge=1000, le=50000)
     llm_max_retries: int = Field(default=1, ge=0, le=3)
+    manual_override_enabled: bool = True
+    review_changes: bool = True
+    history_max_versions: int = Field(default=20, ge=2, le=100)
+    evidence_max_sources: int = Field(default=20, ge=1, le=100)
+
+
+class MemoryAdministrationConfig(BaseModel):
+    recovery_enabled: bool = True
+    correction_enabled: bool = True
+    import_enabled: bool = True
+    evaluation_enabled: bool = True
+    episode_enabled: bool = True
+    projection_enabled: bool = True
+    retention_days: int = Field(default=30, ge=1, le=3650)
+    max_records: int = Field(default=500, ge=10, le=10000)
+    max_storage_mib: int = Field(default=128, ge=8, le=4096)
+    max_snapshot_kib: int = Field(default=1024, ge=64, le=10240)
+    max_job_mib: int = Field(default=5, ge=1, le=50)
+    import_chunk_chars: int = Field(default=2000, ge=500, le=12000)
+    max_import_chunks: int = Field(default=1000, ge=1, le=10000)
+    llm_timeout_seconds: float = Field(default=45, ge=1, le=600)
+    evaluation_timeout_seconds: float = Field(default=10, ge=1, le=120)
+
+
+class EpisodicMemoryConfig(BaseModel):
+    enabled: bool = False
+    max_members: int = Field(default=30, ge=1, le=200)
+    max_input_chars: int = Field(default=12000, ge=1000, le=50000)
+    recall_scan_limit: int = Field(default=30, ge=1, le=100)
+    max_injection_chars: int = Field(default=2000, ge=200, le=10000)
 
 
 class ForgettingAgentConfig(BaseModel):
@@ -342,6 +377,8 @@ class IndexRebuildSettings(BaseModel):
 
 class GraphMemoryConfig(BaseModel):
     """Graph-memory retrieval configuration."""
+    graph_evidence_enabled: bool = False
+    graph_evidence_min_support: float = Field(default=0.5, ge=0, le=1)
 
     enabled: bool = Field(default=True, description="是否启用图记忆双路检索")
     document_route_weight: float = Field(
@@ -551,6 +588,8 @@ class AnamnesisConfig(BaseModel):
     )
     agent_tools: AgentToolsConfig = Field(default_factory=AgentToolsConfig)
     user_profile: UserProfileConfig = Field(default_factory=UserProfileConfig)
+    memory_administration: MemoryAdministrationConfig = Field(default_factory=MemoryAdministrationConfig)
+    episodic_memory: EpisodicMemoryConfig = Field(default_factory=EpisodicMemoryConfig)
     forgetting_agent: ForgettingAgentConfig = Field(
         default_factory=ForgettingAgentConfig
     )

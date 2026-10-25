@@ -212,7 +212,8 @@ async def test_memory_search_tool_includes_retained_source_on_request(
                 doc_id=9,
                 content="summary",
                 final_score=0.9,
-                metadata={"has_source": True},
+                metadata={"has_source": True, "session_id": "test:private:session-1",
+                          "source_session_id": "test:private:session-1", "persona_id": "persona_a"},
             )
         ]
     )

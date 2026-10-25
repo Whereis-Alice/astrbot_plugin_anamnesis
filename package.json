@@ -1,6 +1,6 @@
 {
   "name": "astrbot-plugin-anamnesis-docs",
-  "version": "3.4.3",
+  "version": "3.5.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,7 +10,10 @@
     "test:browser": "node tests/browser/dashboard.spec.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
-    "docs:preview": "vitepress preview docs"
+    "docs:preview": "vitepress preview docs",
+    "test:administration-browser": "node tests/browser/administration.spec.mjs",
+    "test:profile-review-browser": "node tests/browser/profile-review.spec.mjs",
+    "test:recall-time-browser": "node tests/browser/recall-time.spec.mjs"
   },
   "overrides": {
     "@vitejs/plugin-vue": "^6.0.7",

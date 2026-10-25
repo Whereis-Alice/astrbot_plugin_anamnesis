@@ -13,8 +13,10 @@ from pydantic.dataclasses import dataclass
 
 from ..base.config_manager import ConfigManager
 from ..memory_scope import is_event_memory_allowed, resolve_memory_scope
+from ..retrieval.temporal_query import resolve_context_timezone
+from ..retrieval.temporal_retrieval import retrieval_time_bounds, search_with_time
 from ..utils import get_persona_id
-from .agentic_recall import agentic_search
+from .agentic_recall import agentic_search, evidence_allowed
 
 
 def _json_result(data: dict[str, Any]) -> str:
@@ -39,7 +41,10 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
         "Call this when the user asks you to recall prior facts, preferences, agreements, or older context, "
         "or when resolving ambiguous references requires checking memory. "
         "Prefer short topic phrases, named entities, preferences, commitments, or past events as recall keywords. "
-        "If the first recall is not enough, refine the keywords and recall again."
+        "If the first recall is not enough, refine the keywords and recall again. "
+        "For dates such as yesterday or last week, use auto/time/hybrid mode. "
+        "An explicit time range uses inclusive start_time and exclusive end_time; "
+        "query may be empty in time mode with a provided range."
     )
     parameters: dict[str, Any] = field(
         default_factory=lambda: {
@@ -59,15 +64,21 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                     "description": "Include retained original messages when exact details are needed. Use only after normal recall is insufficient.",
                     "default": False,
                 },
+                "mode": {"type": "string", "enum": ["auto", "semantic", "time", "hybrid"],
+                         "default": "auto", "description": "Time mode directly queries a resolved time range; hybrid combines time and semantic candidates."},
+                "start_time": {"type": "string", "description": "Inclusive time boundary: epoch seconds or ISO-8601."},
+                "end_time": {"type": "string", "description": "Exclusive time boundary: epoch seconds or ISO-8601. Use the next midnight to include a full day."},
+                "speaker": {"type": "string", "description": "Exact speaker account ID or recorded participant name."},
+                "exclude_ids": {"type": "array", "items": {"type": "integer"}, "description": "Memory IDs already seen, at most 500."},
             },
-            "required": ["query"],
+            "required": [],
         }
     )
 
     async def call(
         self,
         context: ContextWrapper[AstrAgentContext],
-        query: str,
+        query: str = "",
         k: int = 5,
         include_source: bool = False,
         speaker: str | None = None,
@@ -75,10 +86,11 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
         end_time: str | None = None,
         exclude_ids: list[int] | None = None,
         cursor: str | None = None,
+        mode: str = "auto",
     ) -> ToolExecResult:
         """执行长期记忆回忆。"""
         cleaned_query = (query or "").strip()
-        if not cleaned_query:
+        if not cleaned_query and start_time is None and end_time is None:
             return _json_result(
                 {
                     "query": "",
@@ -107,7 +119,7 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
             if self.config_manager.get("agent_tools.agentic_recall_enabled", False):
                 return await agentic_search(self, event, cleaned_query, k, include_source,
                                             speaker=speaker, start_time=start_time, end_time=end_time,
-                                            exclude_ids=exclude_ids, cursor=cursor)
+                                            exclude_ids=exclude_ids, cursor=cursor, mode=mode)
             if not is_event_memory_allowed(self.config_manager, event):
                 return _json_result(
                     {
@@ -139,11 +151,17 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
 
             limited_k = max(1, min(requested_k_int, max_k))
 
-            memories = await self.memory_engine.search_memories(
-                query=cleaned_query,
+            memories, retrieval_details = await search_with_time(
+                self.memory_engine, query=cleaned_query,
                 k=limited_k,
                 session_id=recall_session_id,
                 persona_id=recall_persona_id,
+                config_manager=self.config_manager, mode=mode,
+                start_time=start_time, end_time=end_time, speaker=speaker,
+                exclude_ids=exclude_ids,
+                timezone_name=resolve_context_timezone(self.context, self.config_manager,
+                                                      getattr(event, "unified_msg_origin", None)),
+                timeout=self.config_manager.get("recall_engine.search_timeout_seconds", 5),
             )
 
             serialized_results = []
@@ -159,7 +177,14 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                     "create_time": metadata.get("create_time"),
                     "last_access_time": metadata.get("last_access_time"),
                 }
-                if include_source and metadata.get("has_source"):
+                breakdown = getattr(memory, "score_breakdown", None)
+                if isinstance(breakdown, dict):
+                    item["score_breakdown"] = breakdown
+                if retrieval_details.get("time_range"):
+                    start, end, basis = retrieval_time_bounds(metadata)
+                    item.update(time_basis=basis, time_start=start, time_end=end)
+                if (include_source and metadata.get("has_source") and
+                    evidence_allowed(metadata, recall_session_id, recall_persona_id, event, self.config_manager)):
                     get_source = getattr(
                         self.memory_engine, "get_memory_source", None
                     )
@@ -176,10 +201,15 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                     },
                     "count": len(serialized_results),
                     "results": serialized_results,
+                    "retrieval": retrieval_details,
                 }
             )
         except asyncio.CancelledError:
             raise
+        except ValueError as error:
+            return _json_result({"query": cleaned_query, "count": 0, "results": [], "error": str(error)})
+        except TimeoutError:
+            return _json_result({"query": cleaned_query, "count": 0, "results": [], "error": "recall_time_budget_exhausted"})
         except Exception as e:
             logger.error(f"记忆工具检索失败: {e}", exc_info=True)
             return _json_result(

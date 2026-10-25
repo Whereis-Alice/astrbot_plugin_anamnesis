@@ -338,17 +338,29 @@ class MemoryRecall:
                     "session_id": recall_session_id,
                     "persona_id": recall_persona_id,
                 }
+                async def retrieve():
+                    from ..retrieval.temporal_retrieval import search_with_time
+                    from ..retrieval.temporal_query import resolve_context_timezone
+                    from ..utils import get_now_datetime
+                    zone = resolve_context_timezone(self.context, self.config_manager, session_id)
+                    results, _ = await search_with_time(
+                        self.memory_engine, **search_kwargs, config_manager=self.config_manager,
+                        time_query=actual_query, now=get_now_datetime(zone), timezone_name=zone)
+                    administration = getattr(self.memory_engine, "memory_administration", None)
+                    episodes = []
+                    if administration is not None and self.config_manager.get("episodic_memory.enabled", False):
+                        episodes = await administration.episode_candidates(actual_query, results,
+                            session_id=recall_session_id, persona_id=recall_persona_id, k=2)
+                    return results, episodes
                 try:
                     if search_timeout is None:
                         # 配置 <= 0：用户显式选择不限时，保持旧行为。
-                        recalled_memories = await self.memory_engine.search_memories(
-                            **search_kwargs
-                        )
+                        recalled_memories, recalled_episodes = await retrieve()
                     else:
                         # wait_for 会在超时时取消内层协程并 await 其收尾，
                         # 不会留下半完成状态或 "Task exception was never retrieved" 告警。
-                        recalled_memories = await asyncio.wait_for(
-                            self.memory_engine.search_memories(**search_kwargs),
+                        recalled_memories, recalled_episodes = await asyncio.wait_for(
+                            retrieve(),
                             timeout=search_timeout,
                         )
                 except (asyncio.TimeoutError, TimeoutError):
@@ -366,7 +378,7 @@ class MemoryRecall:
                         )
                     return
 
-                if recalled_memories:
+                if recalled_memories or recalled_episodes:
                     logger.debug(
                         f"[{session_id}] 检索到 {len(recalled_memories)} 条记忆"
                     )
@@ -382,6 +394,16 @@ class MemoryRecall:
                         }
                         for mem in recalled_memories
                     ]
+                    episode_budget = self.config_manager.get("episodic_memory.max_injection_chars", 2000)
+                    for episode in recalled_episodes:
+                        content = f"事件：{episode['title']}\n{episode['summary']}\n来源记忆：{episode['memory_ids']}"
+                        if len(content) > episode_budget:
+                            continue
+                        episode_budget -= len(content)
+                        memory_list.append({"id": "episode:" + episode["id"], "content": content,
+                            "score": 0.5, "metadata": {"persona_summary": content, "importance": 0.5,
+                            "session_id": episode["session_id"], "persona_id": episode["persona_id"],
+                            "source_session_id": episode["source_session_id"]}, "timestamp": episode["created_at"]})
 
                     # 输出详细记忆信息
                     for i, mem in enumerate(recalled_memories, 1):

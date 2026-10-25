@@ -1,6 +1,6 @@
 # WebUI
 
-3.4.0 redesigns profiles into a user directory and full categorized reader, and adds a settings page. See [the update guide](/en/upstream-sync-3.4.0).
+3.5.0 adds profile review, evidence and history, date-range debugging, and an Administration page for recovery, correction rollback, import jobs, independent evaluation and optional events. See [the update guide](/en/memorix-adaptations-3.5.0).
 
 Anamnesis uses AstrBot official Plugin Pages for its dashboard. No extra web server is required.
 

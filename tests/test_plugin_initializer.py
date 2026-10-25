@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
+import aiosqlite
 import astrbot_plugin_anamnesis.core.plugin_initializer as plugin_initializer_mod
 import astrbot_plugin_anamnesis.core.plugin_initializer_faiss as faiss_mod
 import pytest
@@ -356,7 +357,11 @@ async def test_complete_initialization_wires_graph_db_and_engine_config(
             self.text_processor = Mock(async_init=AsyncMock())
 
         async def initialize(self):
-            return None
+            # A real MemoryEngine initializes its primary document schema
+            # before administration installs transactional projection triggers.
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("CREATE TABLE documents(id INTEGER PRIMARY KEY,text TEXT,metadata TEXT)")
+                await db.commit()
 
     class FakeConversationStore:
         def __init__(self, db_path):
@@ -525,7 +530,11 @@ async def test_complete_initialization_skips_graph_db_when_disabled(
             self.text_processor = Mock(async_init=AsyncMock())
 
         async def initialize(self):
-            return None
+            # A real MemoryEngine initializes its primary document schema
+            # before administration installs transactional projection triggers.
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute("CREATE TABLE documents(id INTEGER PRIMARY KEY,text TEXT,metadata TEXT)")
+                await db.commit()
 
     class FakeConversationStore:
         def __init__(self, db_path):

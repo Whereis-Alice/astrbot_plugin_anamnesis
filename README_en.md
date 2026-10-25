@@ -40,6 +40,8 @@
 
 ## Recent capabilities
 
+**3.5.0** adds profile review, verbatim evidence and manual priority, date-range retrieval, and an Administration page for recovery, correction rollback, import jobs, independent query evaluation and optional events. See [the update guide](docs/en/memorix-adaptations-3.5.0.md) for defaults and usage.
+
 | Recoverable memory | Controlled boundaries | Online maintenance |
 | :--- | :--- | :--- |
 | **Sources and archives**<br>Important memories can retain source messages for review and re-summarization; low-value memories can be archived and restored instead of deleted. | **Scopes and access control**<br>Share memory by session, user, or globally, with explicit isolation, allowlists, and identity aliases. | **Safe index rebuilds**<br>Startup checks and large repairs run in the background with batching, progress status, rollback, and shadow-index cutover. |
@@ -87,7 +89,6 @@ Migration reads the old data directory only. It never modifies or deletes anythi
 
 ## Project
 
-**3.4.0** redesigns profiles and settings, and adds bounded retrieval, edited-history reconciliation, optional agentic recall, conservative deduplication, explicit scope migration and reversible forgetting. See [the update guide](docs/en/upstream-sync-3.4.0.md).
 
 [Documentation](docs/en/) · [Releases](https://github.com/Whereis-Alice/astrbot_plugin_anamnesis/releases) · [Changelog](CHANGELOG.md) · [Upstream history](CHANGELOG_upstream.md) · [Issues](https://github.com/Whereis-Alice/astrbot_plugin_anamnesis/issues)
 

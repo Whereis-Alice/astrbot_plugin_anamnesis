@@ -111,6 +111,8 @@ class InitializerFinalizeMixin:
                 "importance_weight": self.config_manager.get(
                     "recall_engine.importance_weight", 1.0
                 ),
+                "graph_evidence_enabled": self.config_manager.get("graph_memory.graph_evidence_enabled", False),
+                "graph_evidence_min_support": self.config_manager.get("graph_memory.graph_evidence_min_support", 0.5),
                 **{key: self.config_manager.get(f"recall_engine.{key}", default)
                    for key, default in {"fusion_mode": "rrf", "fusion_bm25_weight": 0.5,
                                         "fusion_agreement_bonus": 0.25,
@@ -402,6 +404,11 @@ class InitializerFinalizeMixin:
                     logger.info("TextProcessor 停用词已加载")
 
             # 启动重要性衰减调度器
+            from .managers.memory_administration import MemoryAdministration
+            self.memory_engine.memory_administration = MemoryAdministration(
+                self.memory_engine, self.config_manager, self.memory_processor)
+            await self.memory_engine.memory_administration.initialize()
+
             decay_rate = self.config_manager.get("importance_decay.decay_rate", 0.01)
             auto_cleanup_enabled = self.config_manager.get(
                 "forgetting_agent.auto_cleanup_enabled", True

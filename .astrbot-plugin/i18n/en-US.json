@@ -199,7 +199,10 @@
           "rrf": "Reciprocal rank fusion (RRF)",
           "score": "Weighted relevance score"
         },
-        "labels": ["Reciprocal rank fusion (RRF)", "Weighted relevance score"]
+        "labels": [
+          "Reciprocal rank fusion (RRF)",
+          "Weighted relevance score"
+        ]
       },
       "fusion_bm25_weight": {
         "description": "Keyword route weight",
@@ -216,6 +219,22 @@
       "vector_max_fetch_candidates": {
         "description": "Vector expansion cap",
         "hint": "Default: 8192. Range: 32–100000."
+      },
+      "temporal_retrieval_enabled": {
+        "description": "Natural-language time retrieval",
+        "hint": "Natural-language time retrieval"
+      },
+      "temporal_candidate_limit": {
+        "description": "Time query candidate limit",
+        "hint": "Time query candidate limit"
+      },
+      "temporal_max_range_days": {
+        "description": "Maximum time range (days)",
+        "hint": "Maximum time range (days)"
+      },
+      "temporal_timezone": {
+        "description": "Time query timezone (empty uses host settings)",
+        "hint": "Time query timezone (empty uses host settings)"
       }
     },
     "importance_decay": {
@@ -346,6 +365,22 @@
       },
       "llm_max_retries": {
         "description": "Additional LLM Extraction Retries"
+      },
+      "manual_override_enabled": {
+        "description": "Protect manual profile edits",
+        "hint": "Protect manual profile edits"
+      },
+      "review_changes": {
+        "description": "Review automatic changes",
+        "hint": "Review automatic changes"
+      },
+      "history_max_versions": {
+        "description": "History versions per fact",
+        "hint": "History versions per fact"
+      },
+      "evidence_max_sources": {
+        "description": "Evidence sources per fact",
+        "hint": "Evidence sources per fact"
       }
     },
     "agent_tools": {
@@ -388,9 +423,14 @@
         "hint": "delete is permanent. archive retains documents and original atom TTL, and suppresses related profile facts until restored.",
         "options": {
           "delete": "Permanently delete",
-          "archive": "Archive for restoration"
+          "archive": "Archive for restoration",
+          "recoverable": "Record recoverable operation"
         },
-        "labels": ["Permanently delete", "Archive for restoration"]
+        "labels": [
+          "Permanently delete",
+          "Archive for restoration",
+          "Record recoverable operation"
+        ]
       },
       "forget_max_per_request": {
         "description": "Forget operations per request",
@@ -399,6 +439,10 @@
       "forget_cooldown_seconds": {
         "description": "Forget cooldown (seconds)",
         "hint": "Default: 2. Range: 0–3600."
+      },
+      "enable_correction_plan_tool": {
+        "description": "Administrator correction planning tool",
+        "hint": "Administrator correction planning tool"
       }
     },
     "graph_memory": {
@@ -467,6 +511,14 @@
       "max_edge_entries_per_memory": {
         "description": "Max Relations Indexed Per Memory",
         "hint": "Cap the number of relation (edge) entries a single memory writes into the knowledge graph. Measured legacy data produced 85190 relations from 1766 memories, the dominant source of database size; lowering it cuts disk and index cost substantially. Set 0 for no limit. Allowed range: 0-1000."
+      },
+      "graph_evidence_enabled": {
+        "description": "Graph evidence scoring",
+        "hint": "Graph evidence scoring"
+      },
+      "graph_evidence_min_support": {
+        "description": "Minimum graph evidence support",
+        "hint": "Minimum graph evidence support"
       }
     },
     "identity_settings": {
@@ -727,6 +779,92 @@
       "merge_input_char_budget": {
         "description": "Merge Prompt Character Budget",
         "hint": "Total character budget for the merge prompt sent to the LLM. Overflow first trims key facts and topics, then truncates summaries, to stay inside the model context. Allowed range: 1000-200000."
+      }
+    },
+    "memory_administration": {
+      "description": "Memory administration",
+      "recovery_enabled": {
+        "description": "Enable operation recovery",
+        "hint": "Enable operation recovery"
+      },
+      "correction_enabled": {
+        "description": "Enable correction previews and rollback",
+        "hint": "Enable correction previews and rollback"
+      },
+      "import_enabled": {
+        "description": "Enable import jobs",
+        "hint": "Enable import jobs"
+      },
+      "evaluation_enabled": {
+        "description": "Enable fixed-query evaluation",
+        "hint": "Enable fixed-query evaluation"
+      },
+      "episode_enabled": {
+        "description": "Allow event generation jobs",
+        "hint": "Allow event generation jobs"
+      },
+      "projection_enabled": {
+        "description": "Allow versioned index synchronization",
+        "hint": "Allow versioned index synchronization"
+      },
+      "retention_days": {
+        "description": "Recovery and plan retention (days)",
+        "hint": "Recovery and plan retention (days)"
+      },
+      "max_records": {
+        "description": "Job and operation record capacity",
+        "hint": "Job and operation record capacity"
+      },
+      "max_snapshot_kib": {
+        "description": "Recovery snapshot limit (KiB)",
+        "hint": "Recovery snapshot limit (KiB)"
+      },
+      "max_job_mib": {
+        "description": "Job input limit (MiB)",
+        "hint": "Job input limit (MiB)"
+      },
+      "import_chunk_chars": {
+        "description": "Text import chunk size",
+        "hint": "Text import chunk size"
+      },
+      "max_import_chunks": {
+        "description": "Maximum import chunks",
+        "hint": "Maximum import chunks"
+      },
+      "llm_timeout_seconds": {
+        "description": "Generation timeout (seconds)",
+        "hint": "Generation timeout (seconds)"
+      },
+      "evaluation_timeout_seconds": {
+        "description": "Evaluation query timeout (seconds)",
+        "hint": "Evaluation query timeout (seconds)"
+      },
+      "max_storage_mib": {
+        "description": "Administration logs, jobs, snapshots and events capacity (MiB)",
+        "hint": "Clean completed records when full; retained recovery data is not silently discarded."
+      }
+    },
+    "episodic_memory": {
+      "description": "Event memory",
+      "enabled": {
+        "description": "Enable event memory (on demand)",
+        "hint": "Enable event memory (on demand)"
+      },
+      "max_members": {
+        "description": "Maximum memories per event",
+        "hint": "Maximum memories per event"
+      },
+      "max_input_chars": {
+        "description": "Event generation input budget",
+        "hint": "Event generation input budget"
+      },
+      "recall_scan_limit": {
+        "description": "Event recall scan limit",
+        "hint": "Event recall scan limit"
+      },
+      "max_injection_chars": {
+        "description": "Event injection character budget",
+        "hint": "Event injection character budget"
       }
     }
   }

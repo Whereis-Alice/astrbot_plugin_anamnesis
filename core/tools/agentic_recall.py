@@ -14,6 +14,17 @@ from ..memory_scope import (
     is_event_memory_allowed,
     resolve_memory_scope,
 )
+from ..retrieval.temporal_query import (
+    TimeRange,
+    parse_timestamp,
+    resolve_context_timezone,
+    speaker_matches,
+)
+from ..retrieval.temporal_retrieval import (
+    retrieval_time_bounds,
+    search_with_time,
+    temporal_atom_evidence,
+)
 from ..utils import get_persona_id
 
 
@@ -21,7 +32,8 @@ def request_state(event):
     getter, setter = getattr(event, "get_extra", None), getattr(event, "set_extra", None)
     state = getter("anamnesis_agentic_budget") if callable(getter) else getattr(event, "_anamnesis_agentic_budget", None)
     if not isinstance(state, dict):
-        state = {"calls": 0, "seconds": 0.0, "chars": 0, "lock": asyncio.Lock(), "pages": {}}
+        state = {"calls": 0, "seconds": 0.0, "chars": 0, "lock": asyncio.Lock(), "pages": {},
+                 "routes": {}, "reference_time": time.time()}
         if callable(setter):
             setter("anamnesis_agentic_budget", state)
         else:
@@ -49,53 +61,7 @@ def evidence_allowed(metadata, scope, persona, event, config):
     return matches and metadata.get("status", "active") == "active"
 
 
-def timestamp(value):
-    if value in (None, ""):
-        return None
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=timezone.utc)
-        number = moment.timestamp()
-    if not 0 <= number < 1e11:
-        raise ValueError("invalid time filter; use epoch seconds or ISO-8601")
-    return number
-
-
-def memory_time_bounds(metadata):
-    try:
-        event_time = timestamp(metadata.get("event_time"))
-        if event_time is not None:
-            return event_time, event_time, "event_time"
-        start = timestamp(metadata.get("source_time_start"))
-        end = timestamp(metadata.get("source_time_end"))
-        if start is not None:
-            return start, end if end is not None else start, "source_time"
-    except (TypeError, ValueError, OverflowError):
-        pass
-    try:
-        value = timestamp(metadata.get("create_time"))
-    except (TypeError, ValueError, OverflowError):
-        value = None
-    return value, value, "create_time"
-
-
-def speaker_matches(metadata, speaker):
-    if not speaker:
-        return True
-    names = metadata.get("participants") or []
-    names = list(names) if isinstance(names, (list, tuple)) else [names]
-    identities = metadata.get("participant_identities") or []
-    if isinstance(identities, dict):
-        identities = [identities]
-    for identity in identities:
-        if isinstance(identity, dict):
-            names.extend(str(identity.get(key) or "") for key in (
-                "sender_id", "user_id", "name", "display_name", "identity_key",
-            ))
-    return str(speaker).casefold() in {str(name).casefold() for name in names}
+timestamp = parse_timestamp
 
 
 def bounded_json(data, limit):
@@ -158,20 +124,21 @@ async def with_budget(tool, event, operation):
 
 
 async def agentic_search(tool, event, query, k, include_source=False, *, speaker=None,
-                         start_time=None, end_time=None, exclude_ids=None, cursor=None):
+                         start_time=None, end_time=None, exclude_ids=None, cursor=None, mode="auto"):
     async def search(state):
-        if not isinstance(query, str) or not query.strip() or len(query) > 2000:
-            raise ValueError("query must contain 1 to 2000 characters")
+        if not isinstance(query, str) or len(query) > 2000:
+            raise ValueError("query must contain at most 2000 characters")
         scope, persona = await scoped_filters(tool, event)
-        after, before = timestamp(start_time), timestamp(end_time)
-        if after is not None and before is not None and after > before:
-            raise ValueError("start_time must not exceed end_time")
+        zone = resolve_context_timezone(tool.context, tool.config_manager, getattr(event, "unified_msg_origin", None))
+        after, before = timestamp(start_time, timezone_name=zone), timestamp(end_time, timezone_name=zone)
+        if after is not None and before is not None and after >= before:
+            raise ValueError("start_time must be before end_time")
         if not isinstance(exclude_ids or [], list) or len(exclude_ids or []) > 500:
             raise ValueError("exclude_ids must be an array of at most 500 IDs")
         if any(isinstance(value, bool) or not isinstance(value, int) or value <= 0 for value in (exclude_ids or [])):
             raise ValueError("exclude_ids must contain positive integer IDs")
         excluded = {int(value) for value in (exclude_ids or [])}
-        descriptor = [query, scope, persona, speaker, after, before, sorted(excluded)]
+        descriptor = [query, scope, persona, speaker, after, before, sorted(excluded), mode, zone]
         signature = hashlib.sha256(json.dumps(descriptor, ensure_ascii=False).encode()).hexdigest()[:24]
         offset = 0
         if cursor:
@@ -188,22 +155,33 @@ async def agentic_search(tool, event, query, k, include_source=False, *, speaker
                 raise ValueError("cursor does not match this query and its filters") from error
         cap = int(tool.config_manager.get("agent_tools.recall_candidate_limit", 100))
         if signature not in state["pages"]:
-            candidates = await tool.memory_engine.search_memories(query, k=cap, session_id=scope, persona_id=persona)
+            candidates, route = await search_with_time(tool.memory_engine, query, cap,
+                session_id=scope, persona_id=persona, config_manager=tool.config_manager,
+                mode=mode, start_time=start_time, end_time=end_time, speaker=speaker,
+                exclude_ids=excluded, candidate_limit=cap,
+                timezone_name=zone,
+                now=datetime.fromtimestamp(state.setdefault("reference_time", time.time()), timezone.utc))
+            state.setdefault("routes", {})[signature] = route
+            bounds = route.get("time_range") or {}
+            after, before = bounds.get("start"), bounds.get("end")
             matches = []
             for memory in candidates:
                 metadata = memory.metadata if isinstance(memory.metadata, dict) else {}
                 if memory.doc_id in excluded:
                     continue
-                start, end, basis = memory_time_bounds(metadata)
+                start, end, basis = retrieval_time_bounds(metadata)
                 if after is not None and (end is None or end < after):
                     continue
-                if before is not None and (start is None or start > before):
+                if before is not None and (start is None or start >= before):
                     continue
                 if not speaker_matches(metadata, speaker):
                     continue
                 matches.append(memory)
             state["pages"][signature] = matches
         matches = state["pages"][signature]
+        route = state.get("routes", {}).get(signature, {})
+        bounds = route.get("time_range") or {}
+        after, before = bounds.get("start", after), bounds.get("end", before)
         size = max(1, min(int(k or 5), int(tool.config_manager.get("recall_engine.max_k", 10))))
         results = []
         positions = {}
@@ -217,21 +195,30 @@ async def agentic_search(tool, event, query, k, include_source=False, *, speaker
                 continue
             if tool.config_manager.filtering_settings.get("use_persona_filtering", True) and metadata.get("persona_id") != persona:
                 continue
-            start, end, basis = memory_time_bounds(metadata)
+            atom_evidence = None
+            if memory.metadata.get("temporal_time_basis") == "atom_event_time":
+                atom_evidence = await temporal_atom_evidence(tool.memory_engine, memory.doc_id, TimeRange(after, before), metadata)
+                if atom_evidence is None:
+                    continue
+                metadata = {**metadata, **atom_evidence}
+            start, end, basis = retrieval_time_bounds(metadata)
             if after is not None and (end is None or end < after):
                 continue
-            if before is not None and (start is None or start > before):
+            if before is not None and (start is None or start >= before):
                 continue
             if not speaker_matches(metadata, speaker):
                 continue
-            live = await tool.memory_engine.resolve_live_facts(memory.doc_id, stored.get("text", ""), metadata)
+            live = (atom_evidence["content"].splitlines() if atom_evidence else
+                    await tool.memory_engine.resolve_live_facts(memory.doc_id, stored.get("text", ""), metadata))
             if live is None:
                 continue
-            start, end, basis = memory_time_bounds(metadata)
+            start, end, basis = retrieval_time_bounds(metadata)
             item = {"id": memory.doc_id, "content": "\n".join(live), "score": memory.final_score,
                     "create_time": metadata.get("create_time"), "event_time": metadata.get("event_time"),
                     "time_basis": basis, "time_start": start, "time_end": end,
                     "source_session_id": metadata.get("source_session_id"), "has_source": bool(metadata.get("has_source"))}
+            if isinstance(memory.score_breakdown, dict):
+                item["score_breakdown"] = memory.score_breakdown
             if include_source and evidence_allowed(metadata, scope, persona, event, tool.config_manager):
                 item["source_messages"] = (await tool.memory_engine.get_memory_source(memory.doc_id))[:20]
             results.append(item)
@@ -239,7 +226,7 @@ async def agentic_search(tool, event, query, k, include_source=False, *, speaker
         next_offset = offset + size
         next_cursor = base64.urlsafe_b64encode(json.dumps([signature, next_offset]).encode()).decode() if next_offset < len(matches) else None
         return {"query": query, "count": len(results), "results": results, "next_cursor": next_cursor,
-                "candidate_limit": cap, "search_is_bounded": True,
+                "candidate_limit": cap, "search_is_bounded": True, "retrieval": route,
                 "_resume": {"signature": signature, "start": offset, "positions": positions}}
     return await with_budget(tool, event, search)
 

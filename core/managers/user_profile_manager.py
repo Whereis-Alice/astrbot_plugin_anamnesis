@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import re
@@ -12,6 +13,7 @@ from typing import Any
 from ..memory_scope import parse_value_list, resolve_event_identity
 from ..utils import extract_json_from_response
 from .user_profile_directory import UserProfileDirectoryMixin
+from .user_profile_ledger import UserProfileLedgerMixin
 
 _CATEGORIES = {"identity", "preference", "status", "task_preference", "constraint"}
 _CATEGORY_ORDER = ("identity", "preference", "status", "task_preference", "constraint")
@@ -19,7 +21,7 @@ _KEY_PATTERN = re.compile(r"^[\w.-]{1,64}$", re.UNICODE)
 _CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f]+")
 
 
-class UserProfileManager(UserProfileDirectoryMixin):
+class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
     """Maintain explicit user facts in the existing conversation SQLite connection.
 
     The store's write lock is shared with normal message writes, so profile updates
@@ -60,14 +62,14 @@ class UserProfileManager(UserProfileDirectoryMixin):
         if not group_id and callable(getter):
             try:
                 group_id = self._clean_context_value(getter())
-            except Exception:
+            except Exception:  # noqa: BLE001 - Optional platform metadata may fail.
                 group_id = None
         sender_name = None
         sender_getter = getattr(event, "get_sender_name", None)
         if callable(sender_getter):
             try:
                 sender_name = self._clean_context_value(sender_getter())
-            except Exception:
+            except Exception:  # noqa: BLE001 - Optional platform metadata may fail.
                 sender_name = None
         return {
             "source_session_id": session_id,
@@ -85,7 +87,7 @@ class UserProfileManager(UserProfileDirectoryMixin):
         sender_getter = getattr(event, "get_sender_id", None)
         try:
             sender = sender_getter() if callable(sender_getter) else getattr(event, "sender_id", None)
-        except Exception:
+        except Exception:  # noqa: BLE001 - Reject an unreadable account identity.
             return None
         sender_id = str(sender).strip() if sender is not None else ""
         if not sender_id:
@@ -185,6 +187,7 @@ class UserProfileManager(UserProfileDirectoryMixin):
                             placeholders = ",".join("?" for _ in ids)
                             await connection.execute(
                                 f"UPDATE user_profiles SET suppressed=1 WHERE source_memory_id IN ({placeholders})", ids)
+                await self._create_ledger(connection)
                 await connection.commit()
             self._schema_ready = True
             return True
@@ -199,37 +202,16 @@ class UserProfileManager(UserProfileDirectoryMixin):
             return []
         limit = int(self.config_manager.get("user_profile.max_items", 40))
         async with connection.execute(
-            """SELECT profile_key, category, value, confidence, source_memory_id,
-                      source_session_id, source_group_id, source_group_name,
-                      source_sender_name, updated_at, expires_at
-               FROM user_profiles
-               WHERE profile_scope = ? AND suppressed = 0
-                 AND (expires_at IS NULL OR expires_at > ?)
-               ORDER BY (expires_at IS NOT NULL) ASC, confidence DESC,
-                        updated_at DESC""",
+            """SELECT * FROM user_profiles
+               WHERE profile_scope = ? AND (expires_at IS NULL OR expires_at > ?)
+               ORDER BY manual_override DESC, (expires_at IS NOT NULL) ASC,
+                        confidence DESC, updated_at DESC""",
             (scope, time.time()),
         ) as cursor:
             rows = await cursor.fetchall()
-        facts = [dict(row) for row in rows]
-        # Source cleanup spans two SQLite databases and may be interrupted or
-        # bypassed by maintenance/replacement. Verify live parent state before
-        # injecting, while keeping administrator-visible rows for inspection.
-        memory_connection = getattr(getattr(self, "memory_engine", None), "db_connection", None)
-        source_ids = {fact["source_memory_id"] for fact in facts if fact["source_memory_id"] is not None}
-        if memory_connection is not None and source_ids:
-            active_ids = set()
-            sources = list(source_ids)
-            for start in range(0, len(sources), 500):
-                batch = sources[start:start + 500]
-                placeholders = ",".join("?" for _ in batch)
-                async with memory_connection.execute(
-                    "SELECT id FROM documents WHERE id IN (" + placeholders + ") "
-                    "AND json_valid(metadata) AND COALESCE(json_extract(metadata,'$.status'),'active')='active'",
-                    batch,
-                ) as cursor:
-                    active_ids.update(row[0] for row in await cursor.fetchall())
-            facts = [fact for fact in facts if fact["source_memory_id"] is None or fact["source_memory_id"] in active_ids]
-        return facts[:limit]
+        facts = await self._enrich_profile_rows([dict(row) for row in rows], include_history=False)
+        # Check every supporting source before allocating the injection budget.
+        return [fact for fact in facts if fact["live_evidence_count"] > 0][:limit]
 
     async def _migrate_legacy_scope_for_event(self, event: Any, scope: str) -> None:
         """Move 3.2.0 user-scoped rows only into their original chat scope.
@@ -263,18 +245,31 @@ class UserProfileManager(UserProfileDirectoryMixin):
                        source_group_name, source_sender_name, updated_at, expires_at,
                        identity, platform, sender_id, display_label, suppressed, context_updated_at,
                        context_group_id, context_group_name, context_sender_name, context_session_id,
-                       context_group_updated_at)
+                       context_group_updated_at, current_claim_id, manual_override, revision, authority)
                        SELECT ?, profile_key, category, value, confidence,
                               source_memory_id, source_session_id, source_group_id,
                               source_group_name, source_sender_name, updated_at, expires_at,
                               identity, platform, sender_id, display_label, suppressed, context_updated_at,
                               context_group_id, context_group_name, context_sender_name, context_session_id,
-                              context_group_updated_at
+                              context_group_updated_at, current_claim_id, manual_override, revision, authority
                        FROM user_profiles
                        WHERE profile_scope IN (?, ?) AND source_session_id = ?
                        ON CONFLICT(profile_scope, profile_key) DO NOTHING""",
                     (scope, legacy_scope, legacy_isolated, session_id),
                 )
+                for previous in (legacy_scope, legacy_isolated):
+                    async with connection.execute(
+                        "SELECT profile_key,current_claim_id FROM user_profiles WHERE profile_scope=? AND source_session_id=?", (previous, session_id)
+                    ) as migration_cursor:
+                        migrating = await migration_cursor.fetchall()
+                    for item in migrating:
+                        async with connection.execute("SELECT current_claim_id FROM user_profiles WHERE profile_scope=? AND profile_key=?", (scope, item["profile_key"])) as selected:
+                            target = await selected.fetchone()
+                        if target and target[0] == item["current_claim_id"]:
+                            await connection.execute("UPDATE user_profile_claims SET profile_scope=?,snapshot=json_set(snapshot,'$.profile_scope',?) WHERE profile_scope=? AND profile_key=?", (scope, scope, previous, item["profile_key"]))
+                            await connection.execute("UPDATE user_profile_transitions SET profile_scope=? WHERE profile_scope=? AND profile_key=?", (scope, previous, item["profile_key"]))
+                        else:
+                            await self._delete_ledger_keys(connection, previous, item["profile_key"])
                 await connection.execute(
                     """DELETE FROM user_profiles
                        WHERE profile_scope IN (?, ?) AND source_session_id = ?""",
@@ -344,11 +339,7 @@ class UserProfileManager(UserProfileDirectoryMixin):
 
         row_params = [*params, limit, offset]
         async with connection.execute(
-            f"""SELECT profile_scope, profile_key, category, value, confidence,
-                       source_memory_id, source_session_id, source_group_id,
-                       source_group_name, source_sender_name, updated_at, expires_at
-                       , identity, platform, sender_id, display_label, suppressed
-                FROM user_profiles {where}
+            f"""SELECT * FROM user_profiles {where}
                 ORDER BY updated_at DESC, profile_scope, profile_key
                 LIMIT ? OFFSET ?""",
             row_params,
@@ -369,7 +360,7 @@ class UserProfileManager(UserProfileDirectoryMixin):
             session_rows = await cursor.fetchall()
 
         return {
-            "items": [dict(row) for row in rows],
+            "items": await self._enrich_profile_rows([dict(row) for row in rows]),
             "total": total,
             "limit": limit,
             "offset": offset,
@@ -446,32 +437,28 @@ class UserProfileManager(UserProfileDirectoryMixin):
         if connection is None:
             return None
         now = time.time()
-        assignments.append("updated_at = ?")
-        params.extend((now, scope, key))
+        expected = updates.get("expected_revision")
+        if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
+            return None
         async with self.store._write_lock:
             try:
-                cursor = await connection.execute(
-                    f"UPDATE user_profiles SET {', '.join(assignments)} "
-                    "WHERE profile_scope = ? AND profile_key = ?",
-                    params,
-                )
-                if cursor.rowcount != 1:
-                    await connection.rollback()
+                async with connection.execute("SELECT * FROM user_profiles WHERE profile_scope=? AND profile_key=?", (scope, key)) as cursor:
+                    row = await cursor.fetchone()
+                if not row or (expected is not None and row["revision"] != expected):
                     return None
+                before = dict(row)
+                after = dict(before)
+                for assignment, value in zip(assignments, params, strict=True):
+                    after[assignment.split(" = ")[0]] = value
+                after["updated_at"] = now
+                await self._manual_ledger_update(connection, before, after)
                 await connection.commit()
             except BaseException:
                 await connection.rollback()
                 raise
-        async with connection.execute(
-            """SELECT profile_scope, profile_key, category, value, confidence,
-                      source_memory_id, source_session_id, source_group_id,
-                      source_group_name, source_sender_name, updated_at, expires_at
-                      , identity, platform, sender_id, display_label, suppressed
-               FROM user_profiles WHERE profile_scope = ? AND profile_key = ?""",
-            (scope, key),
-        ) as cursor:
+        async with connection.execute("SELECT * FROM user_profiles WHERE profile_scope=? AND profile_key=?", (scope, key)) as cursor:
             row = await cursor.fetchone()
-        return dict(row) if row else None
+        return (await self._enrich_profile_rows([dict(row)]))[0] if row else None
 
     async def delete_for_web(self, profile_scope: str, profile_key: str) -> int:
         """Delete one exact profile row selected in the administrator WebUI."""
@@ -489,6 +476,7 @@ class UserProfileManager(UserProfileDirectoryMixin):
                     (scope, key),
                 )
                 count = cursor.rowcount
+                await self._delete_ledger_keys(connection, scope, key)
                 await connection.commit()
             except BaseException:
                 await connection.rollback()
@@ -514,12 +502,15 @@ class UserProfileManager(UserProfileDirectoryMixin):
             return None
         if not 0.75 <= confidence <= 1.0:
             return None
+        if item.get("cardinality") == "set" and item.get("operation", "add") == "add":
+            key = key[:48] + "." + hashlib.sha256(value.casefold().encode("utf-8")).hexdigest()[:12]
         return {
             "key": key,
             "category": category,
             "value": value,
             "confidence": confidence,
             "volatile": category == "status" or item.get("volatile") is True,
+            "evidence": str(item.get("evidence", "")).strip()[:200],
             "display_label": UserProfileManager._clean_context_value(
                 item.get("label"), max_length=80
             ),
@@ -550,61 +541,31 @@ class UserProfileManager(UserProfileDirectoryMixin):
         owner = self._directory_owner(scope, source_context["source_session_id"])
         sender_getter = getattr(event, "get_sender_id", None)
         sender_id = str(sender_getter() if callable(sender_getter) else "")
-        source_session_id = source_context["source_session_id"] or ""
         async with self.store._write_lock:
             try:
-                await connection.execute(
-                    "DELETE FROM user_profiles WHERE profile_scope = ? AND expires_at <= ?",
-                    (scope, now),
-                )
                 for fact in normalized:
                     expires = now + ttl_days * 86400 if fact["volatile"] else None
-                    await connection.execute(
-                        """INSERT INTO user_profiles
-                           (profile_scope, profile_key, category, value, confidence,
-                           source_memory_id, source_session_id, source_group_id,
-                           source_group_name, source_sender_name, updated_at, expires_at,
-                           identity, platform, sender_id, display_label, suppressed,
-                           context_updated_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
-                           ON CONFLICT(profile_scope, profile_key) DO UPDATE SET
-                             category=excluded.category, value=excluded.value,
-                             confidence=excluded.confidence,
-                             source_memory_id=excluded.source_memory_id,
-                             source_session_id=excluded.source_session_id,
-                             source_group_id=excluded.source_group_id,
-                             source_group_name=excluded.source_group_name,
-                             source_sender_name=excluded.source_sender_name,
-                             updated_at=excluded.updated_at, expires_at=excluded.expires_at,
-                             identity=excluded.identity, platform=excluded.platform,
-                             sender_id=excluded.sender_id, display_label=excluded.display_label,
-                             suppressed=0, context_updated_at=excluded.context_updated_at""",
-                        (
-                            scope,
-                            fact["key"],
-                            fact["category"],
-                            fact["value"],
-                            fact["confidence"],
-                            source_memory_id,
-                            source_session_id,
-                            source_context["source_group_id"],
-                            source_context["source_group_name"],
-                            source_context["source_sender_name"],
-                            now,
-                            expires,
-                            owner["identity"], owner["platform"], sender_id,
-                            fact["display_label"], now,
-                        ),
-                    )
+                    snapshot = {
+                        "profile_scope": scope, "profile_key": fact["key"],
+                        "category": fact["category"], "value": fact["value"],
+                        "confidence": fact["confidence"], "source_memory_id": source_memory_id,
+                        **source_context, "updated_at": now, "expires_at": expires,
+                        "identity": owner["identity"], "platform": owner["platform"],
+                        "sender_id": sender_id, "display_label": fact["display_label"],
+                        "suppressed": 0, "context_updated_at": now,
+                    }
+                    await self._upsert_ledger_fact(connection, snapshot, fact["evidence"])
                 await self._update_recent_context(connection, scope, source_context, now)
-                await connection.execute(
-                    """DELETE FROM user_profiles WHERE profile_scope = ? AND profile_key IN (
-                         SELECT profile_key FROM user_profiles WHERE profile_scope = ?
-                         ORDER BY (suppressed = 0) DESC, (expires_at IS NULL) DESC, updated_at DESC,
-                                  confidence DESC, profile_key
-                         LIMIT -1 OFFSET ?)""",
-                    (scope, scope, max_items),
-                )
+                async with connection.execute(
+                    "SELECT profile_key FROM user_profiles WHERE profile_scope=? "
+                    "ORDER BY manual_override DESC,(suppressed=0 AND (expires_at IS NULL OR expires_at>?)) DESC, "
+                    "(expires_at IS NULL) DESC,updated_at DESC,confidence DESC,profile_key LIMIT -1 OFFSET ?",
+                    (scope, now, max_items)
+                ) as cursor:
+                    evicted = [row[0] for row in await cursor.fetchall()]
+                for key in evicted:
+                    await self._delete_ledger_keys(connection, scope, key)
+                    await connection.execute("DELETE FROM user_profiles WHERE profile_scope=? AND profile_key=?", (scope, key))
                 await connection.commit()
             except BaseException:
                 await connection.rollback()
@@ -631,6 +592,7 @@ class UserProfileManager(UserProfileDirectoryMixin):
                         "DELETE FROM user_profiles WHERE profile_scope = ?", (scope,)
                     )
                 count = cursor.rowcount
+                await self._delete_ledger_keys(connection, scope, key.strip().casefold() if key else None)
                 await connection.commit()
             except BaseException:
                 await connection.rollback()
@@ -660,15 +622,7 @@ class UserProfileManager(UserProfileDirectoryMixin):
             return 0
         async with self.store._write_lock:
             try:
-                count = 0
-                for start in range(0, len(ids), 500):
-                    batch = ids[start : start + 500]
-                    placeholders = ",".join("?" for _ in batch)
-                    cursor = await connection.execute(
-                        f"DELETE FROM user_profiles WHERE source_memory_id IN ({placeholders})",
-                        batch,
-                    )
-                    count += cursor.rowcount
+                count = await self._change_ledger_sources(connection, ids, delete=True)
                 await connection.commit()
             except BaseException:
                 await connection.rollback()
@@ -728,7 +682,9 @@ class UserProfileManager(UserProfileDirectoryMixin):
         ]
         footer = "</Anamnesis-Memory>"
         for fact in facts:
-            line = f"- [{fact['category']}] {fact['profile_key']}: {fact['value']}"
+            authority = "管理员确认" if fact.get("authority") == "manual" else "用户明确自述" if fact.get("authority") == "direct_user" else "既有档案"
+            label = fact.get("display_label") or fact["profile_key"]
+            line = f"- [{fact['category']}；{authority}] {label}: {fact['value']}"
             if (
                 sum(len(part) + 1 for part in lines) + len(line) + len(footer) + 2
                 > max_chars
@@ -787,18 +743,19 @@ class UserProfileManager(UserProfileDirectoryMixin):
         )
         source_text = "\n".join(user_lines)[-max_chars:]
         existing = await self.get_profile(event)
-        current_keys = [item["profile_key"] for item in existing]
+        current_keys = [{"key": item["profile_key"], "value": item["value"]} for item in existing]
         prompt = (
             "从以下当前用户本人发言中提取明确自述、可供长期使用的档案事实。"
             "只依据原话，不推断性别、年龄、职业、健康、关系或其它敏感属性；"
-            "不要提取机器人/其他人的事实。用户对既有事实的纠正应沿用原 key 并覆盖。"
+            "不要提取机器人/其他人的事实。明确纠正必须沿用对应原 key，operation=replace；"
+            "不同偏好可以同时存在，新增偏好使用cardinality=set、operation=add；不要据相似文本猜测冲突。"
             "一次最多 8 条；每条必须附上来自用户原话的简短逐字证据 evidence；"
             "无合适事实返回空数组。\n"
             f"已有档案 key: {json.dumps(current_keys, ensure_ascii=False)}\n"
             f"用户发言:\n{source_text}\n"
             '只返回 JSON：{"facts":[{"key":"english_stable_key","label":"易读的简短标题","value":"简短事实",'
             '"category":"identity|preference|status|task_preference|constraint",'
-            '"volatile":false,"confidence":0.9,"explicit":true,'
+            '"volatile":false,"confidence":0.9,"explicit":true,"cardinality":"slot|set","operation":"add|replace",'
             '"evidence":"用户原话中的逐字片段"}]}'
         )
         retries = int(self.config_manager.get("user_profile.llm_max_retries", 1)) + 1

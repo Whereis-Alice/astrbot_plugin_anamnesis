@@ -19,6 +19,7 @@ EXPECTED_OPTION_LABELS = {
         "agent_tools.forget_mode": {
             "delete": "Permanently delete",
             "archive": "Archive for restoration",
+            "recoverable": "Record recoverable operation",
         },
         "provider_settings.llm_stream_mode": {
             "auto": "Automatic", "always": "Always stream", "never": "Never stream",
@@ -71,6 +72,7 @@ EXPECTED_OPTION_LABELS = {
         "agent_tools.forget_mode": {
             "delete": "Удалить безвозвратно",
             "archive": "Архивировать для восстановления",
+            "recoverable": "Восстановимая операция",
         },
         "provider_settings.llm_stream_mode": {
             "auto": "Автоматически", "always": "Всегда потоковый", "never": "Без потока",

@@ -55,6 +55,9 @@ async def profile_manager(tmp_path):
 
 @pytest.mark.asyncio
 async def test_profile_upsert_corrects_value_and_isolates_users(profile_manager):
+    # Explicit opt-out retains automatic replacement; default proposals are
+    # covered by the ledger tests.
+    profile_manager.config_manager = ConfigManager({"user_profile": {"enabled": True, "review_changes": False}})
     alice = _event("alice")
     bob = _event("bob")
     assert (

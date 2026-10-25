@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -59,8 +60,9 @@ class UserProfileDirectoryMixin:
                            "OR source_sender_name LIKE ? ESCAPE '\\' "
                            "OR source_group_name LIKE ? ESCAPE '\\' "
                            "OR context_sender_name LIKE ? ESCAPE '\\' "
-                           "OR context_group_name LIKE ? ESCAPE '\\')")
-            params.extend([f"%{escaped}%"] * 6)
+                           "OR context_group_name LIKE ? ESCAPE '\\' "
+                           "OR identity IN (SELECT identity FROM user_profile_aliases WHERE alias LIKE ? ESCAPE '\\'))")
+            params.extend([f"%{escaped}%"] * 7)
         if source_session_id:
             clauses.append("source_session_id = ?")
             params.append(source_session_id)
@@ -106,6 +108,20 @@ class UserProfileDirectoryMixin:
                         last_session_id=latest[1] if latest else None,
                         last_group_name=group[0] if group else None,
                         last_group_id=group[1] if group else None)
+            async with connection.execute("SELECT alias FROM user_profile_aliases WHERE identity=?", (user["identity"],)) as cursor:
+                alias = await cursor.fetchone()
+            async with connection.execute(
+                "SELECT COUNT(*) FROM user_profile_claims c JOIN user_profiles p "
+                "ON p.profile_scope=c.profile_scope AND p.profile_key=c.profile_key "
+                "WHERE p.identity=? AND c.state='pending'", (user["identity"],)) as cursor:
+                pending = (await cursor.fetchone())[0]
+            async with connection.execute(
+                "SELECT DISTINCT e.source_context FROM user_profile_evidence e JOIN user_profile_claims c "
+                "ON c.claim_id=e.claim_id JOIN user_profiles p ON p.profile_scope=c.profile_scope AND p.profile_key=c.profile_key "
+                "WHERE p.identity=? ORDER BY e.created_at DESC LIMIT 30", (user["identity"],)) as cursor:
+                contexts = await cursor.fetchall()
+            names = {name for context in contexts if (name := json.loads(context[0]).get("source_sender_name"))}
+            user.update(manual_alias=alias[0] if alias else None, pending_count=pending, observed_names=sorted(names))
         result.update(users=users, has_more=offset + len(users) < result["total"])
         return result
 
@@ -117,15 +133,7 @@ class UserProfileDirectoryMixin:
         connection = self.store.connection
         async with self.store._write_lock:
             try:
-                count = 0
-                for start in range(0, len(ids), 500):
-                    batch = ids[start:start + 500]
-                    marks = ",".join("?" for _ in batch)
-                    cursor = await connection.execute(
-                        f"UPDATE user_profiles SET suppressed=? WHERE source_memory_id IN ({marks})",
-                        [int(suppressed), *batch],
-                    )
-                    count += cursor.rowcount
+                count = await self._change_ledger_sources(connection, ids, suppressed=suppressed)
                 await connection.commit()
                 return count
             except BaseException:
@@ -137,10 +145,7 @@ class UserProfileDirectoryMixin:
             return
         async with self.store._write_lock:
             try:
-                await self.store.connection.execute(
-                    "UPDATE user_profiles SET source_memory_id=? WHERE source_memory_id=?",
-                    (new_id, old_id),
-                )
+                await self._change_ledger_sources(self.store.connection, [old_id], new_id=new_id)
                 await self.store.connection.commit()
             except BaseException:
                 await self.store.connection.rollback()

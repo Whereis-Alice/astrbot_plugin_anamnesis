@@ -298,7 +298,7 @@ class AnamnesisPlugin(Star):
                 tools[-1].parameters["properties"].update({
                     "speaker": {"type": "string", "description": "Exact participant ID or name"},
                     "start_time": {"type": "string", "description": "Inclusive epoch seconds or ISO-8601 time"},
-                    "end_time": {"type": "string", "description": "Inclusive epoch seconds or ISO-8601 time"},
+                    "end_time": {"type": "string", "description": "Exclusive epoch seconds or ISO-8601 time"},
                     "exclude_ids": {"type": "array", "items": {"type": "integer"}},
                     "cursor": {"type": "string", "description": "next_cursor from the same query and filters"},
                 })
@@ -322,6 +322,11 @@ class AnamnesisPlugin(Star):
                     user_profile_manager=getattr(self, "user_profile_manager", None),
                 )
             )
+
+        if self.config_manager.get("agent_tools.enable_correction_plan_tool", False):
+            from .core.tools.memory_correction_plan_tool import MemoryCorrectionPlanTool
+            tools.append(MemoryCorrectionPlanTool(context=self.context, config_manager=self.config_manager,
+                memory_engine=self.initializer.memory_engine, memory_processor=self.initializer.memory_processor))
 
         if tools:
             self.context.add_llm_tools(*tools)

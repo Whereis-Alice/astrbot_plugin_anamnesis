@@ -5,6 +5,38 @@
 
 import { esc, statusPill, normalizeImportance } from "./utils.js";
 
+const temporalLabels = {
+  mode: ["检索模式", "Retrieval mode", "Режим поиска"],
+  auto: ["自动判断", "Automatic", "Автоматически"],
+  semantic: ["关键词与语义", "Keywords and semantic", "Ключевые слова и семантика"],
+  time: ["按时间范围", "Time range", "Период времени"],
+  hybrid: ["时间与语义融合", "Time and semantic", "Время и семантика"],
+  persona: ["人格 ID（留空查询全部）", "Persona ID (blank: all)", "ID персоны (пусто: все)"],
+  start: ["开始时间（包含）", "Start time (inclusive)", "Начало (включительно)"],
+  end: ["结束时间（不包含）", "End time (exclusive)", "Конец (исключительно)"],
+  hint: ["支持“昨天、上周”等日期。手动时间按插件或 AstrBot 时区解释；查整天时，结束时间填次日零点。", "Dates such as 昨天 or 上周 are supported. Manual times use the plugin/AstrBot timezone. End a full-day range at the next midnight.", "Поддерживаются даты вроде 昨天 и 上周. Время использует часовой пояс плагина/AstrBot; конец полного дня — следующая полночь."],
+  enter: ["请填写查询关键词或时间范围", "Enter recall keywords or a time range", "Введите запрос или период времени"],
+  basis: ["时间依据", "Time basis", "Основание времени"],
+  event_time: ["事件时间", "Event time", "Время события"],
+  atom_event_time: ["事实事件时间", "Fact event time", "Время события факта"],
+  source_time: ["原消息窗口", "Source message window", "Период исходных сообщений"],
+  create_time: ["记忆创建时间", "Memory creation time", "Время создания памяти"],
+  graph: ["图检索证据", "Graph retrieval evidence", "Доказательства графа"],
+  literal_source_support: ["原文档有字面支持", "Literal support in the source document", "Буквальное подтверждение в документе"],
+  weak_literal_source_support: ["字面支持较弱，已降低图贡献", "Weak literal support; graph contribution discounted", "Слабое подтверждение; вклад графа снижен"],
+  source_unavailable: ["来源不可用，已降低图贡献", "Source unavailable; graph contribution discounted", "Источник недоступен; вклад графа снижен"],
+};
+export function recallText(key) {
+  const index = { zh: 0, en: 1, ru: 2 }[window.getLanguage?.() || "zh"] || 0;
+  return temporalLabels[key]?.[index] || key;
+}
+function temporalDate(value, zone) {
+  if (value == null || !Number.isFinite(Number(value))) return "—";
+  try {
+    return new Intl.DateTimeFormat(undefined, { timeZone: zone || "UTC", dateStyle: "short", timeStyle: "short" }).format(new Date(Number(value) * 1000));
+  } catch { return new Date(Number(value) * 1000).toISOString(); }
+}
+
 export class RecallPage {
   constructor(state, apiClient, peekPanel) {
     this.state = state;
@@ -16,6 +48,11 @@ export class RecallPage {
    * 初始化召回页面事件监听
    */
   initEventListeners() {
+    this.ensureTemporalControls();
+    if (!this._temporalLanguageListener) {
+      this._temporalLanguageListener = () => this.updateTemporalLabels();
+      window.addEventListener?.("languagechange", this._temporalLanguageListener);
+    }
     const queryInput = document.getElementById("recall-query");
     const searchBtn = document.getElementById("recall-search-btn");
     const kSlider = document.getElementById("recall-k");
@@ -43,6 +80,20 @@ export class RecallPage {
     }
   }
 
+  ensureTemporalControls() {
+    const form = document.getElementById("recall-query")?.closest?.(".recall-form-section");
+    if (!form || document.getElementById("recall-mode")) return;
+    const field = (id, label, placeholder = "") => `<div class="recall-form-field" style="flex:1;min-width:160px"><label class="recall-form-label" for="${id}" data-recall-label="${label}">${esc(recallText(label))}</label><input type="text" id="${id}" class="input input-sm" placeholder="${esc(placeholder)}" /></div>`;
+    form.insertAdjacentHTML("beforeend", `<div class="recall-form-row" id="recall-temporal-controls"><div class="recall-form-field" style="flex:1;min-width:160px"><label class="recall-form-label" for="recall-mode" data-recall-label="mode">${esc(recallText("mode"))}</label><select id="recall-mode" class="input input-sm">${["auto", "semantic", "time", "hybrid"].map(mode => `<option value="${mode}">${esc(recallText(mode))}</option>`).join("")}</select></div>${field("recall-persona", "persona")}${field("recall-start-time", "start", "2026-10-01T00:00:00+08:00")}${field("recall-end-time", "end", "2026-10-02T00:00:00+08:00")}</div><p class="text-secondary" id="recall-temporal-hint" data-recall-label="hint">${esc(recallText("hint"))}</p>`);
+  }
+
+  updateTemporalLabels() {
+    (document.querySelectorAll?.("[data-recall-label]") || []).forEach(element => { element.textContent = recallText(element.dataset.recallLabel); });
+    const mode = document.getElementById("recall-mode");
+    if (mode?.options) Array.from(mode.options).forEach(option => { option.textContent = recallText(option.value); });
+    if (this.state._recallCache) this.renderResults(this.state._recallCache.data, this.state._recallCache.elapsed);
+  }
+
   /**
    * 执行召回测试
    */
@@ -53,9 +104,13 @@ export class RecallPage {
     const query = document.getElementById("recall-query").value.trim();
     const k = parseInt(document.getElementById("recall-k").value) || 5;
     const sessionId = document.getElementById("recall-session").value.trim();
+    const mode = document.getElementById("recall-mode")?.value || "auto";
+    const personaId = document.getElementById("recall-persona")?.value.trim() || "";
+    const start = document.getElementById("recall-start-time")?.value.trim() || "";
+    const end = document.getElementById("recall-end-time")?.value.trim() || "";
 
-    if (!query) {
-      this.showToast(window.t("recall.enterQuery"), true);
+    if (!query && (mode === "semantic" || (!start && !end))) {
+      this.showToast(recallText("enter"), true);
       return;
     }
 
@@ -64,8 +119,11 @@ export class RecallPage {
     const startTime = Date.now();
 
     try {
-      const params = { query, k };
+      const params = { query, k, mode };
       if (sessionId) params.session_id = sessionId;
+      if (personaId) params.persona_id = personaId;
+      if (start) params.start_time = start;
+      if (end) params.end_time = end;
 
       const data = await this.api.post("recall/test", params);
       const elapsed = Date.now() - startTime;
@@ -107,6 +165,11 @@ export class RecallPage {
     if (timeText) {
       const time = data.elapsed_time_ms || elapsed;
       timeText.textContent = window.t("recall.timeElapsed", (time / 1000).toFixed(2));
+      if (data.retrieval?.mode) {
+        timeText.textContent += " · " + recallText(data.retrieval.mode);
+        const range = data.retrieval.time_range;
+        if (range) timeText.textContent += ` · [${temporalDate(range.start, range.timezone)}, ${temporalDate(range.end, range.timezone)}) ${range.timezone}`;
+      }
     }
 
     const resultsEl = document.getElementById("recall-results");
@@ -144,12 +207,18 @@ export class RecallPage {
       if (mem.metadata?.session_id) {
         html += '<span>' + esc(window.t("detail.sessionId")) + ': ' + esc(String(mem.metadata.session_id)) + '</span>';
       }
+      if (mem.metadata?.persona_id) html += '<span>' + esc(recallText("persona")) + ': ' + esc(String(mem.metadata.persona_id)) + '</span>';
+      if (mem.metadata?.time_basis) html += '<span>' + esc(recallText("basis")) + ': ' + esc(recallText(mem.metadata.time_basis)) + '</span>';
       html += '</div>';
       if (mem.score_breakdown && typeof mem.score_breakdown === "object") {
         html += '<div class="recall-route-scores" aria-label="' + esc(window.t("recall.scoreRoutes")) + '">';
         const routes = { document_keyword_score: "graph.scoreDocKW", document_vector_score: "graph.scoreDocVec", graph_keyword_score: "graph.scoreGraphKW", graph_vector_score: "graph.scoreGraphVec" };
         Object.entries(routes).forEach(([key, label]) => { const value = Number(mem.score_breakdown[key]); if (mem.score_breakdown[key] != null && Number.isFinite(value)) html += '<span class="recall-route-score">' + esc(window.t(label)) + ': ' + value.toFixed(3) + '</span>'; });
         html += '</div>';
+        if (typeof mem.score_breakdown.graph_evidence_reason === "string") {
+          const tokens = Array.isArray(mem.score_breakdown.graph_evidence_matched_tokens) ? mem.score_breakdown.graph_evidence_matched_tokens.join("、") : "";
+          html += '<details class="recall-evidence"><summary>' + esc(recallText("graph")) + '</summary><p>' + esc(recallText(mem.score_breakdown.graph_evidence_reason)) + '</p>' + (tokens ? '<p>' + esc(tokens) + '</p>' : '') + '</details>';
+        }
       }
       html += '</div>';
     });
@@ -177,8 +246,8 @@ export class RecallPage {
           });
         }
       };
-      item.addEventListener("click", open);
-      item.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } });
+      item.addEventListener("click", event => { if (!event.target.closest?.("details")) open(); });
+      item.addEventListener("keydown", event => { if (!event.target.closest?.("details") && (event.key === "Enter" || event.key === " ")) { event.preventDefault(); open(); } });
     });
   }
 

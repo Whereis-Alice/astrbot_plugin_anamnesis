@@ -13,6 +13,7 @@ import aiosqlite
 from astrbot.api import logger
 
 from ..faiss_async_persist import get_async_persister
+from ..managers.memory_mutation import serialize_index_projection
 from ..utils.faiss_path_bridge import read_index_safe, write_index_safe
 
 
@@ -812,6 +813,7 @@ class IndexValidatorRebuildMixin:
         except Exception as e:
             logger.warning(f"更新迁移状态失败: {e}")
 
+    @serialize_index_projection
     async def rebuild_indexes(
         self,
         memory_engine: Any,

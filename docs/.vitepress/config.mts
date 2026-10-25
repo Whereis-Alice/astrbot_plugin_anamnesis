@@ -110,7 +110,8 @@ function sidebarZh() {
         { text: '快速开始', link: '/guide/getting-started' },
         { text: '配置参考', link: '/configuration' },
         { text: '命令速查', link: '/commands' },
-        { text: 'WebUI 管理', link: '/webui' }
+        { text: 'WebUI 管理', link: '/webui' },
+        { text: '3.5.0 更新', link: '/memorix-adaptations-3.5.0' }
       ]
     },
     {
@@ -132,7 +133,8 @@ function sidebarEn() {
         { text: 'Quick Start', link: '/en/guide/getting-started' },
         { text: 'Configuration', link: '/en/configuration' },
         { text: 'Commands', link: '/en/commands' },
-        { text: 'WebUI', link: '/en/webui' }
+        { text: 'WebUI', link: '/en/webui' },
+        { text: '3.5.0 Update', link: '/en/memorix-adaptations-3.5.0' }
       ]
     },
     {

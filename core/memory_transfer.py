@@ -74,6 +74,7 @@ def isolate_import_provenance(metadata: dict[str, Any]) -> dict[str, Any]:
     previous = metadata.get("import_provenance")
     provenance = dict(previous) if isinstance(previous, dict) else {}
     for key in (
+        "recovery_operation_id", "correction_operation_id", "correction_rollback_of",
         "source_message_ids",
         "source_revision",
         "source_window",

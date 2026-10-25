@@ -83,6 +83,11 @@ async def test_archive_profile_restore_does_not_overwrite_correction(profiles):
     assert await profiles.get_profile(owner) == []
     assert (await profiles.list_users_for_web())["users"][0]["suppressed_fact_count"] == 1
     await profiles.upsert_facts(owner, [fact(value="现在喜欢茶")], source_memory_id=11)
+    row = (await profiles.list_for_web())["items"][0]
+    assert row["pending"][0]["value"] == "现在喜欢茶"
+    assert await profiles.review_for_web(row["profile_scope"], row["profile_key"],
+                                        claim_id=row["pending"][0]["claim_id"], action="accept",
+                                        expected_revision=row["revision"])
     await profiles.set_source_suppressed([10], False)
     assert (await profiles.get_profile(owner))[0]["value"] == "现在喜欢茶"
 

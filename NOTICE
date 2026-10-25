@@ -55,3 +55,15 @@ sponsored by, or endorsed by the upstream project or its author, and it is not
 maintained by upstream. Please report issues at
 https://github.com/Whereis-Alice/astrbot_plugin_anamnesis/issues instead of the
 upstream repository.
+
+Memorix design adaptations (Anamnesis 3.5.0)
+--------------------------------------------------------------------------------
+Profile claim/evidence/history, manual overrides, operation recovery, event
+evidence projection and versioned index intents are informed by
+astrbot_plugin_memorix v1.4.0 by exynos967:
+https://github.com/exynos967/astrbot_plugin_memorix
+Reference commit: 0ecb96e2db0f1edacece6638e3c26da3dc332e60.
+Memorix describes its core as adapted from A_memorix. These mechanisms were
+implemented for Anamnesis's existing storage, identity and lifecycle model.
+This attribution does not imply affiliation or endorsement. Both projects are
+distributed under AGPL-3.0; see LICENSE.

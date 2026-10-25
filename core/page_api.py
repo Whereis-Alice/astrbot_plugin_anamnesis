@@ -25,12 +25,13 @@ from .page_api_modules import (
     StatsHandler,
 )
 from .page_api_modules.settings_handler import SettingsHandler
+from .page_api_modules.administration_handler import AdministrationPageMixin
 
 PLUGIN_NAME = "astrbot_plugin_anamnesis"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
 
 
-class PluginPageApi:
+class PluginPageApi(AdministrationPageMixin):
     """Anamnesis 官方插件页面 API（Facade）。"""
 
     def __init__(self, plugin) -> None:
@@ -64,6 +65,9 @@ class PluginPageApi:
     def register_routes(self) -> None:
         """注册官方插件页面所需的原生 API。"""
         register = self.plugin.context.register_web_api
+        self.register_administration_routes()
+        register(f"{PAGE_API_PREFIX}/profiles/review", self.review_profile, ["POST"], "Anamnesis profile claim review")
+        register(f"{PAGE_API_PREFIX}/profiles/alias", self.set_profile_alias, ["POST"], "Anamnesis profile display alias")
         register(f"{PAGE_API_PREFIX}/profiles/users", self.list_profile_users, ["GET"],
                  "Anamnesis Page profile directory")
         register(f"{PAGE_API_PREFIX}/config", self.get_config, ["GET"],
@@ -384,7 +388,7 @@ class PluginPageApi:
             return self.utils.error("必须提供 profile_scope 和 profile_key")
         updates = {
             field: payload[field]
-            for field in ("value", "category", "confidence", "expires_at", "display_label")
+            for field in ("value", "category", "confidence", "expires_at", "display_label", "expected_revision")
             if field in payload
         }
         if not updates:
@@ -398,12 +402,40 @@ class PluginPageApi:
             logger.exception("更新用户档案失败")
             return self.utils.error("更新用户档案失败，请查看插件日志")
 
+    async def review_profile(self):
+        _, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        manager = getattr(self.plugin, "user_profile_manager", None)
+        payload = await request.get_json(silent=True) or {}
+        if manager is None or not isinstance(payload, dict):
+            return self.utils.error("档案管理器未就绪或参数无效")
+        try:
+            data = await manager.review_for_web(payload.get("profile_scope"), payload.get("profile_key"),
+                claim_id=payload.get("claim_id"), action=payload.get("action"), expected_revision=payload.get("expected_revision"))
+            return self.utils.ok(data) if data else self.utils.error("档案不存在或已经变化，请刷新")
+        except (TypeError, ValueError) as exc:
+            return self.utils.error(str(exc))
+
+    async def set_profile_alias(self):
+        _, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        manager = getattr(self.plugin, "user_profile_manager", None)
+        payload = await request.get_json(silent=True) or {}
+        if manager is None or not isinstance(payload, dict):
+            return self.utils.error("档案管理器未就绪或参数无效")
+        try:
+            return self.utils.ok(await manager.set_alias_for_web(payload.get("identity"), payload.get("alias")))
+        except (TypeError, ValueError) as exc:
+            return self.utils.error(str(exc))
+
     async def test_recall(self):
         """测试记忆召回功能"""
         ready, error = await self._ensure_plugin_ready()
         if error:
             return error
-        return await self.recall_handler.test_recall(ready["memory_engine"])
+        return await self.recall_handler.test_recall(ready["memory_engine"], ready["config_manager"], self.plugin.context)
 
     async def get_graph_overview(self):
         """获取图谱概览"""

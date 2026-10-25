@@ -147,6 +147,8 @@ class MemoryForgetTool(FunctionTool[AstrAgentContext]):
             if action not in ("forget", "restore"):
                 return _json_result({"deleted": False, "error": "invalid_action"})
             mode = self.config_manager.get("agent_tools.forget_mode", "delete")
+            operation_id = None
+            actor = "tool:"+origin+":"+str(event.get_sender_id())
             state = request_state(event)
             # The event lock protects the per-request quota; the tool lock
             # makes cooldown checking and accounting atomic across events.
@@ -160,7 +162,25 @@ class MemoryForgetTool(FunctionTool[AstrAgentContext]):
                 if action == "restore":
                     if metadata.get("status") != "archived" and not metadata.get("restored_at"):
                         return _json_result({"restored": False, "error": "memory_is_not_archived"})
-                    success = await self.memory_engine.restore_memory(memory_id)
+                    if metadata.get("recovery_operation_id"):
+                        from ..managers.memory_administration import MemoryAdministration
+                        administration = getattr(self.memory_engine, "memory_administration", None)
+                        if not isinstance(administration, MemoryAdministration):
+                            administration = MemoryAdministration(self.memory_engine, self.config_manager)
+                            self.memory_engine.memory_administration = administration
+                        recovered = await administration.restore(metadata["recovery_operation_id"], actor=actor)
+                        success = memory_id in recovered["ids"]
+                    else:
+                        success = await self.memory_engine.restore_memory(memory_id)
+                elif mode == "recoverable":
+                    from ..managers.memory_administration import MemoryAdministration
+                    administration = getattr(self.memory_engine, "memory_administration", None)
+                    if not isinstance(administration, MemoryAdministration):
+                        administration = MemoryAdministration(self.memory_engine, self.config_manager)
+                        self.memory_engine.memory_administration = administration
+                    deleted = await administration.delete([memory_id], actor=actor, reason=reason)
+                    success = memory_id in deleted["deleted_ids"]
+                    operation_id = deleted["operation_id"]
                 elif mode == "archive":
                     success = bool(await self.memory_engine.archive_memories([memory_id]))
                 else:
@@ -182,8 +202,9 @@ class MemoryForgetTool(FunctionTool[AstrAgentContext]):
 
             if action == "restore":
                 return _json_result({"restored": True, "id": memory_id})
-            if mode == "archive":
-                return _json_result({"archived": True, "deleted": False, "recoverable": True, "id": memory_id})
+            if mode in ("archive", "recoverable"):
+                return _json_result({"archived": True, "deleted": False, "recoverable": True, "id": memory_id,
+                                     "operation_id": operation_id})
 
             result: dict[str, Any] = {"deleted": True, "id": memory_id}
             cleanup = getattr(

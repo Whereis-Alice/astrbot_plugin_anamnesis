@@ -68,3 +68,29 @@ def serialize_memory_mutation(function):
             return await function(engine, *args, **kwargs)
 
     return guarded
+
+
+@asynccontextmanager
+async def index_projection_guard(engine):
+    """Coordinate bounded projection replay with full index rebuilds."""
+    if not hasattr(engine, "_index_projection_lock"):
+        engine._index_projection_lock = asyncio.Lock()
+        engine._index_projection_owner = None
+    task = asyncio.current_task()
+    if engine._index_projection_owner is task:
+        yield
+        return
+    async with engine._index_projection_lock:
+        engine._index_projection_owner = task
+        try:
+            yield
+        finally:
+            engine._index_projection_owner = None
+
+
+def serialize_index_projection(function):
+    @wraps(function)
+    async def guarded(host, memory_engine, *args, **kwargs):
+        async with index_projection_guard(memory_engine):
+            return await function(host, memory_engine, *args, **kwargs)
+    return guarded

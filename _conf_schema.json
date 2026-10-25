@@ -406,6 +406,30 @@
           "max": 100000,
           "step": 32
         }
+      },
+      "temporal_retrieval_enabled": {
+        "type": "bool",
+        "description": "自然语言时间检索",
+        "default": true,
+        "hint": "自然语言时间检索"
+      },
+      "temporal_candidate_limit": {
+        "type": "int",
+        "description": "时间查询候选上限",
+        "default": 500,
+        "hint": "时间查询候选上限"
+      },
+      "temporal_max_range_days": {
+        "type": "int",
+        "description": "时间查询最大跨度（天）",
+        "default": 3660,
+        "hint": "时间查询最大跨度（天）"
+      },
+      "temporal_timezone": {
+        "type": "string",
+        "description": "时间查询时区（空值使用宿主配置）",
+        "default": "",
+        "hint": "时间查询时区（空值使用宿主配置）"
       }
     }
   },
@@ -682,6 +706,30 @@
           "max": 3,
           "step": 1
         }
+      },
+      "manual_override_enabled": {
+        "type": "bool",
+        "description": "保护人工档案修正",
+        "default": true,
+        "hint": "保护人工档案修正"
+      },
+      "review_changes": {
+        "type": "bool",
+        "description": "自动变化先待审核",
+        "default": true,
+        "hint": "自动变化先待审核"
+      },
+      "history_max_versions": {
+        "type": "int",
+        "description": "每项最多历史版本",
+        "default": 20,
+        "hint": "每项最多历史版本"
+      },
+      "evidence_max_sources": {
+        "type": "int",
+        "description": "每项最多证据来源",
+        "default": 20,
+        "hint": "每项最多证据来源"
       }
     }
   },
@@ -765,7 +813,13 @@
         "default": "delete",
         "options": [
           "delete",
-          "archive"
+          "archive",
+          "recoverable"
+        ],
+        "labels": [
+          "永久删除",
+          "归档可恢复",
+          "记录整次操作并可恢复"
         ]
       },
       "forget_max_per_request": {
@@ -789,6 +843,12 @@
           "max": 3600,
           "step": 1
         }
+      },
+      "enable_correction_plan_tool": {
+        "type": "bool",
+        "description": "管理员纠正计划工具",
+        "default": false,
+        "hint": "管理员纠正计划工具"
       }
     }
   },
@@ -957,6 +1017,18 @@
           "max": 1000,
           "step": 1
         }
+      },
+      "graph_evidence_enabled": {
+        "type": "bool",
+        "description": "图关系证据评分",
+        "default": false,
+        "hint": "图关系证据评分"
+      },
+      "graph_evidence_min_support": {
+        "type": "float",
+        "description": "图关系最小证据支持",
+        "default": 0.5,
+        "hint": "图关系最小证据支持"
       }
     }
   },
@@ -1528,6 +1600,138 @@
           "max": 200000,
           "step": 500
         }
+      }
+    }
+  },
+  "memory_administration": {
+    "type": "object",
+    "description": "记忆管理工作流",
+    "items": {
+      "recovery_enabled": {
+        "type": "bool",
+        "description": "启用整次删除恢复",
+        "default": true,
+        "hint": "启用整次删除恢复"
+      },
+      "correction_enabled": {
+        "type": "bool",
+        "description": "启用纠正预览与回滚",
+        "default": true,
+        "hint": "启用纠正预览与回滚"
+      },
+      "import_enabled": {
+        "type": "bool",
+        "description": "启用导入任务",
+        "default": true,
+        "hint": "启用导入任务"
+      },
+      "evaluation_enabled": {
+        "type": "bool",
+        "description": "启用固定查询评测",
+        "default": true,
+        "hint": "启用固定查询评测"
+      },
+      "episode_enabled": {
+        "type": "bool",
+        "description": "允许事件生成任务",
+        "default": true,
+        "hint": "允许事件生成任务"
+      },
+      "projection_enabled": {
+        "type": "bool",
+        "description": "允许版本化索引同步任务",
+        "default": true,
+        "hint": "允许版本化索引同步任务"
+      },
+      "retention_days": {
+        "type": "int",
+        "description": "恢复与计划保留期（天）",
+        "default": 30,
+        "hint": "恢复与计划保留期（天）"
+      },
+      "max_records": {
+        "type": "int",
+        "description": "任务与操作记录容量",
+        "default": 500,
+        "hint": "任务与操作记录容量"
+      },
+      "max_snapshot_kib": {
+        "type": "int",
+        "description": "单条恢复快照上限（KiB）",
+        "default": 1024,
+        "hint": "单条恢复快照上限（KiB）"
+      },
+      "max_job_mib": {
+        "type": "int",
+        "description": "单任务输入上限（MiB）",
+        "default": 5,
+        "hint": "单任务输入上限（MiB）"
+      },
+      "import_chunk_chars": {
+        "type": "int",
+        "description": "文本导入每块字符数",
+        "default": 2000,
+        "hint": "文本导入每块字符数"
+      },
+      "max_import_chunks": {
+        "type": "int",
+        "description": "单次导入最多分块",
+        "default": 1000,
+        "hint": "单次导入最多分块"
+      },
+      "llm_timeout_seconds": {
+        "type": "int",
+        "description": "生成任务超时（秒）",
+        "default": 45,
+        "hint": "生成任务超时（秒）"
+      },
+      "evaluation_timeout_seconds": {
+        "type": "int",
+        "description": "单条评测超时（秒）",
+        "default": 10,
+        "hint": "单条评测超时（秒）"
+      },
+      "max_storage_mib": {
+        "type": "int",
+        "description": "管理日志、任务、快照与事件总容量（MiB）",
+        "default": 128,
+        "hint": "达到容量后需清理已完成记录，保留中的恢复数据不会自动丢弃。"
+      }
+    }
+  },
+  "episodic_memory": {
+    "type": "object",
+    "description": "事件记忆",
+    "items": {
+      "enabled": {
+        "type": "bool",
+        "description": "启用事件记忆（按需生成）",
+        "default": false,
+        "hint": "启用事件记忆（按需生成）"
+      },
+      "max_members": {
+        "type": "int",
+        "description": "每个事件最多来源记忆",
+        "default": 30,
+        "hint": "每个事件最多来源记忆"
+      },
+      "max_input_chars": {
+        "type": "int",
+        "description": "事件生成输入字符预算",
+        "default": 12000,
+        "hint": "事件生成输入字符预算"
+      },
+      "recall_scan_limit": {
+        "type": "int",
+        "description": "事件召回扫描上限",
+        "default": 30,
+        "hint": "事件召回扫描上限"
+      },
+      "max_injection_chars": {
+        "type": "int",
+        "description": "事件注入字符预算",
+        "default": 2000,
+        "hint": "事件注入字符预算"
       }
     }
   }

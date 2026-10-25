@@ -17,7 +17,8 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 PLUGINS_DIR = Path(__file__).resolve().parents[2]
-ASTRBOT_ROOT = Path(__file__).resolve().parents[4]
+_test_parents = Path(__file__).resolve().parents
+ASTRBOT_ROOT = _test_parents[min(4, len(_test_parents) - 1)]
 
 for candidate in (PROJECT_ROOT, PLUGINS_DIR, ASTRBOT_ROOT):
     candidate_str = str(candidate)

@@ -142,15 +142,18 @@ class MemoryHandlerIoMixin:
             )
 
     async def _import_entries(
-        self, memory_engine, memory_processor, entries, parse_errors, duplicate_strategy
+        self, memory_engine, memory_processor, entries, parse_errors, duplicate_strategy,
+        existing_keys=None,
     ):
         # Refresh inside the engine-wide lock, including across different HTTP
         # handler instances. A retry must observe the first import's commits.
-        existing_keys = await memory_engine.get_memory_import_keys()
+        shared_keys = existing_keys is not None
+        if existing_keys is None:
+            existing_keys = await memory_engine.get_memory_import_keys()
         imported_ids: list[int] = []
         skipped_duplicates = 0
         import_errors = list(parse_errors)
-        active_keys = set(existing_keys)
+        active_keys = existing_keys if shared_keys else set(existing_keys)
         for entry in entries:
             try:
                 content_text = entry.content
