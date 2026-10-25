@@ -342,7 +342,9 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
             assignments.append("display_label = ?")
             params.append(label)
         if "value" in updates:
-            value = _CONTROL_PATTERN.sub(" ", str(updates.get("value") or "")).strip()
+            if not isinstance(updates["value"], str):
+                return None
+            value = _CONTROL_PATTERN.sub(" ", updates["value"]).strip()
             if (
                 not value
                 or len(value) > 300
@@ -359,9 +361,11 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
             assignments.append("category = ?")
             params.append(category)
         if "confidence" in updates:
+            if isinstance(updates["confidence"], bool):
+                return None
             try:
                 confidence = float(updates.get("confidence"))
-            except (TypeError, ValueError):
+            except (TypeError, ValueError, OverflowError):
                 return None
             if not math.isfinite(confidence) or not 0.0 <= confidence <= 1.0:
                 return None
@@ -369,12 +373,14 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
             params.append(confidence)
         if "expires_at" in updates:
             expires_at = updates.get("expires_at")
+            if isinstance(expires_at, bool):
+                return None
             if expires_at in (None, ""):
                 normalized_expiry = None
             else:
                 try:
                     normalized_expiry = float(expires_at)
-                except (TypeError, ValueError):
+                except (TypeError, ValueError, OverflowError):
                     return None
                 if not math.isfinite(normalized_expiry) or normalized_expiry <= 0:
                     return None
@@ -439,18 +445,23 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
     def _normalize_fact(item: Any) -> dict[str, Any] | None:
         if not isinstance(item, dict) or item.get("explicit") is not True:
             return None
-        key = str(item.get("key", "")).strip().casefold()
-        category = str(item.get("category", "")).strip().casefold()
-        value = _CONTROL_PATTERN.sub(" ", str(item.get("value", ""))).strip()
+        if any(not isinstance(item.get(field), str) for field in ("key", "category", "value")):
+            return None
+        key = item["key"].strip().casefold()
+        category = item["category"].strip().casefold()
+        value = _CONTROL_PATTERN.sub(" ", item["value"]).strip()
         if not _KEY_PATTERN.fullmatch(key) or category not in _CATEGORIES:
             return None
         if not value or len(value) > 300:
             return None
         if "<Anamnesis-Memory" in value or "</Anamnesis-Memory" in value:
             return None
+        raw_confidence = item.get("confidence", 0)
+        if isinstance(raw_confidence, bool):
+            return None
         try:
-            confidence = float(item.get("confidence", 0))
-        except (TypeError, ValueError):
+            confidence = float(raw_confidence)
+        except (TypeError, ValueError, OverflowError):
             return None
         if not 0.75 <= confidence <= 1.0:
             return None

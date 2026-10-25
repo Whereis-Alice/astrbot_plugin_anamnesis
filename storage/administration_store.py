@@ -16,6 +16,10 @@ import aiosqlite
 from .sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
 
 
+class AdministrationCapacityError(ValueError):
+    """A bounded administration write could not reserve more content bytes."""
+
+
 class AdministrationStore:
     def __init__(self, db_path: str, config: dict | None = None):
         self.db_path, self.config = db_path, config or {}
@@ -41,7 +45,7 @@ class AdministrationStore:
                 if write:
                     await db.rollback()
                 if isinstance(exc, sqlite3.IntegrityError) and "anamnesis_admin_quota" in str(exc):
-                    raise ValueError("管理记录、导入与恢复快照总容量已达上限，请先清理已完成记录") from exc
+                    raise AdministrationCapacityError("管理记录、导入与恢复快照总容量已达上限，请先清理已完成记录") from exc
                 raise
 
     async def initialize(self):
@@ -123,13 +127,13 @@ class AdministrationStore:
     def _encode(self, value):
         raw = json.dumps(value, ensure_ascii=False, allow_nan=False)
         if len(raw.encode("utf-8")) > self.max_record_bytes:
-            raise ValueError("单条管理记录超过容量上限，请减少输入或来源")
+            raise AdministrationCapacityError("单条管理记录超过容量上限，请减少输入或来源")
         # Recovery/correction snapshots must be bounded independently of their
         # short summary. Source messages can be much larger than summary text.
         if isinstance(value, dict):
             for key in ("before", "after", "tagged", "before_atom_lifecycle"):
                 if key in value and len(json.dumps(value[key], ensure_ascii=False, allow_nan=False).encode("utf-8")) > self.max_snapshot_bytes:
-                    raise ValueError("单条记忆及来源快照超过容量预算，请使用精确编辑或减少来源")
+                    raise AdministrationCapacityError("单条记忆及来源快照超过容量预算，请使用精确编辑或减少来源")
         return raw
 
     async def storage_usage(self):
@@ -154,7 +158,7 @@ class AdministrationStore:
             count = (await (await db.execute("SELECT COUNT(*) FROM memory_admin_operations")).fetchone())[0]
             if count >= max_records:
                 # Never silently discard a recoverable deletion or an unfinished job.
-                raise ValueError("任务与操作记录已达容量上限，请先清理已完成记录")
+                raise AdministrationCapacityError("任务与操作记录已达容量上限，请先清理已完成记录")
             await db.execute("INSERT INTO memory_admin_operations(id,kind,actor,status,payload,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
                              (operation_id, kind, actor, status, raw_payload, now, now, now + keep_days*86400))
 
@@ -209,9 +213,23 @@ class AdministrationStore:
         return [self.decode(row) for row in rows]
 
     async def put_item(self, operation_id, item_key, payload, *, status="pending", result=None):
-        raw_payload = self._encode(payload)
-        raw_result = self._encode(result or {})
+        raw_payload = json.dumps(payload, ensure_ascii=False, allow_nan=False)
+        raw_result = json.dumps(result or {}, ensure_ascii=False, allow_nan=False)
         async with self.connection(write=True) as db:
+            existing = await (await db.execute(
+                "SELECT payload,result FROM memory_admin_items WHERE operation_id=? AND item_key=?",
+                (operation_id, str(item_key)),
+            )).fetchone()
+            if existing is not None and (existing[0], existing[1]) == (raw_payload, raw_result):
+                # Retained evidence consumes no new bytes when only its phase
+                # changes. Lowered limits must not block recovery or cleanup.
+                await db.execute(
+                    "UPDATE memory_admin_items SET status=? WHERE operation_id=? AND item_key=?",
+                    (status, operation_id, str(item_key)),
+                )
+                return
+            raw_payload = self._encode(payload)
+            raw_result = self._encode(result or {})
             await db.execute("INSERT INTO memory_admin_items VALUES(?,?,?,?,?) ON CONFLICT(operation_id,item_key) DO UPDATE SET status=excluded.status,payload=excluded.payload,result=excluded.result",
                              (operation_id, str(item_key), status, raw_payload, raw_result))
 

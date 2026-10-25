@@ -15,7 +15,10 @@ import uuid
 
 from astrbot.api import logger
 
-from ...storage.administration_store import AdministrationStore
+from ...storage.administration_store import (
+    AdministrationCapacityError,
+    AdministrationStore,
+)
 from ...storage.projection_outbox import ProjectionOutbox
 from .administration_jobs import AdministrationJobsMixin
 from .memory_mutation import (
@@ -141,7 +144,7 @@ class MemoryAdministration(AdministrationJobsMixin):
         result = {"operation_id": operation_id, "deleted_ids": deleted, "failed": failed, "recoverable": True}
         try:
             await self.store.update(operation_id, status="completed" if not failed else "partial", result=result)
-        except ValueError:
+        except AdministrationCapacityError:
             # Status does not consume the content quota. Keep every durable item
             # even when the final summary cannot fit, and return the actual outcome.
             await self.store.update(operation_id, status="partial")
@@ -198,7 +201,14 @@ class MemoryAdministration(AdministrationJobsMixin):
             if item["status"] == "purged":
                 continue
             memory_id, data = int(item["item_key"]), item["payload"]
-            current = await self.snapshot(memory_id)
+            try:
+                current = await self.snapshot(memory_id)
+            except json.JSONDecodeError:
+                # Corrupt source evidence cannot authorize this mutation, but
+                # must not prevent independent sources from being recovered.
+                conflicts.append(memory_id)
+                logger.warning("恢复操作 %s 的记忆 %s 来源损坏，保留快照等待核验", operation_id, memory_id)
+                continue
             if purge and item["status"] == "purging" and current is None:
                 # The document deletion committed, but completion may not have.
                 # Only our durable purge intent authorizes clearing its snapshot.
@@ -280,7 +290,14 @@ class MemoryAdministration(AdministrationJobsMixin):
                 await self.store.put_item(operation_id, memory_id, data, status="restored")
             restored.append(memory_id)
         result = {"operation_id": operation_id, "ids": restored, "conflicts": conflicts, "purged": purge}
-        await self.store.update(operation_id, status="partial" if conflicts else ("purged" if purge else "restored"), result=result)
+        try:
+            await self.store.update(operation_id, status="partial" if conflicts else ("purged" if purge else "restored"), result=result)
+        except AdministrationCapacityError:
+            # Per-item completion is durable. A summary reservation failure
+            # must not report committed restores as failed or discard evidence.
+            await self.store.update(operation_id, status="partial", result={})
+            result["result_persisted"] = False
+            logger.warning("恢复操作 %s 的结果超过管理容量，已保留明细并标为部分完成", operation_id)
         return result
 
     async def preview_correction(self, memory_id, instruction, *, actor="webui", new_content=None, expected_memory=None):

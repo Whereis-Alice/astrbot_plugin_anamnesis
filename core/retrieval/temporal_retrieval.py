@@ -160,75 +160,95 @@ def _sql_timestamp(expression):
 
 
 async def temporal_atom_evidence(
-    engine, memory_id: int, time_range: TimeRange, metadata: dict
+    engine, memory_id: int, time_range: TimeRange, metadata: dict,
+    *, parent_time_fallback: bool = False,
 ) -> dict | None:
-    """Recheck currently live event atoms for a range-selected parent."""
-    clauses = [
-        "parent_memory_id=?",
-        "status='active'",
-        "CAST(expires_at AS REAL)>?",
-        "CAST(expires_at AS REAL)<1e308",
-        "typeof(event_time) IN ('real','integer')",
-        "event_time>=0",
-        "event_time<1e11",
-    ]
-    values = [int(memory_id), time.time()]
-    if metadata.get("session_id") is not None:
-        clauses.append("(session_id IS NULL OR session_id=?)")
-        values.append(metadata["session_id"])
-    clauses.append(atom_persona_sql_match("persona_id", "?"))
-    values.extend([metadata.get("persona_id"), metadata.get("persona_id")])
-    if time_range.start is not None:
-        clauses.append("event_time>=?")
-        values.append(time_range.start)
-    if time_range.end is not None:
-        clauses.append("event_time<?")
-        values.append(time_range.end)
+    """Project current source and live facts from one authorized SQLite snapshot.
+
+    Known atom event times take priority over the parent's recording time.
+    Search can retain the original parent-time fallback for undated records;
+    Agent cursor rechecks require actual in-range event evidence by default.
+    """
     parent_conditions = [
-        "d.id=memory_atoms.parent_memory_id",
+        "d.id=?",
         "json_valid(d.metadata)",
         "COALESCE(json_extract(d.metadata,'$.status'),'active')='active'",
     ]
+    parent_values = [int(memory_id)]
     for key in ("session_id", "persona_id"):
         parent_conditions.append(f"json_extract(d.metadata,'$.{key}') IS ?")
-        values.append(metadata.get(key))
-    clauses.append(
-        "EXISTS (SELECT 1 FROM documents d WHERE "
-        + " AND ".join(parent_conditions)
-        + ")"
-    )
+        parent_values.append(metadata.get(key))
     async with _read_connection(engine) as connection:
         async with connection.execute("PRAGMA table_info(memory_atoms)") as cursor:
-            atom_type_column = (
-                "atom_type" if any(row[1] == "atom_type" for row in await cursor.fetchall())
-                else "NULL"
+            columns = {row[1] for row in await cursor.fetchall()}
+        read_atoms = bool(columns) and getattr(engine, "atom_enabled", True)
+        if read_atoms:
+            event_column = "a.event_time" if "event_time" in columns else "NULL"
+            type_column = "a.atom_type" if "atom_type" in columns else "NULL"
+            statement = f"""SELECT d.text,d.metadata,
+              EXISTS(SELECT 1 FROM memory_atoms all_atoms WHERE all_atoms.parent_memory_id=d.id),
+              a.id,a.content,{event_column},{type_column}
+              FROM documents d LEFT JOIN memory_atoms a ON a.parent_memory_id=d.id
+                AND a.status='active' AND CAST(a.expires_at AS REAL)>?
+                AND CAST(a.expires_at AS REAL)<1e308
+                AND (a.session_id IS NULL OR json_extract(d.metadata,'$.session_id') IS NULL
+                     OR a.session_id=json_extract(d.metadata,'$.session_id'))
+                AND {atom_persona_sql_match("a.persona_id", "json_extract(d.metadata,'$.persona_id')")}
+              WHERE {" AND ".join(parent_conditions)} ORDER BY a.id"""
+            values = [time.time(), *parent_values]
+        else:
+            statement = (
+                "SELECT d.text,d.metadata,0,NULL,NULL,NULL,NULL FROM documents d WHERE "
+                + " AND ".join(parent_conditions)
             )
+            values = parent_values
         async with connection.execute(
-            f"SELECT id,content,event_time,{atom_type_column} FROM memory_atoms WHERE "
-            + " AND ".join(clauses)
-            + " ORDER BY event_time DESC,id DESC",
-            values,
+            statement, values,
         ) as cursor:
             rows = await cursor.fetchall()
-    valid = [
-        row
-        for row in rows
-        if isinstance(row[2], (int, float)) and math.isfinite(row[2])
-    ]
-    if not valid:
+    if not rows:
         return None
+    source_metadata = _metadata(rows[0][1])
+    live = [row[3:] for row in rows if row[3] is not None and str(row[4] or "").strip()]
+    if not live:
+        if not parent_time_fallback or read_atoms and (rows[0][2] or source_metadata.get("atom_types")):
+            return None
+        return {**source_metadata, "content": str(rows[0][0] or "")}
+    dated = [row for row in live if (
+        isinstance(row[2], (int, float)) and math.isfinite(row[2]) and 0 <= row[2] < 1e11
+    )]
+    if dated:
+        selected = [row for row in dated if (
+            (time_range.start is None or row[2] >= time_range.start)
+            and (time_range.end is None or row[2] < time_range.end)
+        )]
+        selected.sort(key=lambda row: (row[2], row[0]), reverse=True)
+    else:
+        selected = live if parent_time_fallback else []
+    if not selected:
+        return None
+    content = "\n".join(dict.fromkeys(str(row[1]).strip() for row in selected))
     evidence = {
-        "content": "\n".join(dict.fromkeys(str(row[1]) for row in valid)),
-        "retrieved_atom_ids": [int(row[0]) for row in valid],
-        "temporal_atom_ids": [int(row[0]) for row in valid],
-        "temporal_time_start": min(row[2] for row in valid),
-        "temporal_time_end": max(row[2] for row in valid),
-        "temporal_time_basis": "atom_event_time",
+        **source_metadata,
+        "content": content,
+        "persona_summary": content,
+        "canonical_summary": content,
+        "key_facts": content.splitlines(),
+        "topics": [],
+        "time_tags": [],
+        "retrieved_atom_ids": [int(row[0]) for row in selected],
     }
+    if dated:
+        evidence.update(
+            temporal_atom_ids=[int(row[0]) for row in selected],
+            temporal_time_start=min(row[2] for row in selected),
+            temporal_time_end=max(row[2] for row in selected),
+            temporal_time_basis="atom_event_time",
+        )
     # Match the final range-selected content, rather than the parent-wide
     # lifecycle projection. Missing legacy types retain their existing policy.
-    if all(row[3] is not None for row in valid):
-        evidence["atom_types"] = list(dict.fromkeys(str(row[3]).casefold() for row in valid))
+    if all(row[3] is not None for row in selected):
+        evidence["atom_types"] = list(dict.fromkeys(str(row[3]).casefold() for row in selected))
     return evidence
 
 
@@ -679,7 +699,7 @@ async def search_with_time(
                 not needs_recheck
                 or _matches(
                     _metadata(item.metadata),
-                    time_range,
+                    None if time_range and direct_available else time_range,
                     session_id,
                     persona_id,
                     persona_filtered,
@@ -713,11 +733,6 @@ async def search_with_time(
             memories.sort(key=lambda item: item.final_score, reverse=True)
         else:
             memories = temporal_results if actual_mode == "time" else semantic_results
-        temporal_marks = {
-            item.doc_id: item.metadata
-            for item in memories
-            if _metadata(item.metadata).get("temporal_time_basis") == "atom_event_time"
-        }
         policy = getattr(memory_engine, "_filter_by_retrieval_policy", None)
         if needs_recheck and callable(policy):
             memories = policy(memories)
@@ -726,25 +741,16 @@ async def search_with_time(
             memories = await lifecycle(memories)
             if callable(policy):
                 memories = policy(memories)
-        if temporal_marks:
+        if time_range and direct_available:
             refreshed = []
             for item in memories:
-                if item.doc_id not in temporal_marks:
-                    refreshed.append(item)
-                    continue
                 evidence = await temporal_atom_evidence(
-                    memory_engine, item.doc_id, time_range, item.metadata
+                    memory_engine, item.doc_id, time_range, item.metadata,
+                    parent_time_fallback=True,
                 )
                 if evidence:
                     content = evidence.pop("content")
-                    metadata = {
-                        **item.metadata,
-                        **evidence,
-                        "persona_summary": content,
-                        "canonical_summary": content,
-                        "key_facts": content.splitlines(),
-                    }
-                    refreshed.append(replace(item, content=content, metadata=metadata))
+                    refreshed.append(replace(item, content=content, metadata=evidence))
             memories = refreshed
             if callable(policy):
                 memories = policy(memories)
