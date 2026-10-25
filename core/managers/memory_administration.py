@@ -64,7 +64,9 @@ class MemoryAdministration(AdministrationJobsMixin):
             raise ValueError("该管理功能已关闭")
 
     async def _create(self, kind, actor, payload, status="pending"):
+        self._assert_jobs_open()
         await self.initialize()
+        self._assert_jobs_open()
         operation_id = uuid.uuid4().hex
         await self.store.create(operation_id, kind, actor, payload, status=status,
                                 keep_days=self.option("memory_administration.retention_days", 30),
@@ -91,6 +93,7 @@ class MemoryAdministration(AdministrationJobsMixin):
             raise
 
     async def delete(self, memory_ids, *, actor="webui", reason=""):
+        self._assert_jobs_open()
         self.require("recovery")
         ids = self.ids(memory_ids)
         async with memory_mutation_guard(self.engine):
@@ -138,6 +141,7 @@ class MemoryAdministration(AdministrationJobsMixin):
 
     async def remove_operation(self, operation_id, *, actor="webui"):
         """Check and remove under the guard shared with correction execution."""
+        self._assert_jobs_open()
         async with memory_mutation_guard(self.engine):
             operation = await self._owned(operation_id, actor, allow_expired=True)
             if operation["status"] not in (
@@ -148,6 +152,7 @@ class MemoryAdministration(AdministrationJobsMixin):
         return {"removed": True}
 
     async def restore(self, operation_id, *, actor="webui", purge=False):
+        self._assert_jobs_open()
         self.require("recovery")
         await self._owned(operation_id, actor, "delete", allow_expired=purge)
         async with memory_mutation_guard(self.engine):
@@ -243,6 +248,12 @@ class MemoryAdministration(AdministrationJobsMixin):
         return result
 
     async def preview_correction(self, memory_id, instruction, *, actor="webui", new_content=None, expected_memory=None):
+        return await self._track_job_preparation(
+            self._preview_correction, memory_id, instruction, actor=actor,
+            new_content=new_content, expected_memory=expected_memory,
+        )
+
+    async def _preview_correction(self, memory_id, instruction, *, actor="webui", new_content=None, expected_memory=None):
         self.require("correction")
         memory_id = self.ids([memory_id])[0]
         if not isinstance(instruction, str) or not 1 <= len(instruction.strip()) <= 2000:
@@ -282,12 +293,44 @@ class MemoryAdministration(AdministrationJobsMixin):
         payload = {"memory_id": memory_id, "instruction": instruction.strip(), "before": original,
                    "before_atom_lifecycle": original_atoms,
                    "fingerprint": fingerprint(original), "content": new_content.strip(), "key_facts": facts}
-        operation_id = await self._create("correction", actor, payload, "preview")
+        operation_id = await self._create_preview_record(actor, payload)
         return {"operation_id": operation_id, "old_content": original["text"], "new_content": payload["content"],
                 "key_facts": facts, "session_id": original["metadata"].get("session_id"),
                 "persona_id": original["metadata"].get("persona_id"), "requires_webui_confirmation": True}
 
+    async def _create_preview_record(self, actor, payload):
+        """Recover a committed ID before cleaning an undelivered preview."""
+        operation_id = None
+        creating = asyncio.create_task(self._create("correction", actor, payload, "preview"))
+        try:
+            try:
+                operation_id = await asyncio.shield(creating)
+            except asyncio.CancelledError:
+                operation_id = await settle_memory_mutation_task(creating)
+                raise
+            self._assert_jobs_open()
+            return operation_id
+        except BaseException:
+            if operation_id is not None:
+                await settle_memory_mutation_task(asyncio.create_task(
+                    self._discard_unclaimed_preview(operation_id)
+                ))
+            raise
+
+    async def _discard_unclaimed_preview(self, operation_id):
+        """A listed preview may already belong to another confirmed request."""
+        async with self.store.connection(write=True) as db:
+            cursor = await db.execute(
+                "DELETE FROM memory_admin_operations WHERE id=? AND kind='correction' "
+                "AND status='preview' AND token_hash IS NULL", (operation_id,),
+            )
+            if cursor.rowcount:
+                await db.execute("DELETE FROM memory_admin_items WHERE operation_id=?", (operation_id,))
+
     async def confirm(self, operation_id, *, actor="webui"):
+        return await self._track_job_preparation(self._confirm, operation_id, actor=actor)
+
+    async def _confirm(self, operation_id, *, actor="webui"):
         self.require("correction")
         operation = await self._owned(operation_id, actor, "correction")
         if operation["status"] != "preview":
@@ -301,6 +344,7 @@ class MemoryAdministration(AdministrationJobsMixin):
         return {"operation_id": operation_id, "confirmation_token": token, "expires_in": 300}
 
     async def execute_correction(self, operation_id, token, *, actor="webui"):
+        self._assert_jobs_open()
         self.require("correction")
         await self._owned(operation_id, actor, "correction")
         if not isinstance(token, str) or len(token) > 200:
@@ -349,6 +393,7 @@ class MemoryAdministration(AdministrationJobsMixin):
             raise
 
     async def rollback_correction(self, operation_id, *, actor="webui"):
+        self._assert_jobs_open()
         self.require("correction")
         operation = await self._owned(operation_id, actor, "correction")
         async with memory_mutation_guard(self.engine):

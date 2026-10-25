@@ -108,6 +108,9 @@ def serialize_memory_mutation(function):
 @asynccontextmanager
 async def index_projection_guard(engine):
     """Coordinate bounded projection replay with full index rebuilds."""
+    assert_open = getattr(engine, "_assert_writes_open", None)
+    if callable(assert_open):
+        assert_open()
     if not hasattr(engine, "_index_projection_lock"):
         engine._index_projection_lock = asyncio.Lock()
         engine._index_projection_owner = None
@@ -115,7 +118,7 @@ async def index_projection_guard(engine):
     if engine._index_projection_owner is task:
         yield
         return
-    async with engine._index_projection_lock:
+    async with engine._index_projection_lock, memory_write_guard(engine):
         engine._index_projection_owner = task
         try:
             yield

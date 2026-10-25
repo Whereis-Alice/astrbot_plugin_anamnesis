@@ -831,6 +831,9 @@ class AnamnesisPlugin(Star):
         # 停止衰减调度器
         await self.initializer.stop_scheduler()
 
+        # 先停止记忆写入并落盘；画像清理仍需要会话数据库。
+        await self.initializer.shutdown_index_persisters()
+
         # 关闭 ConversationManager
         if (
             self.initializer.conversation_manager
@@ -838,9 +841,6 @@ class AnamnesisPlugin(Star):
         ):
             await self.initializer.conversation_manager.store.close()
             logger.info("ConversationManager 已关闭")
-
-        # 关闭 FaissVecDB 之前，先把索引的未落盘变更写掉
-        await self.initializer.shutdown_index_persisters()
 
         # 关闭 MemoryEngine
         if self.initializer.memory_engine:

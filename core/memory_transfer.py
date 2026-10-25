@@ -80,6 +80,7 @@ def isolate_import_provenance(metadata: dict[str, Any]) -> dict[str, Any]:
         "source_window",
         "source_windows",
         "previous_id",
+        "import_operation_id", "import_item_key",
     ):
         if key in metadata:
             provenance[key] = metadata.pop(key)

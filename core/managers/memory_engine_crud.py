@@ -1154,6 +1154,7 @@ class MemoryEngineCrudMixin:
         self._invalidate_search_cache()
         return success
 
+    @track_memory_write
     async def rebuild_graph_index(self) -> dict[str, int]:
         """Stream active documents into a safe graph-memory rebuild."""
         if self.graph_memory_manager is None:

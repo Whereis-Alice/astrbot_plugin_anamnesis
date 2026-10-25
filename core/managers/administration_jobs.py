@@ -11,7 +11,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timezone
 
-from ..memory_transfer import ImportEntry, parse_transfer_content
+from ..memory_transfer import ImportEntry, memory_import_key, parse_transfer_content
 from .memory_mutation import memory_mutation_guard, settle_memory_mutation_task
 
 
@@ -327,15 +327,20 @@ class AdministrationJobsMixin:
                     # Persist before any document write. A retry must use the
                     # same summary even if progress commit fails or is cancelled.
                     await self.store.put_item(job["id"], item["item_key"], asdict(entry), status="prepared")
-                response = await handler._import_entries(
-                    self.engine,
-                    self.processor,
-                    [entry],
-                    [],
-                    "skip",
-                    existing_keys=existing_keys,
-                )
-                data = response["data"]
+                data = None
+                if memory_import_key(entry.content, entry.session_id, entry.persona_id) in existing_keys:
+                    data = await self._recover_import_receipt(job["id"], item["item_key"], entry)
+                if data is None:
+                    response = await handler._import_entries(
+                        self.engine,
+                        self.processor,
+                        [entry],
+                        [],
+                        "skip",
+                        existing_keys=existing_keys,
+                        operation_receipt={"operation_id": job["id"], "item_key": item["item_key"]},
+                    )
+                    data = response["data"]
                 await self.store.put_item(
                     job["id"],
                     item["item_key"],
@@ -358,6 +363,41 @@ class AdministrationJobsMixin:
                 item["result"].get("skipped_duplicate_count", 0) for item in items
             ),
         }
+
+    async def _recover_import_receipt(self, operation_id, item_key, entry):
+        """Recover only the original committed ID belonging to this item."""
+        async with memory_mutation_guard(self.engine):
+            connection = getattr(self.engine, "db_connection", None)
+            if connection is None:
+                return None
+            async with connection.execute(
+                "SELECT id FROM documents WHERE CASE WHEN json_valid(metadata) "
+                "THEN json_extract(metadata,'$.import_operation_id') END=? "
+                "AND CASE WHEN json_valid(metadata) "
+                "THEN json_extract(metadata,'$.import_item_key') END=? LIMIT 2",
+                (operation_id, item_key),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            if len(rows) != 1:
+                return None
+            memory_id = rows[0][0]
+            current = await self.engine.get_memory(memory_id)
+            metadata = current.get("metadata", {}) if current else {}
+            key = memory_import_key(entry.content, entry.session_id, entry.persona_id)
+            if (
+                current is None
+                or metadata.get("memory_origin") != "memory_import"
+                or metadata.get("status", "active") != entry.metadata.get("status", "active")
+                or metadata.get("import_operation_id") != operation_id
+                or metadata.get("import_item_key") != item_key
+                or memory_import_key(current["text"], metadata.get("session_id"), metadata.get("persona_id")) != key
+            ):
+                return None
+            return {
+                "dry_run": False, "total": 1, "imported_count": 1,
+                "skipped_duplicate_count": 0, "failed_count": 0,
+                "imported_ids": [memory_id], "errors": [],
+            }
 
     async def _check_import_manifest(self, job):
         """A crash during preparation must not turn a partial file into a job."""

@@ -134,7 +134,10 @@ class UserProfileDirectoryMixin:
         async with self.store._write_lock:
             try:
                 count = await self._change_ledger_sources(connection, ids, suppressed=suppressed)
-                await connection.commit()
+                if suppressed:
+                    await self._commit_profile_invalidation(source_ids=set(ids))
+                else:
+                    await connection.commit()
                 return count
             except BaseException:
                 await connection.rollback()

@@ -164,7 +164,7 @@ class MemoryHandlerIoMixin:
 
     async def _import_entries(
         self, memory_engine, memory_processor, entries, parse_errors, duplicate_strategy,
-        existing_keys=None,
+        existing_keys=None, operation_receipt=None,
     ):
         # Refresh inside the engine-wide lock, including across different HTTP
         # handler instances. A retry must observe the first import's commits.
@@ -198,6 +198,11 @@ class MemoryHandlerIoMixin:
                 metadata["persona_id"] = entry.persona_id
                 metadata["status"] = original_status
                 metadata = isolate_import_provenance(metadata)
+                if operation_receipt is not None:
+                    # Only the administration worker may bind a local receipt;
+                    # imported fields with these names are provenance above.
+                    metadata["import_operation_id"] = operation_receipt["operation_id"]
+                    metadata["import_item_key"] = operation_receipt["item_key"]
                 atoms = None
                 classify_atoms = getattr(
                     memory_processor, "classify_atoms_from_metadata", None

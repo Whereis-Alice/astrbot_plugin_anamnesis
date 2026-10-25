@@ -12,6 +12,7 @@ from typing import Any
 
 from ..memory_scope import parse_value_list, resolve_event_identity
 from ..utils import extract_json_from_response
+from .memory_mutation import settle_memory_mutation_task
 from .user_profile_directory import UserProfileDirectoryMixin
 from .user_profile_ledger import UserProfileLedgerMixin
 
@@ -127,68 +128,72 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
             if connection is None:
                 return False
             async with self.store._write_lock:
-                await connection.execute("""
-                    CREATE TABLE IF NOT EXISTS user_profiles (
-                        profile_scope TEXT NOT NULL,
-                        profile_key TEXT NOT NULL,
-                        category TEXT NOT NULL,
-                        value TEXT NOT NULL,
-                        confidence REAL NOT NULL,
-                        source_memory_id INTEGER,
-                        source_session_id TEXT,
-                        source_group_id TEXT,
-                        source_group_name TEXT,
-                        source_sender_name TEXT,
-                        updated_at REAL NOT NULL,
-                        expires_at REAL,
-                        PRIMARY KEY (profile_scope, profile_key)
-                    )
-                """)
-                async with connection.execute("PRAGMA table_info(user_profiles)") as cursor:
-                    existing_columns = {row[1] for row in await cursor.fetchall()}
-                for column in ("source_group_id", "source_group_name", "source_sender_name",
-                               "identity", "platform", "sender_id", "display_label",
-                               "context_group_id", "context_group_name", "context_sender_name",
-                               "context_session_id"):
-                    if column not in existing_columns:
-                        await connection.execute(
-                            f"ALTER TABLE user_profiles ADD COLUMN {column} TEXT"
+                try:
+                    await connection.execute("""
+                        CREATE TABLE IF NOT EXISTS user_profiles (
+                            profile_scope TEXT NOT NULL,
+                            profile_key TEXT NOT NULL,
+                            category TEXT NOT NULL,
+                            value TEXT NOT NULL,
+                            confidence REAL NOT NULL,
+                            source_memory_id INTEGER,
+                            source_session_id TEXT,
+                            source_group_id TEXT,
+                            source_group_name TEXT,
+                            source_sender_name TEXT,
+                            updated_at REAL NOT NULL,
+                            expires_at REAL,
+                            PRIMARY KEY (profile_scope, profile_key)
                         )
-                for column, definition in (("suppressed", "INTEGER NOT NULL DEFAULT 0"),
-                                           ("context_updated_at", "REAL"),
-                                           ("context_group_updated_at", "REAL")):
-                    if column not in existing_columns:
-                        await connection.execute(
-                            f"ALTER TABLE user_profiles ADD COLUMN {column} {definition}"
-                        )
-                if "context_group_updated_at" not in existing_columns:
-                    await connection.execute(
-                        "UPDATE user_profiles SET context_group_updated_at=COALESCE(context_updated_at,updated_at) "
-                        "WHERE source_group_id IS NOT NULL OR source_group_name IS NOT NULL"
-                    )
-                await self._backfill_directory(connection)
-                await connection.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_user_profiles_scope
-                    ON user_profiles(profile_scope, expires_at, updated_at DESC)
-                """)
-                await connection.execute("""
-                    CREATE INDEX IF NOT EXISTS idx_user_profiles_source
-                    ON user_profiles(source_memory_id)
-                """)
-                memory_connection = getattr(getattr(self, "memory_engine", None), "db_connection", None)
-                if memory_connection is not None:
-                    async with memory_connection.execute(
-                        "SELECT id FROM documents WHERE CASE WHEN json_valid(metadata) "
-                        "THEN COALESCE(json_extract(metadata,'$.status'),'active') "
-                        "ELSE 'invalid' END <> 'active'"
-                    ) as cursor:
-                        while batch := await cursor.fetchmany(500):
-                            ids = [row[0] for row in batch]
-                            placeholders = ",".join("?" for _ in ids)
+                    """)
+                    async with connection.execute("PRAGMA table_info(user_profiles)") as cursor:
+                        existing_columns = {row[1] for row in await cursor.fetchall()}
+                    for column in ("source_group_id", "source_group_name", "source_sender_name",
+                                   "identity", "platform", "sender_id", "display_label",
+                                   "context_group_id", "context_group_name", "context_sender_name",
+                                   "context_session_id"):
+                        if column not in existing_columns:
                             await connection.execute(
-                                f"UPDATE user_profiles SET suppressed=1 WHERE source_memory_id IN ({placeholders})", ids)
-                await self._create_ledger(connection)
-                await connection.commit()
+                                f"ALTER TABLE user_profiles ADD COLUMN {column} TEXT"
+                            )
+                    for column, definition in (("suppressed", "INTEGER NOT NULL DEFAULT 0"),
+                                               ("context_updated_at", "REAL"),
+                                               ("context_group_updated_at", "REAL")):
+                        if column not in existing_columns:
+                            await connection.execute(
+                                f"ALTER TABLE user_profiles ADD COLUMN {column} {definition}"
+                            )
+                    if "context_group_updated_at" not in existing_columns:
+                        await connection.execute(
+                            "UPDATE user_profiles SET context_group_updated_at=COALESCE(context_updated_at,updated_at) "
+                            "WHERE source_group_id IS NOT NULL OR source_group_name IS NOT NULL"
+                        )
+                    await self._backfill_directory(connection)
+                    await connection.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_user_profiles_scope
+                        ON user_profiles(profile_scope, expires_at, updated_at DESC)
+                    """)
+                    await connection.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_user_profiles_source
+                        ON user_profiles(source_memory_id)
+                    """)
+                    memory_connection = getattr(getattr(self, "memory_engine", None), "db_connection", None)
+                    if memory_connection is not None:
+                        async with memory_connection.execute(
+                            "SELECT id FROM documents WHERE CASE WHEN json_valid(metadata) "
+                            "THEN COALESCE(json_extract(metadata,'$.status'),'active') "
+                            "ELSE 'invalid' END <> 'active'"
+                        ) as cursor:
+                            while batch := await cursor.fetchmany(500):
+                                ids = [row[0] for row in batch]
+                                placeholders = ",".join("?" for _ in ids)
+                                await connection.execute(
+                                    f"UPDATE user_profiles SET suppressed=1 WHERE source_memory_id IN ({placeholders})", ids)
+                    await self._create_ledger(connection)
+                    await connection.commit()
+                except BaseException:
+                    await connection.rollback()
+                    raise
             self._schema_ready = True
             return True
 
@@ -477,7 +482,7 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
                 )
                 count = cursor.rowcount
                 await self._delete_ledger_keys(connection, scope, key)
-                await connection.commit()
+                await self._commit_profile_invalidation(scope=scope, key=key)
             except BaseException:
                 await connection.rollback()
                 raise
@@ -522,6 +527,7 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
         facts: list[dict[str, Any]],
         *,
         source_memory_id: int | None = None,
+        _extraction: dict[str, Any] | None = None,
     ) -> int:
         scope = self.scope_for_event(event)
         if not scope or not await self._ensure_schema():
@@ -543,6 +549,12 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
         sender_id = str(sender_getter() if callable(sender_getter) else "")
         async with self.store._write_lock:
             try:
+                if _extraction is not None:
+                    if _extraction["cancelled"] or _extraction["scope"] != scope or not self.enabled:
+                        return 0
+                    normalized = [fact for fact in normalized if fact["key"] not in _extraction["deleted_keys"]]
+                    if not normalized:
+                        return 0
                 for fact in normalized:
                     expires = now + ttl_days * 86400 if fact["volatile"] else None
                     snapshot = {
@@ -593,7 +605,7 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
                     )
                 count = cursor.rowcount
                 await self._delete_ledger_keys(connection, scope, key.strip().casefold() if key else None)
-                await connection.commit()
+                await self._commit_profile_invalidation(scope=scope, key=key.strip().casefold() if key else None)
             except BaseException:
                 await connection.rollback()
                 raise
@@ -623,7 +635,7 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
         async with self.store._write_lock:
             try:
                 count = await self._change_ledger_sources(connection, ids, delete=True)
-                await connection.commit()
+                await self._commit_profile_invalidation(source_ids=set(ids))
             except BaseException:
                 await connection.rollback()
                 raise
@@ -696,13 +708,75 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
         lines.append(footer)
         return "\n".join(lines)
 
+    def _profile_extractions(self) -> dict[object, dict[str, Any]]:
+        """Share bounded in-flight tickets across managers using this store."""
+        tickets = getattr(self.store, "_profile_extraction_tickets", None)
+        if not isinstance(tickets, dict):
+            tickets = {}
+            self.store._profile_extraction_tickets = tickets
+        return tickets
+
+    def _invalidate_profile_extractions(
+        self, *, scope: str | None = None, key: str | None = None,
+        source_ids: set[int] | None = None,
+    ) -> None:
+        """Called under the store write lock after a successful deletion."""
+        for extraction in self._profile_extractions().values():
+            if source_ids is not None:
+                if extraction["source_memory_id"] in source_ids:
+                    extraction["cancelled"] = True
+            elif extraction["scope"] == scope:
+                if key is None:
+                    extraction["cancelled"] = True
+                else:
+                    extraction["deleted_keys"].add(key)
+
+    async def _commit_profile_invalidation(
+        self, *, scope: str | None = None, key: str | None = None,
+        source_ids: set[int] | None = None,
+    ) -> None:
+        """Hold the writer lock until commit's actual result is known."""
+        commit = asyncio.create_task(self.store.connection.commit())
+        try:
+            await asyncio.shield(commit)
+        except asyncio.CancelledError:
+            await settle_memory_mutation_task(commit)
+            self._invalidate_profile_extractions(scope=scope, key=key, source_ids=source_ids)
+            raise
+        self._invalidate_profile_extractions(scope=scope, key=key, source_ids=source_ids)
+
     async def update_from_messages(
+        self, event: Any, messages: list[Any], memory_processor: Any, *, source_memory_id: int,
+    ) -> int:
+        """An explicit deletion fences only extractions already in flight."""
+        if not self.enabled:
+            return 0
+        scope = self.scope_for_event(event)
+        if not scope:
+            return 0
+        ticket = object()
+        extraction = {"scope": scope, "source_memory_id": source_memory_id,
+                      "deleted_keys": set(), "cancelled": False}
+        async with self.store._write_lock:
+            self._profile_extractions()[ticket] = extraction
+        try:
+            return await self._extract_from_messages(
+                event, messages, memory_processor, source_memory_id=source_memory_id,
+                _extraction=extraction,
+            )
+        finally:
+            # No await: repeated cancellation cannot orphan this ticket. Ticket
+            # mutation is synchronous on the same event loop as deletion checks.
+            self._profile_extractions().pop(ticket, None)
+
+    async def _extract_from_messages(
         self,
         event: Any,
         messages: list[Any],
         memory_processor: Any,
         *,
         source_memory_id: int,
+        _extraction: dict[str, Any],
     ) -> int:
         """Extract only the current sender's explicit facts after memory is saved."""
         if not self.enabled:
@@ -785,5 +859,5 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
             ):
                 supported.append(fact)
         return await self.upsert_facts(
-            event, supported, source_memory_id=source_memory_id
+            event, supported, source_memory_id=source_memory_id, _extraction=_extraction,
         )
