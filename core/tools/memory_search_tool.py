@@ -16,7 +16,8 @@ from ..memory_scope import is_event_memory_allowed, resolve_memory_scope
 from ..retrieval.temporal_query import resolve_context_timezone
 from ..retrieval.temporal_retrieval import retrieval_time_bounds, search_with_time
 from ..utils import get_persona_id
-from .agentic_recall import agentic_search, evidence_allowed
+from .agentic_recall import agentic_search, evidence_allowed, scoped_source
+from .tool_access import ensure_tool_access
 
 
 def _json_result(data: dict[str, Any]) -> str:
@@ -116,6 +117,7 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
 
         try:
             event = context.context.event
+            await ensure_tool_access(self, event, "enable_recall_tool", default=True)
             if self.config_manager.get("agent_tools.agentic_recall_enabled", False):
                 return await agentic_search(self, event, cleaned_query, k, include_source,
                                             speaker=speaker, start_time=start_time, end_time=end_time,
@@ -189,7 +191,9 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
                         self.memory_engine, "get_memory_source", None
                     )
                     if callable(get_source):
-                        item["source_messages"] = await get_source(memory.doc_id)
+                        source = await scoped_source(self, event, memory.doc_id, recall_session_id, recall_persona_id)
+                        if source is not None:
+                            item["source_messages"] = source
                 serialized_results.append(item)
 
             return _json_result(

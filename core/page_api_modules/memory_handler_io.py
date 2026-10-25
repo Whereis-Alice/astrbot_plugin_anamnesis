@@ -6,6 +6,7 @@ MemoryHandler 的 MemoryHandlerIoMixin 拆分模块
 import asyncio
 import math
 import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any
 
@@ -141,6 +142,26 @@ class MemoryHandlerIoMixin:
                 }
             )
 
+    async def _prepare_import_entry(self, memory_processor, entry):
+        """Resolve an imported conversation to a stable draft before writing."""
+        if not entry.requires_summary:
+            return entry
+        if memory_processor is None:
+            raise RuntimeError("记忆处理器未初始化，无法总结仅含原始对话的导入项")
+        messages = restore_source_messages(entry.source_messages)
+        content, generated_metadata, importance = await memory_processor.process_conversation(
+            messages=messages, is_group_chat=bool(messages[0].group_id), persona_id=entry.persona_id,
+        )
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("导入总结必须是非空文本")
+        if generated_metadata is not None and not isinstance(generated_metadata, dict):
+            raise ValueError("导入总结的元数据必须是对象")
+        metadata = {**entry.metadata, **(generated_metadata or {})}
+        metadata.update(session_id=entry.session_id, persona_id=entry.persona_id,
+                        status=entry.metadata.get("status", "active"))
+        return replace(entry, content=content.strip(), metadata=isolate_import_provenance(metadata),
+                       importance=self._normalize_importance_update(importance, "stored"))
+
     async def _import_entries(
         self, memory_engine, memory_processor, entries, parse_errors, duplicate_strategy,
         existing_keys=None,
@@ -156,29 +177,11 @@ class MemoryHandlerIoMixin:
         active_keys = existing_keys if shared_keys else set(existing_keys)
         for entry in entries:
             try:
+                entry = await self._prepare_import_entry(memory_processor, entry)
                 content_text = entry.content
                 metadata = dict(entry.metadata)
                 original_status = metadata.get("status", "active")
                 importance = entry.importance
-                if entry.requires_summary:
-                    if memory_processor is None:
-                        raise RuntimeError(
-                            "记忆处理器未初始化，无法总结仅含原始对话的导入项"
-                        )
-                    messages = restore_source_messages(entry.source_messages)
-                    (
-                        generated_content,
-                        generated_metadata,
-                        generated_importance,
-                    ) = await memory_processor.process_conversation(
-                        messages=messages,
-                        is_group_chat=bool(messages[0].group_id),
-                        persona_id=entry.persona_id,
-                    )
-                    content_text = generated_content
-                    metadata.update(generated_metadata or {})
-                    importance = generated_importance
-
                 key = memory_import_key(
                     content_text, entry.session_id, entry.persona_id
                 )

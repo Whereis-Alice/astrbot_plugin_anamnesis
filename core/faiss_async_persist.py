@@ -44,6 +44,17 @@ _MUTATION_METHODS = ("insert", "insert_batch", "delete")
 DEFAULT_DEBOUNCE_SECONDS = 3.0
 
 
+async def _await_finished(future):
+    """A cancelled waiter cannot stop a running native write or cleanup."""
+    while not future.done():
+        try:
+            await asyncio.shield(future)
+        except asyncio.CancelledError:
+            if future.cancelled():
+                raise
+    return future.result()
+
+
 def _write_index_atomic(index: Any, path: str) -> None:
     """把索引原子写入 path（在 executor 线程中执行）。
 
@@ -71,6 +82,7 @@ class AsyncIndexPersister:
         self._dirty = False
         self._seq = 0
         self._closed = False
+        self._close_task: asyncio.Task | None = None
 
     def wrap_mutation_methods(self) -> None:
         """给 insert/insert_batch/delete 套上变更锁（实例级）。"""
@@ -132,7 +144,14 @@ class AsyncIndexPersister:
             fut = loop.run_in_executor(self._executor, _write_index_atomic, index, path)
             self._pending_write = fut
             try:
-                await fut
+                try:
+                    await asyncio.shield(fut)
+                except asyncio.CancelledError:
+                    # FAISS keeps reading this object in the native thread.
+                    # Retain the mutation lock until that thread finishes.
+                    await _await_finished(fut)
+                    self._dirty = False
+                    raise
             finally:
                 if self._pending_write is fut:
                     self._pending_write = None
@@ -158,9 +177,16 @@ class AsyncIndexPersister:
 
     async def aclose(self) -> None:
         """落盘剩余变更并关闭写盘线程（插件卸载前调用，幂等）。"""
-        if self._closed:
-            return
-        self._closed = True
+        if self._close_task is None:
+            self._closed = True
+            self._close_task = asyncio.create_task(self._close_resources())
+        try:
+            await asyncio.shield(self._close_task)
+        except asyncio.CancelledError:
+            await _await_finished(self._close_task)
+            raise
+
+    async def _close_resources(self) -> None:
         self._seq += 1
         # 取消仍在等待防抖窗口的落盘任务，并等它们解开（可能持有变更锁）
         pending_tasks = list(self._debounce_tasks)

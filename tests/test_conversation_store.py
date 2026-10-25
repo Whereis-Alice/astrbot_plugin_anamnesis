@@ -3,11 +3,74 @@ Tests for ConversationStore persistence behaviors.
 """
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
 from astrbot_plugin_anamnesis.core.models.conversation_models import Message
 from astrbot_plugin_anamnesis.storage.conversation_store import ConversationStore
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing_session", [False, True])
+async def test_failed_add_message_rolls_back_before_next_write(tmp_path, existing_session):
+    store = ConversationStore(str(tmp_path / "failed-add.db"))
+    await store.initialize()
+    try:
+        if existing_session:
+            await store.add_message(
+                Message(
+                    id=0,
+                    session_id="failed",
+                    role="user",
+                    content="retained",
+                    sender_id="original",
+                )
+            )
+        await store.connection.execute(
+            """
+            CREATE TRIGGER reject_message_count BEFORE UPDATE OF message_count ON sessions
+            WHEN NEW.session_id = 'failed'
+            BEGIN SELECT RAISE(ABORT, 'count update failed'); END
+            """
+        )
+        await store.connection.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="count update failed"):
+            await store.add_message(
+                Message(
+                    id=0,
+                    session_id="failed",
+                    role="user",
+                    content="must roll back",
+                    sender_id="failed-sender",
+                )
+            )
+        left_in_transaction = store.connection.in_transaction
+
+        # A later successful write must not commit any part of the failed append.
+        await store.add_message(
+            Message(
+                id=0,
+                session_id="success",
+                role="user",
+                content="next write",
+                sender_id="next-sender",
+            )
+        )
+        messages = await store.get_messages("failed")
+        assert [message.content for message in messages] == (
+            ["retained"] if existing_session else []
+        )
+        session = await store.get_session("failed")
+        if existing_session:
+            assert session.message_count == 1
+            assert session.participants == ["original"]
+        else:
+            assert session is None
+        assert not left_in_transaction
+    finally:
+        await store.close()
 
 
 @pytest.mark.asyncio

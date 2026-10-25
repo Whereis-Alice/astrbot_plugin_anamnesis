@@ -58,6 +58,7 @@ async def test_memory_memorize_tool_writes_current_session_and_persona(
     memory_engine, memory_processor
 ):
     tool = MemoryMemorizeTool(
+        config_manager=ConfigManager({"agent_tools": {"enable_memorize_tool": True}}),
         context=Mock(),
         memory_engine=memory_engine,
         memory_processor=memory_processor,
@@ -93,7 +94,10 @@ async def test_memory_memorize_tool_writes_resolved_user_scope(
     tool = MemoryMemorizeTool(
         context=Mock(),
         config_manager=ConfigManager(
-            {"filtering_settings": {"memory_scope_mode": "user"}}
+            {
+                "agent_tools": {"enable_memorize_tool": True},
+                "filtering_settings": {"memory_scope_mode": "user"},
+            }
         ),
         memory_engine=memory_engine,
         memory_processor=memory_processor,
@@ -122,6 +126,7 @@ async def test_memory_memorize_tool_uses_memory_processor_format(
     memory_engine, memory_processor
 ):
     tool = MemoryMemorizeTool(
+        config_manager=ConfigManager({"agent_tools": {"enable_memorize_tool": True}}),
         context=Mock(),
         memory_engine=memory_engine,
         memory_processor=memory_processor,
@@ -168,6 +173,7 @@ async def test_memory_memorize_tool_uses_memory_processor_format(
 @pytest.mark.asyncio
 async def test_memory_memorize_tool_detects_group_chat(memory_engine, memory_processor):
     tool = MemoryMemorizeTool(
+        config_manager=ConfigManager({"agent_tools": {"enable_memorize_tool": True}}),
         context=Mock(),
         memory_engine=memory_engine,
         memory_processor=memory_processor,
@@ -193,6 +199,7 @@ async def test_memory_memorize_tool_normalizes_invalid_sentiment(
     memory_engine, memory_processor
 ):
     tool = MemoryMemorizeTool(
+        config_manager=ConfigManager({"agent_tools": {"enable_memorize_tool": True}}),
         context=Mock(),
         memory_engine=memory_engine,
         memory_processor=memory_processor,
@@ -220,6 +227,7 @@ async def test_memory_memorize_tool_handles_non_string_sentiment(
     memory_engine, memory_processor
 ):
     tool = MemoryMemorizeTool(
+        config_manager=ConfigManager({"agent_tools": {"enable_memorize_tool": True}}),
         context=Mock(),
         memory_engine=memory_engine,
         memory_processor=memory_processor,
@@ -247,6 +255,7 @@ async def test_memory_memorize_tool_returns_error_for_empty_memory(
     memory_engine, memory_processor
 ):
     tool = MemoryMemorizeTool(
+        config_manager=ConfigManager({"agent_tools": {"enable_memorize_tool": True}}),
         context=Mock(),
         memory_engine=memory_engine,
         memory_processor=memory_processor,
@@ -263,6 +272,7 @@ async def test_memory_memorize_tool_returns_error_for_empty_memory(
 @pytest.mark.asyncio
 async def test_memory_memorize_tool_returns_not_initialized_error(memory_engine):
     tool = MemoryMemorizeTool(
+        config_manager=ConfigManager({"agent_tools": {"enable_memorize_tool": True}}),
         context=None,
         memory_engine=memory_engine,
         memory_processor=None,
@@ -283,6 +293,7 @@ async def test_memory_memorize_tool_hides_internal_exception_details(
     memory_engine, memory_processor
 ):
     tool = MemoryMemorizeTool(
+        config_manager=ConfigManager({"agent_tools": {"enable_memorize_tool": True}}),
         context=Mock(),
         memory_engine=memory_engine,
         memory_processor=memory_processor,
@@ -306,6 +317,7 @@ async def test_memory_memorize_tool_propagates_cancellation(
     memory_engine, memory_processor
 ):
     tool = MemoryMemorizeTool(
+        config_manager=ConfigManager({"agent_tools": {"enable_memorize_tool": True}}),
         context=Mock(),
         memory_engine=memory_engine,
         memory_processor=memory_processor,

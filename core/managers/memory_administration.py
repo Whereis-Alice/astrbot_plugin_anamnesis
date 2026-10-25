@@ -242,13 +242,15 @@ class MemoryAdministration(AdministrationJobsMixin):
         await self.store.update(operation_id, status="partial" if conflicts else ("purged" if purge else "restored"), result=result)
         return result
 
-    async def preview_correction(self, memory_id, instruction, *, actor="webui", new_content=None):
+    async def preview_correction(self, memory_id, instruction, *, actor="webui", new_content=None, expected_memory=None):
         self.require("correction")
         memory_id = self.ids([memory_id])[0]
         if not isinstance(instruction, str) or not 1 <= len(instruction.strip()) <= 2000:
             raise ValueError("纠正说明必须为 1–2000 字")
         async with memory_mutation_guard(self.engine):
             original = await self.snapshot(memory_id)
+            if expected_memory is not None and fingerprint(original) != fingerprint(expected_memory):
+                raise ValueError("memory_changed_before_preview")
             original_atoms = await self.engine.snapshot_archived_atom_lifecycle(memory_id)
         if not original or original["metadata"].get("status", "active") != "active":
             raise ValueError("只能预览当前有效记忆的修改")

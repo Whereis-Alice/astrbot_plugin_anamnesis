@@ -1,5 +1,6 @@
 """Read retained source evidence within the same scoped agentic budget."""
 
+import json
 from dataclasses import field
 from typing import Any
 
@@ -7,6 +8,7 @@ from astrbot.core.agent.tool import FunctionTool
 from pydantic.dataclasses import dataclass
 
 from .agentic_recall import agentic_evidence
+from .tool_access import ensure_tool_access
 
 
 @dataclass
@@ -23,4 +25,10 @@ class MemoryEvidenceTool(FunctionTool):
             "limit": {"type": "integer", "default": 20}}, "required": ["memory_id"]})
 
     async def call(self, context, memory_id: int, offset: int = 0, limit: int = 20):
-        return await agentic_evidence(self, context.context.event, memory_id, offset, limit)
+        event = context.context.event
+        try:
+            await ensure_tool_access(self, event, "enable_recall_tool", default=True)
+            await ensure_tool_access(self, event, "agentic_recall_enabled")
+        except ValueError as error:
+            return json.dumps({"error": str(error)})
+        return await agentic_evidence(self, event, memory_id, offset, limit)

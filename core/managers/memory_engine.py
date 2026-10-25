@@ -132,6 +132,9 @@ class MemoryEngine(MemoryEngineOperationsMixin, MemoryEngineEvidenceMixin, Memor
 
         # 后台任务跟踪
         self._pending_tasks: set[asyncio.Task] = set()
+        self._active_write_tasks: dict[asyncio.Task, asyncio.Future] = {}
+        self._writes_closing = False
+        self._quiesce_task: asyncio.Task | None = None
 
         # Access timestamps are best-effort writes launched by recall tasks.
         # Serialising them avoids a burst of tiny transactions competing with
@@ -358,22 +361,48 @@ class MemoryEngine(MemoryEngineOperationsMixin, MemoryEngineEvidenceMixin, Memor
         except Exception:
             logger.warning("[MemoryEngine] 昵称别名回填失败（非致命）", exc_info=True)
 
-    async def close(self):
-        """关闭数据库连接和清理资源"""
+    def _assert_writes_open(self):
+        current = asyncio.current_task()
+        if self._writes_closing and not (
+            current in self._pending_tasks
+            or current in self._active_write_tasks
+            or current is getattr(self, "_memory_mutation_owner", None)
+            or current in getattr(self, "_memory_mutation_children", ())
+        ):
+            raise RuntimeError("记忆引擎正在关闭，拒绝新写入")
+
+    async def quiesce_background_writes(self):
+        """Settle writers and compensation before the final index flush."""
+        from .memory_mutation import settle_memory_mutation_task
+
+        if self._quiesce_task is None:
+            self._writes_closing = True
+            self._quiesce_task = asyncio.create_task(self._quiesce_background_writes())
+        try:
+            await asyncio.shield(self._quiesce_task)
+        except asyncio.CancelledError:
+            await settle_memory_mutation_task(self._quiesce_task)
+            raise
+
+    async def _quiesce_background_writes(self):
         administration = getattr(self, "memory_administration", None)
         if administration is not None:
             await administration.close()
         if self.atom_lifecycle_manager is not None:
             await self.atom_lifecycle_manager.stop()
-        if self._access_flush_task is not None:
-            await asyncio.gather(self._access_flush_task, return_exceptions=True)
+        for task in list(self._pending_tasks):
+            if not task.done():
+                task.cancel()
+        while self._pending_tasks or self._active_write_tasks:
+            tasks = tuple(self._pending_tasks)
+            writes = tuple(self._active_write_tasks.values())
+            await asyncio.gather(*tasks, *writes, return_exceptions=True)
+            self._pending_tasks.difference_update(tasks)
+
+    async def close(self):
+        """关闭数据库连接和清理资源"""
+        await self.quiesce_background_writes()
         await self._flush_access_updates()
-        if self._pending_tasks:
-            for task in self._pending_tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*self._pending_tasks, return_exceptions=True)
-            self._pending_tasks.clear()
         if self.graph_store is not None:
             await self.graph_store.close()
         if self._access_update_connection:
@@ -392,12 +421,19 @@ class MemoryEngine(MemoryEngineOperationsMixin, MemoryEngineEvidenceMixin, Memor
 
     def _create_tracked_task(self, coro) -> asyncio.Task:
         """Create and track a background task, auto-discarding on completion."""
+        try:
+            self._assert_writes_open()
+        except RuntimeError:
+            coro.close()
+            raise
         task = asyncio.create_task(coro)
         self._pending_tasks.add(task)
         task.add_done_callback(self._on_background_task_done)
         return task
 
     def _queue_access_updates(self, doc_ids: list[int]) -> None:
+        if self._writes_closing:
+            return
         self._access_pending_counts.update(set(doc_ids))
         if self._access_flush_task is None or self._access_flush_task.done():
             self._access_flush_task = self._create_tracked_task(self._delayed_access_flush())

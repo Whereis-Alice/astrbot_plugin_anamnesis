@@ -6,7 +6,41 @@ from functools import wraps
 
 
 @asynccontextmanager
+async def memory_write_guard(engine):
+    """Track the write's lifetime without owning its caller's entire task."""
+    assert_open = getattr(engine, "_assert_writes_open", None)
+    if callable(assert_open):
+        assert_open()
+    if not isinstance(getattr(engine, "_active_write_tasks", None), dict):
+        engine._active_write_tasks = {}
+    current = asyncio.current_task()
+    owned = current not in engine._active_write_tasks
+    if owned:
+        finished = asyncio.get_running_loop().create_future()
+        engine._active_write_tasks[current] = finished
+    try:
+        yield
+    finally:
+        if owned:
+            engine._active_write_tasks.pop(current, None)
+            if not finished.done():
+                finished.set_result(None)
+
+
+def track_memory_write(function):
+    @wraps(function)
+    async def tracked(engine, *args, **kwargs):
+        async with memory_write_guard(engine):
+            return await function(engine, *args, **kwargs)
+
+    return tracked
+
+
+@asynccontextmanager
 async def memory_mutation_guard(engine):
+    assert_open = getattr(engine, "_assert_writes_open", None)
+    if callable(assert_open):
+        assert_open()
     if not hasattr(engine, "_memory_mutation_lock"):
         engine._memory_mutation_lock = asyncio.Lock()
         engine._memory_mutation_owner = None
@@ -18,7 +52,8 @@ async def memory_mutation_guard(engine):
     ):
         yield
         return
-    async with engine._memory_mutation_lock:
+    # Recheck after acquiring the lock: admission may predate shutdown.
+    async with engine._memory_mutation_lock, memory_write_guard(engine):
         engine._memory_mutation_owner = current
         try:
             yield

@@ -4,6 +4,7 @@ FAISS 索引异步落盘（core/faiss_async_persist.py）测试。
 
 import asyncio
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -248,3 +249,73 @@ async def test_write_failure_keeps_dirty_for_retry(tmp_path, monkeypatch):
     loaded = faiss.read_index(storage.path)
     assert loaded.ntotal == 10
     await persister.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_flush_keeps_mutation_lock_until_native_write_finishes(tmp_path, monkeypatch):
+    storage = _make_storage(tmp_path)
+    _add_vectors(storage, 0, 10)
+    persister = install_async_persist(storage, debounce_seconds=0)
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    original = faiss_async_persist._write_index_atomic
+
+    def blocked_write(index, path):
+        loop.call_soon_threadsafe(started.set)
+        if not release.wait(5):
+            raise TimeoutError("test writer not released")
+        original(index, path)
+
+    monkeypatch.setattr(faiss_async_persist, "_write_index_atomic", blocked_write)
+    mutation = None
+    try:
+        await storage.save_index()
+        await asyncio.wait_for(started.wait(), 2)
+        flushing = next(iter(persister._debounce_tasks))
+        flushing.cancel()
+        mutation = asyncio.create_task(storage.insert_batch(np.zeros((1, storage.dimension), dtype=np.float32), [99]))
+        await asyncio.sleep(0.02)
+        assert not mutation.done(), "native FAISS write is still using the same index"
+    finally:
+        release.set()
+        if mutation is not None:
+            await asyncio.gather(mutation, return_exceptions=True)
+        await persister.aclose()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_close_can_be_awaited_again_until_executor_is_closed(tmp_path, monkeypatch):
+    storage = _make_storage(tmp_path)
+    _add_vectors(storage, 0, 10)
+    persister = install_async_persist(storage, debounce_seconds=600)
+    started, release = asyncio.Event(), threading.Event()
+    loop = asyncio.get_running_loop()
+    original = faiss_async_persist._write_index_atomic
+
+    def blocked_write(index, path):
+        loop.call_soon_threadsafe(started.set)
+        if not release.wait(5):
+            raise TimeoutError("test writer not released")
+        original(index, path)
+
+    monkeypatch.setattr(faiss_async_persist, "_write_index_atomic", blocked_write)
+    closing = None
+    try:
+        await storage.save_index()
+        closing = asyncio.create_task(persister.aclose())
+        await asyncio.wait_for(started.wait(), 2)
+        closing.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(closing, return_exceptions=True)
+        await persister.aclose()
+        assert persister._executor._shutdown
+        assert faiss.read_index(storage.path).ntotal == 10
+    finally:
+        release.set()
+        if closing is not None:
+            await asyncio.gather(closing, return_exceptions=True)
+        await persister.aclose()
+        # Keep the failing baseline regression from leaking its native worker.
+        if not persister._executor._shutdown:
+            await asyncio.to_thread(persister._executor.shutdown, True)

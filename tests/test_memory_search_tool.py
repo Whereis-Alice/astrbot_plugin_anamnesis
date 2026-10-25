@@ -13,6 +13,9 @@ from astrbot_plugin_anamnesis.core.tools.memory_search_tool import MemorySearchT
 @pytest.fixture
 def memory_engine():
     engine = Mock()
+    engine._memory_mutation_lock = asyncio.Lock()
+    engine._memory_mutation_owner = None
+    engine._memory_mutation_children = set()
     engine.search_memories = AsyncMock(return_value=[])
     return engine
 
@@ -220,6 +223,10 @@ async def test_memory_search_tool_includes_retained_source_on_request(
     memory_engine.get_memory_source = AsyncMock(
         return_value=[{"role": "user", "content": "exact detail"}]
     )
+    memory_engine.get_memory = AsyncMock(return_value={"text": "summary", "metadata": {
+        "has_source": True, "session_id": "test:private:session-1",
+        "source_session_id": "test:private:session-1", "persona_id": "persona_a",
+    }})
     tool = MemorySearchTool(
         context=astr_context,
         config_manager=ConfigManager(),

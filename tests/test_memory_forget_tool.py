@@ -45,11 +45,14 @@ def _tool(
         }
     )
     engine.delete_memory = AsyncMock(return_value=True)
+    engine._memory_mutation_lock = asyncio.Lock()
+    engine._memory_mutation_owner = None
+    engine._memory_mutation_children = set()
+    tool_config = {"filtering_settings": {"use_persona_filtering": False}, **(config or {})}
+    tool_config["agent_tools"] = {"enable_forget_tool": True, **tool_config.get("agent_tools", {})}
     tool = MemoryForgetTool(
         context=Mock(),
-        config_manager=ConfigManager(
-            config or {"filtering_settings": {"use_persona_filtering": False}}
-        ),
+        config_manager=ConfigManager(tool_config),
         memory_engine=engine,
         user_profile_manager=profile_manager,
     )
@@ -67,7 +70,8 @@ async def test_forget_tool_deletes_memory_in_current_scope_and_cleans_profile():
     )
 
     assert result == {"deleted": True, "id": 7}
-    engine.get_memory.assert_awaited_once_with(7)
+    assert engine.get_memory.await_count == 2
+    assert all(call.args == (7,) for call in engine.get_memory.await_args_list)
     engine.delete_memory.assert_awaited_once_with(7)
     profile_manager.delete_by_source_memory.assert_awaited_once_with(7)
 
@@ -307,12 +311,21 @@ async def test_forget_cooldown_is_atomic_across_distinct_events(operation_name, 
     first_state.update(calls=2, seconds=.5)
     with patch("astrbot_plugin_anamnesis.core.tools.memory_forget_tool.time", SimpleNamespace(monotonic=lambda: 100)):
         first = asyncio.create_task(tool.call(first_context, 7, "删除", action))
-        await entered.wait()
-        second = asyncio.create_task(tool.call(second_context, 8, "删除", action))
-        await second_loaded.wait()
-        await asyncio.sleep(0)
-        release.set()
-        results = [json.loads(value) for value in await asyncio.gather(first, second)]
+        pending = [first]
+        try:
+            await asyncio.wait_for(entered.wait(), 2)
+            second = asyncio.create_task(tool.call(second_context, 8, "删除", action))
+            pending.append(second)
+            await asyncio.wait_for(second_loaded.wait(), 2)
+            await asyncio.sleep(0)
+            release.set()
+            results = [json.loads(value) for value in await asyncio.wait_for(asyncio.gather(*pending), 2)]
+        finally:
+            release.set()
+            for task in pending:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*pending, return_exceptions=True)
     operation.assert_awaited_once()
     assert results[1] == {"deleted": False, "error": "forget_cooldown"}
     assert first_state["forget_count"] == 1

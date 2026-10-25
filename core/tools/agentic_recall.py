@@ -9,9 +9,9 @@ import json
 import time
 from datetime import datetime, timezone
 
+from ..managers.memory_mutation import memory_mutation_guard
 from ..memory_scope import (
     GLOBAL_MEMORY_SCOPE,
-    is_event_memory_allowed,
     resolve_memory_scope,
 )
 from ..retrieval.temporal_query import (
@@ -26,6 +26,7 @@ from ..retrieval.temporal_retrieval import (
     temporal_atom_evidence,
 )
 from ..utils import get_persona_id
+from .tool_access import ensure_tool_access
 
 
 def request_state(event):
@@ -42,10 +43,21 @@ def request_state(event):
 
 
 async def scoped_filters(tool, event):
-    if not is_event_memory_allowed(tool.config_manager, event):
-        raise ValueError("memory access is not allowed")
+    await ensure_tool_access(tool, event, "enable_recall_tool", default=True)
     persona = await get_persona_id(tool.context, event) if tool.config_manager.filtering_settings.get("use_persona_filtering", True) else None
     return resolve_memory_scope(tool.config_manager, event), persona
+
+
+async def scoped_source(tool, event, memory_id, scope, persona):
+    """Recheck source ownership inside the same guard as its actual read."""
+    async with memory_mutation_guard(tool.memory_engine):
+        current = await tool.memory_engine.get_memory(memory_id)
+        metadata = current.get("metadata") if isinstance(current, dict) else None
+        if not isinstance(metadata, dict) or metadata.get("status", "active") != "active":
+            return None
+        if not evidence_allowed(metadata, scope, persona, event, tool.config_manager):
+            return None
+        return await tool.memory_engine.get_memory_source(memory_id)
 
 
 def evidence_allowed(metadata, scope, persona, event, config):
@@ -186,43 +198,44 @@ async def agentic_search(tool, event, query, k, include_source=False, *, speaker
         results = []
         positions = {}
         for position, memory in enumerate(matches[offset:offset + size], start=offset):
-            # Recheck stored state even for cursor snapshots after deletion/expiry.
-            stored = await tool.memory_engine.get_memory(memory.doc_id)
-            metadata = stored.get("metadata") if stored else None
-            if not isinstance(metadata, dict) or metadata.get("status", "active") != "active":
-                continue
-            if scope is not None and metadata.get("session_id") != scope:
-                continue
-            if tool.config_manager.filtering_settings.get("use_persona_filtering", True) and metadata.get("persona_id") != persona:
-                continue
-            atom_evidence = None
-            if memory.metadata.get("temporal_time_basis") == "atom_event_time":
-                atom_evidence = await temporal_atom_evidence(tool.memory_engine, memory.doc_id, TimeRange(after, before), metadata)
-                if atom_evidence is None:
+            async with memory_mutation_guard(tool.memory_engine):
+                # Recheck stored state even for cursor snapshots after deletion/expiry.
+                stored = await tool.memory_engine.get_memory(memory.doc_id)
+                metadata = stored.get("metadata") if stored else None
+                if not isinstance(metadata, dict) or metadata.get("status", "active") != "active":
                     continue
-                metadata = {**metadata, **atom_evidence}
-            start, end, basis = retrieval_time_bounds(metadata)
-            if after is not None and (end is None or end < after):
-                continue
-            if before is not None and (start is None or start >= before):
-                continue
-            if not speaker_matches(metadata, speaker):
-                continue
-            live = (atom_evidence["content"].splitlines() if atom_evidence else
-                    await tool.memory_engine.resolve_live_facts(memory.doc_id, stored.get("text", ""), metadata))
-            if live is None:
-                continue
-            start, end, basis = retrieval_time_bounds(metadata)
-            item = {"id": memory.doc_id, "content": "\n".join(live), "score": memory.final_score,
-                    "create_time": metadata.get("create_time"), "event_time": metadata.get("event_time"),
-                    "time_basis": basis, "time_start": start, "time_end": end,
-                    "source_session_id": metadata.get("source_session_id"), "has_source": bool(metadata.get("has_source"))}
-            if isinstance(memory.score_breakdown, dict):
-                item["score_breakdown"] = memory.score_breakdown
-            if include_source and evidence_allowed(metadata, scope, persona, event, tool.config_manager):
-                item["source_messages"] = (await tool.memory_engine.get_memory_source(memory.doc_id))[:20]
-            results.append(item)
-            positions[str(memory.doc_id)] = position + 1
+                if scope is not None and metadata.get("session_id") != scope:
+                    continue
+                if tool.config_manager.filtering_settings.get("use_persona_filtering", True) and metadata.get("persona_id") != persona:
+                    continue
+                atom_evidence = None
+                if memory.metadata.get("temporal_time_basis") == "atom_event_time":
+                    atom_evidence = await temporal_atom_evidence(tool.memory_engine, memory.doc_id, TimeRange(after, before), metadata)
+                    if atom_evidence is None:
+                        continue
+                    metadata = {**metadata, **atom_evidence}
+                start, end, basis = retrieval_time_bounds(metadata)
+                if after is not None and (end is None or end < after):
+                    continue
+                if before is not None and (start is None or start >= before):
+                    continue
+                if not speaker_matches(metadata, speaker):
+                    continue
+                live = (atom_evidence["content"].splitlines() if atom_evidence else
+                        await tool.memory_engine.resolve_live_facts(memory.doc_id, stored.get("text", ""), metadata))
+                if live is None:
+                    continue
+                start, end, basis = retrieval_time_bounds(metadata)
+                item = {"id": memory.doc_id, "content": "\n".join(live), "score": memory.final_score,
+                        "create_time": metadata.get("create_time"), "event_time": metadata.get("event_time"),
+                        "time_basis": basis, "time_start": start, "time_end": end,
+                        "source_session_id": metadata.get("source_session_id"), "has_source": bool(metadata.get("has_source"))}
+                if isinstance(memory.score_breakdown, dict):
+                    item["score_breakdown"] = memory.score_breakdown
+                if include_source and evidence_allowed(metadata, scope, persona, event, tool.config_manager):
+                    item["source_messages"] = (await tool.memory_engine.get_memory_source(memory.doc_id))[:20]
+                results.append(item)
+                positions[str(memory.doc_id)] = position + 1
         next_offset = offset + size
         next_cursor = base64.urlsafe_b64encode(json.dumps([signature, next_offset]).encode()).decode() if next_offset < len(matches) else None
         return {"query": query, "count": len(results), "results": results, "next_cursor": next_cursor,
@@ -235,19 +248,20 @@ async def agentic_evidence(tool, event, memory_id, offset=0, limit=20):
     async def read(state):
         if isinstance(memory_id, bool) or not isinstance(memory_id, int) or memory_id <= 0:
             raise ValueError("invalid_memory_id")
-        scope, persona = await scoped_filters(tool, event)
-        memory = await tool.memory_engine.get_memory(int(memory_id))
-        metadata = memory.get("metadata") if memory else None
-        if not isinstance(metadata, dict) or not evidence_allowed(metadata, scope, persona, event, tool.config_manager):
-            raise ValueError("memory is not available in current scope")
-        facts = await tool.memory_engine.resolve_live_facts(int(memory_id), memory.get("text", ""), metadata)
-        if facts is None:
-            raise ValueError("memory no longer has live facts")
-        start, size = max(0, int(offset)), max(1, min(50, int(limit)))
-        source = await tool.memory_engine.get_memory_source(int(memory_id))
-        return {"id": int(memory_id), "content": "\n".join(facts),
-                "source_messages": source[start:start + size], "source_offset": start,
-                "next_offset": start + size if start + size < len(source) else None,
-                "atoms": await tool.memory_engine.get_memory_atom_lifecycle(int(memory_id)),
-                "source_note": "Historical original messages; use current live facts to assess superseded claims."}
+        async with memory_mutation_guard(tool.memory_engine):
+            scope, persona = await scoped_filters(tool, event)
+            memory = await tool.memory_engine.get_memory(int(memory_id))
+            metadata = memory.get("metadata") if memory else None
+            if not isinstance(metadata, dict) or not evidence_allowed(metadata, scope, persona, event, tool.config_manager):
+                raise ValueError("memory is not available in current scope")
+            facts = await tool.memory_engine.resolve_live_facts(int(memory_id), memory.get("text", ""), metadata)
+            if facts is None:
+                raise ValueError("memory no longer has live facts")
+            start, size = max(0, int(offset)), max(1, min(50, int(limit)))
+            source = await tool.memory_engine.get_memory_source(int(memory_id))
+            return {"id": int(memory_id), "content": "\n".join(facts),
+                    "source_messages": source[start:start + size], "source_offset": start,
+                    "next_offset": start + size if start + size < len(source) else None,
+                    "atoms": await tool.memory_engine.get_memory_atom_lifecycle(int(memory_id)),
+                    "source_note": "Historical original messages; use current live facts to assess superseded claims."}
     return await with_budget(tool, event, read)

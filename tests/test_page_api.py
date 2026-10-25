@@ -1501,6 +1501,43 @@ async def test_resummarize_memory_rebuilds_from_retained_source():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "source",
+    [[{"role": "user"}, {"role": "assistant"}], ["bad row", "bad row"]],
+)
+async def test_resummarize_memory_rejects_damaged_source_without_replacing(source):
+    engine = FakeMemoryEngine()
+    engine.get_memory_source = AsyncMock(return_value=source)
+    engine.replace_memory = AsyncMock()
+    plugin = FakePlugin(memory_engine=engine)
+    processor = SimpleNamespace(process_conversation=AsyncMock())
+    plugin.initializer.memory_processor = processor
+    api = PluginPageApi(plugin)
+    api.memory_handler._get_memory_record = AsyncMock(
+        return_value={
+            "id": 7,
+            "text": "retained summary",
+            "metadata": {"session_id": "s1"},
+        }
+    )
+
+    with _patch_page_request(_mock_page_request(get_json={"memory_id": 7})):
+        result = await api.resummarize_memory()
+
+    assert result["status"] == "error"
+    processor.process_conversation.assert_not_awaited()
+    engine.replace_memory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_resummarize_memory_rejects_non_object_payload():
+    api = PluginPageApi(FakePlugin())
+    with _patch_page_request(_mock_page_request(get_json=[7])):
+        result = await api.resummarize_memory()
+    assert result["status"] == "error"
+
+
+@pytest.mark.asyncio
 async def test_export_memories_returns_native_json_content():
     engine = FakeMemoryEngine()
     engine.get_memory_transfer_records = AsyncMock(

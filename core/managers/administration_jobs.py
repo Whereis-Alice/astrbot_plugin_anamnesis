@@ -322,6 +322,11 @@ class AdministrationJobsMixin:
                 if item["status"] == "completed":
                     continue
                 entry = ImportEntry(**item["payload"])
+                if entry.requires_summary:
+                    entry = await handler._prepare_import_entry(self.processor, entry)
+                    # Persist before any document write. A retry must use the
+                    # same summary even if progress commit fails or is cancelled.
+                    await self.store.put_item(job["id"], item["item_key"], asdict(entry), status="prepared")
                 response = await handler._import_entries(
                     self.engine,
                     self.processor,
@@ -334,7 +339,7 @@ class AdministrationJobsMixin:
                 await self.store.put_item(
                     job["id"],
                     item["item_key"],
-                    item["payload"],
+                    asdict(entry),
                     status="failed" if data["failed_count"] else "completed",
                     result=data,
                 )

@@ -13,17 +13,34 @@ from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 from pydantic.dataclasses import dataclass
 
+from ..managers.memory_mutation import memory_mutation_guard
 from ..memory_scope import (
     GLOBAL_MEMORY_SCOPE,
-    is_event_memory_allowed,
     resolve_memory_scope,
 )
 from ..utils import get_persona_id
 from .agentic_recall import request_state
+from .tool_access import ensure_tool_access
 
 
 def _json_result(data: dict[str, Any]) -> str:
     return json.dumps(data, ensure_ascii=False)
+
+
+async def _owned_metadata(tool, event, memory_id: int, scope, origin: str):
+    memory = await tool.memory_engine.get_memory(memory_id)
+    metadata = memory.get("metadata") if isinstance(memory, dict) else None
+    if not isinstance(metadata, dict):
+        return None
+    if scope is None:
+        matches = bool(origin and metadata.get("source_session_id") == origin)
+    elif scope == GLOBAL_MEMORY_SCOPE:
+        matches = bool(origin and metadata.get("session_id") == scope and metadata.get("source_session_id") == origin)
+    else:
+        matches = metadata.get("session_id") == scope
+    if tool.config_manager.filtering_settings.get("use_persona_filtering", True):
+        matches = matches and metadata.get("persona_id") == await get_persona_id(tool.context, event)
+    return metadata if matches else None
 
 
 @dataclass
@@ -93,66 +110,34 @@ class MemoryForgetTool(FunctionTool[AstrAgentContext]):
 
         try:
             event = context.context.event
-            if not is_event_memory_allowed(self.config_manager, event):
-                return _json_result(
-                    {"deleted": False, "error": "memory access is not allowed"}
-                )
-
-            memory = await self.memory_engine.get_memory(memory_id)
-            metadata = memory.get("metadata") if isinstance(memory, dict) else None
-            if not isinstance(metadata, dict):
-                return _json_result(
-                    {
-                        "deleted": False,
-                        "error": "memory is not available in current scope",
-                    }
-                )
-
+            await ensure_tool_access(self, event, "enable_forget_tool")
             scope = resolve_memory_scope(self.config_manager, event)
             origin = str(getattr(event, "unified_msg_origin", "") or "").strip()
-            stored_scope = metadata.get("session_id")
-            source_session = metadata.get("source_session_id")
-            if scope is None:
-                # Unfiltered legacy retrieval does not authorize cross-session deletion.
-                scope_matches = bool(origin and source_session == origin)
-            elif scope == GLOBAL_MEMORY_SCOPE:
-                # Global recall can see everyone else's memories. Require the
-                # original session as an additional ownership check.
-                scope_matches = bool(
-                    origin and stored_scope == scope and source_session == origin
-                )
-            else:
-                scope_matches = stored_scope == scope
-            if not scope_matches:
+            metadata = await _owned_metadata(self, event, memory_id, scope, origin)
+            if metadata is None:
                 return _json_result(
                     {
                         "deleted": False,
                         "error": "memory is not available in current scope",
                     }
                 )
-
-            use_persona_filtering = self.config_manager.filtering_settings.get(
-                "use_persona_filtering", True
-            )
-            if use_persona_filtering:
-                persona_id = await get_persona_id(self.context, event)
-                if metadata.get("persona_id") != persona_id:
-                    return _json_result(
-                        {
-                            "deleted": False,
-                            "error": "memory is not available in current scope",
-                        }
-                    )
 
             if action not in ("forget", "restore"):
                 return _json_result({"deleted": False, "error": "invalid_action"})
-            mode = self.config_manager.get("agent_tools.forget_mode", "delete")
             operation_id = None
             actor = "tool:"+origin+":"+str(event.get_sender_id())
             state = request_state(event)
             # The event lock protects the per-request quota; the tool lock
             # makes cooldown checking and accounting atomic across events.
-            async with state["lock"], self._forget_lock:
+            async with state["lock"], self._forget_lock, memory_mutation_guard(self.memory_engine):
+                # A waiting tool must not mutate a document whose owner or
+                # persona changed since its initial eligibility check.
+                await ensure_tool_access(self, event, "enable_forget_tool")
+                scope = resolve_memory_scope(self.config_manager, event)
+                metadata = await _owned_metadata(self, event, memory_id, scope, origin)
+                if metadata is None:
+                    return _json_result({"deleted": False, "error": "memory is not available in current scope"})
+                mode = self.config_manager.get("agent_tools.forget_mode", "delete")
                 if state.get("forget_count", 0) >= int(self.config_manager.get("agent_tools.forget_max_per_request", 3)):
                     return _json_result({"deleted": False, "error": "forget_limit_reached"})
                 key = scope or origin
@@ -163,7 +148,9 @@ class MemoryForgetTool(FunctionTool[AstrAgentContext]):
                     if metadata.get("status") != "archived" and not metadata.get("restored_at"):
                         return _json_result({"restored": False, "error": "memory_is_not_archived"})
                     if metadata.get("recovery_operation_id"):
-                        from ..managers.memory_administration import MemoryAdministration
+                        from ..managers.memory_administration import (
+                            MemoryAdministration,
+                        )
                         administration = getattr(self.memory_engine, "memory_administration", None)
                         if not isinstance(administration, MemoryAdministration):
                             administration = MemoryAdministration(self.memory_engine, self.config_manager)
@@ -225,6 +212,8 @@ class MemoryForgetTool(FunctionTool[AstrAgentContext]):
             return _json_result(result)
         except asyncio.CancelledError:
             raise
+        except ValueError as error:
+            return _json_result({"deleted": False, "error": str(error)})
         except Exception:
             logger.error("Agent 删除记忆失败 (memory_id=%s)", memory_id, exc_info=True)
             return _json_result({"deleted": False, "error": "internal_error"})

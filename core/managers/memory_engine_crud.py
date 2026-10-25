@@ -26,6 +26,7 @@ from .memory_mutation import (
     memory_mutation_task,
     serialize_memory_mutation,
     settle_memory_mutation_task,
+    track_memory_write,
 )
 
 
@@ -99,6 +100,7 @@ class MemoryEngineCrudMixin:
         except Exception:
             logger.warning("[MemoryEngine] 写入昵称别名失败（非致命）", exc_info=True)
 
+    @track_memory_write
     async def add_memory(
         self,
         content: str,
@@ -124,6 +126,7 @@ class MemoryEngineCrudMixin:
         Returns:
             int: 记忆ID(doc_id)
         """
+        self._assert_writes_open()
         if not content or not content.strip():
             raise ValueError("记忆内容不能为空")
 

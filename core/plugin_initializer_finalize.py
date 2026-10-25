@@ -4,6 +4,7 @@ PluginInitializer 的 InitializerFinalizeMixin 拆分模块
 """
 
 import asyncio
+import inspect
 import time
 from pathlib import Path
 from typing import Any
@@ -766,25 +767,28 @@ class InitializerFinalizeMixin:
 
     async def shutdown_index_persisters(self) -> None:
         """落盘并停止所有索引异步落盘器（terminate / 重新初始化前调用，幂等）。"""
+        quiesce = getattr(self.memory_engine, "quiesce_background_writes", None)
+        if inspect.iscoroutinefunction(quiesce):
+            await quiesce()
         persisters = getattr(self, "_index_persisters", None) or []
-        self._index_persisters = []
         for persister in persisters:
             try:
                 await persister.aclose()
             except Exception:
                 logger.warning("关闭索引异步落盘器失败", exc_info=True)
+        self._index_persisters = []
 
     async def _teardown_partial_init(self) -> None:
         """关闭初始化过程中已创建的资源，使后续重试可以从干净状态开始。"""
-        # 先落盘索引未写变更，再关闭各存储组件
-        await self.shutdown_index_persisters()
-
         if self.decay_scheduler is not None:
             try:
                 await self.decay_scheduler.stop()
             except Exception:
                 logger.warning("停止衰减调度器失败", exc_info=True)
             self.decay_scheduler = None
+
+        # Stop writes before the final index flush, then close their stores.
+        await self.shutdown_index_persisters()
 
         if self.conversation_manager is not None:
             if getattr(self.conversation_manager, "store", None) is not None:

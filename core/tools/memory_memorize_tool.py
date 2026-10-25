@@ -12,8 +12,9 @@ from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 from pydantic.dataclasses import dataclass
 
-from ..memory_scope import is_event_memory_allowed, resolve_memory_scope
+from ..memory_scope import resolve_memory_scope
 from ..utils import get_persona_id
+from .tool_access import ensure_tool_access
 
 
 def _json_result(data: dict[str, Any]) -> str:
@@ -119,10 +120,7 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
 
         try:
             event = context.context.event
-            if not is_event_memory_allowed(self.config_manager, event):
-                return _json_result(
-                    {"memorized": False, "error": "memory access is not allowed"}
-                )
+            await ensure_tool_access(self, event, "enable_memorize_tool")
             session_id = event.unified_msg_origin
             memory_scope = (
                 resolve_memory_scope(self.config_manager, event) or session_id
@@ -158,6 +156,8 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
             if cleaned_reason:
                 metadata["memorize_reason"] = cleaned_reason
 
+            await ensure_tool_access(self, event, "enable_memorize_tool")
+            memory_scope = resolve_memory_scope(self.config_manager, event) or session_id
             memory_id = await self.memory_engine.add_memory(
                 content=content,
                 session_id=memory_scope,
@@ -178,6 +178,8 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
             )
         except asyncio.CancelledError:
             raise
+        except ValueError as error:
+            return _json_result({"memorized": False, "error": str(error)})
         except Exception as e:
             logger.error(f"记忆工具写入失败: {e}", exc_info=True)
             return _json_result({"memorized": False, "error": "internal_error"})

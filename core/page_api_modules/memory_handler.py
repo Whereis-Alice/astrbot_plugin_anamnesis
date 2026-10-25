@@ -322,6 +322,8 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
         self, memory_engine, memory_processor
     ) -> dict[str, Any]:
         payload = await request.get_json(silent=True) or {}
+        if not isinstance(payload, dict):
+            return self.utils.error("请求内容必须是 JSON 对象")
         try:
             memory_id = int(payload.get("memory_id"))
         except (TypeError, ValueError):
@@ -335,10 +337,14 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
         get_source = getattr(memory_engine, "get_memory_source", None)
         source_result = get_source(memory_id) if callable(get_source) else []
         source = await source_result if inspect.isawaitable(source_result) else []
-        if len(source) < 2:
+        if not isinstance(source, list) or len(source) < 2:
             return self.utils.error("该记忆没有可重新总结的完整原文")
 
-        messages = restore_source_messages(source)
+        try:
+            messages = restore_source_messages(source)
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            logger.warning(f"[PageAPI] 记忆 {memory_id} 原文数据损坏: {exc}")
+            return self.utils.error("该记忆的原文数据损坏，无法重新总结")
         current_metadata = self.utils.normalize_metadata(memory.get("metadata"))
         is_group_chat = bool(messages[0].group_id if messages else False)
         try:
