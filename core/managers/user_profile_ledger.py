@@ -11,6 +11,11 @@ import json
 import time
 from typing import Any
 
+_PROFILE_SOURCE_KEYS = (
+    "source_memory_id", "source_session_id", "source_group_id",
+    "source_group_name", "source_sender_name",
+)
+
 
 class UserProfileLedgerMixin:
     def _ledger_limit(self, name: str, default: int, maximum: int) -> int:
@@ -190,11 +195,16 @@ class UserProfileLedgerMixin:
                                     supporting_evidence: list[dict[str, Any]] | None = None) -> None:
         scope, key = before["profile_scope"], before["profile_key"]
         manual = bool(self.config_manager.get("user_profile.manual_override_enabled", True)) or bool(before["manual_override"])
-        source_keys = ("source_memory_id", "source_session_id", "source_group_id", "source_group_name", "source_sender_name")
-        if supporting_evidence:
+        inherit_evidence = not manual and supporting_evidence is None and before["value"] == after["value"]
+        if inherit_evidence:
+            supporting_evidence = await self._claim_evidence(connection, before["current_claim_id"])
+            live = await self._live_evidence(supporting_evidence)
+            after.update(self._profile_source_projection(live))
+            after["suppressed"] = int(not live)
+        elif supporting_evidence:
             # Account/context columns stay current, but provenance follows the
             # accepted statement rather than the statement it replaces.
-            after.update({key: supporting_evidence[0].get(key) for key in source_keys})
+            after.update({key: supporting_evidence[0].get(key) for key in _PROFILE_SOURCE_KEYS})
         claim = await self._insert_claim(connection, after, "manual", "current")
         # Administrator confirmation is independent support. Historical chat
         # evidence remains with the previous claim, rather than being relabelled.
@@ -202,9 +212,17 @@ class UserProfileLedgerMixin:
             independent = {**after, "source_memory_id": None, "suppressed": 0}
             await self._add_evidence(connection, claim, independent, "")
             after["suppressed"] = 0
+        elif inherit_evidence:
+            # A label/category edit keeps existing support, including its age,
+            # ordering and suppression, even after the source budget is lowered.
+            await connection.execute(
+                "INSERT INTO user_profile_evidence(claim_id,source_memory_id,quote,source_context,suppressed,created_at) "
+                "SELECT ?,source_memory_id,quote,source_context,suppressed,created_at "
+                "FROM user_profile_evidence WHERE claim_id=? ORDER BY evidence_id",
+                (claim, before["current_claim_id"]))
         elif supporting_evidence is not None:
             for evidence in supporting_evidence:
-                source = {**after, **{key: evidence.get(key) for key in source_keys}, "suppressed": evidence["suppressed"]}
+                source = {**after, **{key: evidence.get(key) for key in _PROFILE_SOURCE_KEYS}, "suppressed": evidence["suppressed"]}
                 await self._add_evidence(connection, claim, source, evidence["quote"])
         else:
             await self._add_evidence(connection, claim, after, "")
@@ -213,6 +231,20 @@ class UserProfileLedgerMixin:
         await self._project_claim(connection, after, claim, "manual", revision=before["revision"] + 1, manual=manual)
         await self._transition(connection, scope, key, "manual_edit", before["current_claim_id"], claim, "administrator")
         await self._prune_ledger(connection, scope, key)
+
+    @staticmethod
+    def _profile_source_projection(evidence: list[dict[str, Any]]) -> dict[str, Any]:
+        source = next((item for item in evidence if item["source_memory_id"] is not None),
+                      evidence[0] if evidence else {})
+        return {key: source.get(key) for key in _PROFILE_SOURCE_KEYS}
+
+    async def _project_profile_sources(self, connection: Any, scope: str, key: str,
+                                       live: list[dict[str, Any]]) -> None:
+        source = self._profile_source_projection(live)
+        await connection.execute(
+            "UPDATE user_profiles SET suppressed=?,source_memory_id=?,source_session_id=?,source_group_id=?,"
+            "source_group_name=?,source_sender_name=?,revision=revision+1 WHERE profile_scope=? AND profile_key=?",
+            (int(not live), *(source[name] for name in _PROFILE_SOURCE_KEYS), scope, key))
 
     async def _live_evidence(self, evidence: list[dict[str, Any]]) -> list[dict[str, Any]]:
         candidates = [item for item in evidence if not item["suppressed"]]
@@ -373,14 +405,13 @@ class UserProfileLedgerMixin:
                 if has_proposal:
                     # Keep the review entry reachable without keeping the
                     # deleted fact's content or exposing it to injection.
-                    await connection.execute("UPDATE user_profiles SET value='[来源已删除]',source_memory_id=NULL,suppressed=1,revision=revision+1 WHERE profile_scope=? AND profile_key=?", (scope, key))
+                    await connection.execute("UPDATE user_profiles SET value='[来源已删除]' WHERE profile_scope=? AND profile_key=?", (scope, key))
+                    await self._project_profile_sources(connection, scope, key, [])
                 else:
                     await connection.execute("DELETE FROM user_profiles WHERE profile_scope=? AND profile_key=?", (scope, key))
                 removed += 1
             else:
-                source = next((item["source_memory_id"] for item in live if item["source_memory_id"] is not None), None)
-                await connection.execute("UPDATE user_profiles SET suppressed=?,source_memory_id=?,revision=revision+1 WHERE profile_scope=? AND profile_key=?",
-                                         (int(not live), source, scope, key))
+                await self._project_profile_sources(connection, scope, key, live)
             if delete:
                 # An explicit source deletion removes unsupported derived
                 # content from history too; manual assertions have independent

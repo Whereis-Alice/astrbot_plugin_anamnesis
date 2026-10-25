@@ -23,6 +23,7 @@ from ..processors.atom_classifier import classify_atoms
 from ..retrieval.hybrid_retriever import HybridResult
 from ..utils.number_utils import clamp_float, safe_float
 from .memory_mutation import (
+    coordinate_memory_add,
     memory_mutation_task,
     serialize_memory_mutation,
     settle_memory_mutation_task,
@@ -100,7 +101,7 @@ class MemoryEngineCrudMixin:
         except Exception:
             logger.warning("[MemoryEngine] 写入昵称别名失败（非致命）", exc_info=True)
 
-    @track_memory_write
+    @coordinate_memory_add
     async def add_memory(
         self,
         content: str,
@@ -518,6 +519,63 @@ class MemoryEngineCrudMixin:
             }
 
         return await asyncio.to_thread(_compute_keys)
+
+    async def has_memory_import_key(self, key: tuple[str, str, str]) -> bool:
+        """Check current scoped documents; callers guard the check and write together."""
+        if self.db_connection is None:
+            return False
+
+        def scope_values(value: str) -> list[Any]:
+            # Match memory_import_key's None/empty/zero equivalence and legacy
+            # JSON numeric scopes while keeping expression indexes usable.
+            if not value:
+                return [None, "", 0]
+            values: list[Any] = [value]
+            for converter in (int, float):
+                try:
+                    number = converter(value)
+                except (ValueError, OverflowError):
+                    continue
+                if str(number) == value and number not in values:
+                    values.append(number)
+            return values
+
+        scopes = [scope_values(key[1]), scope_values(key[2])]
+
+        async def query(*, safe_json: bool):
+            expressions = [
+                f"json_extract(metadata, '$.{field}')"
+                for field in ("session_id", "persona_id")
+            ]
+            if safe_json:
+                expressions = [
+                    f"CASE WHEN json_valid(metadata) THEN {expr} END"
+                    for expr in expressions
+                ]
+            conditions = [
+                "(" + " OR ".join(f"{expr} IS ?" for _ in values) + ")"
+                for expr, values in zip(expressions, scopes)
+            ]
+            async with self.db_connection.execute(
+                f"SELECT text, {expressions[0]} AS session_id, "
+                f"{expressions[1]} AS persona_id FROM documents WHERE "
+                + " AND ".join(conditions),
+                [value for values in scopes for value in values],
+            ) as cursor:
+                return await cursor.fetchall()
+
+        try:
+            rows = await query(safe_json=False)
+        except sqlite3.OperationalError as exc:
+            if "malformed json" not in str(exc).lower():
+                raise
+            rows = await query(safe_json=True)
+        return await asyncio.to_thread(
+            lambda: any(
+                memory_import_key(row["text"], row["session_id"], row["persona_id"]) == key
+                for row in rows
+            )
+        )
 
     async def search_memories(
         self,

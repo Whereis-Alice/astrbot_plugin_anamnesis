@@ -337,10 +337,11 @@ class AdministrationJobsMixin:
                         [entry],
                         [],
                         "skip",
-                        existing_keys=existing_keys,
                         operation_receipt={"operation_id": job["id"], "item_key": item["item_key"]},
                     )
                     data = response["data"]
+                    if data["imported_count"]:
+                        existing_keys.add(memory_import_key(entry.content, entry.session_id, entry.persona_id))
                 await self.store.put_item(
                     job["id"],
                     item["item_key"],

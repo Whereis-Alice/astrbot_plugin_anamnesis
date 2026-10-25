@@ -27,6 +27,7 @@ try {
       { id: "delete-operation", kind: "delete", status: "completed", created_at: 1792890000 },
       { id: "correction-operation", kind: "correction", status: "preview", created_at: 1792890000 },
       { id: "import-operation", kind: "import", status: "completed", created_at: 1792890000 },
+      { id: "expired-correction", kind: "correction", status: "completed", expired: true, created_at: 1792890000 },
     ];
     window.AstrBotPluginPage.apiGet = async (path, params) => {
       if (path === "page/operations") return records;
@@ -39,11 +40,17 @@ try {
       if (path === "page/corrections/preview") return { operation_id: "correction-operation", old_content: "用户喜欢咖啡。", new_content: "用户已经改为喜欢茶。", session_id: "qq:GroupMessage:1091576468", persona_id: "测试人格" };
       if (path === "page/corrections/confirm") return { operation_id: "correction-operation", confirmation_token: "synthetic-single-use-token" };
       if (path === "page/corrections/execute") { records[1].status = "completed"; return { new_memory_id: 9 }; }
+      if (path === "page/operations/remove") {
+        const index = records.findIndex(record => record.id === body.operation_id);
+        if (index < 0) throw Error("Missing operation");
+        records.splice(index, 1);
+        return { removed: true };
+      }
       return {};
     };
   });
   await frame.locator('[data-page="administration"]').click();
-  await frame.waitForFunction(() => document.querySelectorAll(".admin-record").length === 3);
+  await frame.waitForFunction(() => document.querySelectorAll(".admin-record").length === 4);
   for (const width of [1024, 700, 390]) {
     await page.locator("#preview").evaluate((element, width) => { element.style.width = width + "px"; element.style.height = "700px"; }, width);
     await frame.locator("#page-administration").evaluate(element => element.scrollTop = 0);
@@ -71,6 +78,13 @@ try {
   await frame.locator("#admin-confirm-cancel-btn").click();
   assert.equal(await frame.evaluate(() => window.adminPosts.filter(post => post.path === "page/operations/purge").length), 0);
   checks.push("PASS cancelling permanent purge performs no deletion");
+  assert.equal(await frame.locator('[data-operation-id="expired-correction"][data-admin-action="rollback"]').count(), 0);
+  await frame.locator('[data-operation-id="expired-correction"][data-admin-action="remove"]').click();
+  await frame.waitForFunction(() => window.adminPosts.some(post => post.path === "page/operations/remove"));
+  assert.deepEqual(await frame.evaluate(() => window.adminPosts.filter(post => post.path === "page/operations/remove").map(post => post.body.operation_id)), ["expired-correction"]);
+  assert.equal(await frame.locator('[data-operation-id="expired-correction"]').count(), 0);
+  assert.equal(await frame.locator('[data-operation-id="correction-operation"][data-admin-action="remove"]').count(), 0);
+  checks.push("PASS expired correction cleanup uses the log endpoint while retained corrections stay protected");
   assert.deepEqual(errors, []);
   writeFileSync(join(output, "administration-checks.txt"), checks.join("\n") + "\n");
   console.log(checks.join("\n"));

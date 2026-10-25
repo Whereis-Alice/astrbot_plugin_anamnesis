@@ -2,7 +2,7 @@
 
 This release adapts mechanisms from Memorix 1.4.0 within Anamnesis's existing identity, scope, persona and lifecycle boundaries.
 
-Use **3.5.4** for the earlier fixes plus shutdown boundaries for manual index rebuilds and correction preparation, profile cleanup ordering, recovered import receipts, invalidation of in-flight extraction after deletion, and profile migration rollback. The features and defaults below still apply.
+Use **3.5.5** for the earlier lock, permission and shutdown fixes plus current-data duplicate checks before imports, consistent profile source headers, preserved evidence for title edits, interrupted correction reconciliation and expired correction log cleanup. The features and defaults below still apply.
 
 Profiles remain disabled by default. Enabled profiles retain explicit self-report and verbatim-evidence validation. Manual edits have independent priority; changed automatic values enter review by default. The directory shows current values, proposals, history and multiple original evidence sources. Version checks protect edits and review actions. Administrator display aliases never merge accounts.
 

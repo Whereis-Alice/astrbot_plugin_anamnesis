@@ -14,6 +14,7 @@ from astrbot.api import logger
 from quart import request
 
 from ..managers.memory_mutation import (
+    memory_import_guard,
     memory_mutation_guard,
     memory_mutation_task,
     settle_memory_mutation_task,
@@ -164,17 +165,11 @@ class MemoryHandlerIoMixin:
 
     async def _import_entries(
         self, memory_engine, memory_processor, entries, parse_errors, duplicate_strategy,
-        existing_keys=None, operation_receipt=None,
+        operation_receipt=None,
     ):
-        # Refresh inside the engine-wide lock, including across different HTTP
-        # handler instances. A retry must observe the first import's commits.
-        shared_keys = existing_keys is not None
-        if existing_keys is None:
-            existing_keys = await memory_engine.get_memory_import_keys()
         imported_ids: list[int] = []
         skipped_duplicates = 0
         import_errors = list(parse_errors)
-        active_keys = existing_keys if shared_keys else set(existing_keys)
         for entry in entries:
             try:
                 entry = await self._prepare_import_entry(memory_processor, entry)
@@ -182,13 +177,6 @@ class MemoryHandlerIoMixin:
                 metadata = dict(entry.metadata)
                 original_status = metadata.get("status", "active")
                 importance = entry.importance
-                key = memory_import_key(
-                    content_text, entry.session_id, entry.persona_id
-                )
-                if duplicate_strategy == "skip" and key in active_keys:
-                    skipped_duplicates += 1
-                    continue
-
                 metadata["memory_origin"] = "memory_import"
                 metadata["imported_at"] = time.time()
                 metadata["import_source_index"] = entry.source_index
@@ -217,11 +205,14 @@ class MemoryHandlerIoMixin:
                 memory_id = await self._finish_import_write(
                     memory_engine,
                     self._write_import_entry(
-                        memory_engine, entry, content_text, importance, metadata, atoms
+                        memory_engine, entry, content_text, importance, metadata, atoms,
+                        skip_duplicates=duplicate_strategy == "skip",
                     ),
                 )
+                if memory_id is None:
+                    skipped_duplicates += 1
+                    continue
                 imported_ids.append(memory_id)
-                active_keys.add(key)
             except Exception as exc:
                 logger.error(
                     f"[PageAPI] 导入记忆失败 (index={entry.source_index}): {exc}",
@@ -242,9 +233,15 @@ class MemoryHandlerIoMixin:
         )
 
     async def _write_import_entry(
-        self, engine, entry, content, importance, metadata, atoms
+        self, engine, entry, content, importance, metadata, atoms, *, skip_duplicates=False
     ):
-        async with memory_mutation_guard(engine):
+        async with memory_import_guard(engine, exclusive=skip_duplicates), memory_mutation_guard(engine):
+            # Summarization and job preparation may await other mutations. The
+            # preview's keys are never authoritative for the actual write.
+            if skip_duplicates and await engine.has_memory_import_key(
+                memory_import_key(content, entry.session_id, entry.persona_id)
+            ):
+                return None
             return await self._write_import_entry_locked(
                 engine,
                 entry,

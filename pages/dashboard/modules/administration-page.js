@@ -48,6 +48,7 @@ const labels = {
   "status.queued": ["排队中", "Queued", "В очереди"],
   "status.running": ["进行中", "Running", "Выполняется"],
   "status.executing": ["提交中", "Committing", "Применяется"],
+  "status.needs_review": ["中断待核验", "Interrupted; needs review", "Прервано; нужна проверка"],
   "status.completed": ["已完成", "Completed", "Завершено"],
   "status.partial": ["部分完成", "Partially completed", "Частично завершено"],
   "status.failed": ["失败", "Failed", "Ошибка"],
@@ -148,10 +149,10 @@ export class AdministrationPage {
       if (record.kind === "delete" && !record.expired && ["completed", "partial", "running"].includes(record.status)) buttons += action("restore", record.id) + action("purge", record.id);
       if (record.kind === "delete" && record.expired && !["purged", "restored"].includes(record.status)) buttons += action("purge", record.id);
       if (record.kind === "correction" && record.status === "preview" && !record.expired) buttons += action("preview", record.id);
-      if (record.kind === "correction" && ["completed", "prepared_commit", "rollback_prepared"].includes(record.status) && !record.expired) buttons += action("rollback", record.id);
+      if (record.kind === "correction" && ["completed", "prepared_commit", "rollback_prepared", "needs_review"].includes(record.status) && !record.expired) buttons += action("rollback", record.id);
       if (job && ["queued", "running"].includes(record.status)) buttons += action("cancel", record.id);
       if (job && ["partial", "failed", "interrupted", "cancelled"].includes(record.status) && !record.expired) buttons += action("retry", record.id);
-      if (job && !["preparing", "queued", "running"].includes(record.status) || ["purged", "restored", "rolled_back", "failed", "stale", "preview"].includes(record.status)) buttons += action("remove", record.id);
+      if (job && !["preparing", "queued", "running"].includes(record.status) || ["purged", "restored", "rolled_back", "failed", "stale", "preview"].includes(record.status) || record.kind === "correction" && record.status === "completed" && record.expired) buttons += action("remove", record.id);
       return `<article class="admin-record"><div><strong>${esc(adminText("kind." + record.kind))}</strong> · ${esc(adminText("status." + record.status))} · ${esc(date(record.created_at))}<small>${esc(record.id)}</small></div><div class="admin-actions">${buttons}</div></article>`;
     }).join("") || `<p>${esc(adminText("empty"))}</p>`;
     document.getElementById("admin-episodes").innerHTML = this.episodes.map(episode => `<details><summary>${esc(episode.title)}</summary><p class="admin-prose">${esc(episode.summary)}</p><small>${esc(episode.source_session_id || episode.session_id || "")} · ${esc(episode.memory_ids.join(", "))}</small>${action("rebuild", episode.id)}</details>`).join("") || `<p>${esc(adminText("empty"))}</p>`;

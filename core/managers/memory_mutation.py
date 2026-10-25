@@ -36,6 +36,110 @@ def track_memory_write(function):
     return tracked
 
 
+def _memory_add_admission(engine):
+    if not hasattr(engine, "_memory_add_condition"):
+        engine._memory_add_condition = asyncio.Condition()
+        engine._memory_add_readers = set()
+        engine._memory_import_owner = None
+        engine._memory_import_waiters = 0
+    return engine._memory_add_condition
+
+
+async def _release_memory_add_admission(engine, task, *, exclusive=False):
+    async with engine._memory_add_condition:
+        if exclusive:
+            if engine._memory_import_owner is task:
+                engine._memory_import_owner = None
+        else:
+            engine._memory_add_readers.discard(task)
+        engine._memory_add_condition.notify_all()
+
+
+async def _finish_memory_add_admission(engine, task, *, exclusive=False):
+    cleanup = asyncio.create_task(
+        _release_memory_add_admission(engine, task, exclusive=exclusive)
+    )
+    try:
+        await asyncio.shield(cleanup)
+    except asyncio.CancelledError:
+        await settle_memory_mutation_task(cleanup)
+        raise
+
+
+@asynccontextmanager
+async def memory_add_guard(engine):
+    """Plain adds share admission; mutation-owned adds retain their parent's order."""
+    async with memory_write_guard(engine):
+        condition = _memory_add_admission(engine)
+        current = asyncio.current_task()
+        if (
+            current is getattr(engine, "_memory_mutation_owner", None)
+            or current in getattr(engine, "_memory_mutation_children", ())
+            or current in engine._memory_add_readers
+        ):
+            yield
+            return
+        async with condition:
+            await condition.wait_for(
+                lambda: (
+                    engine._memory_import_owner is None
+                    and not engine._memory_import_waiters
+                )
+            )
+            engine._memory_add_readers.add(current)
+        try:
+            yield
+        finally:
+            # Keep the write tracked until admission is released, including
+            # repeated cancellation while another waiter owns the condition.
+            await _finish_memory_add_admission(engine, current)
+
+
+def coordinate_memory_add(function):
+    @wraps(function)
+    async def coordinated(engine, *args, **kwargs):
+        async with memory_add_guard(engine):
+            return await function(engine, *args, **kwargs)
+
+    return coordinated
+
+
+@asynccontextmanager
+async def memory_import_guard(engine, *, exclusive=True):
+    """Acquire skip-import admission before the document mutation lock.
+
+    Existing adds can still finish source writes that need the mutation lock.
+    Mutation owners and their explicit add children bypass shared admission,
+    so replacements already holding that lock cannot block this waiter.
+    """
+    if not exclusive:
+        yield
+        return
+    async with memory_write_guard(engine):
+        condition = _memory_add_admission(engine)
+        current = asyncio.current_task()
+        if engine._memory_import_owner is current:
+            yield
+            return
+        async with condition:
+            engine._memory_import_waiters += 1
+            try:
+                await condition.wait_for(
+                    lambda: (
+                        engine._memory_import_owner is None
+                        and not engine._memory_add_readers
+                    )
+                )
+                engine._memory_import_owner = current
+            finally:
+                engine._memory_import_waiters -= 1
+                condition.notify_all()
+        try:
+            yield
+        finally:
+            await _finish_memory_add_admission(engine, current, exclusive=True)
+
+
 @asynccontextmanager
 async def memory_mutation_guard(engine):
     assert_open = getattr(engine, "_assert_writes_open", None)
@@ -131,4 +235,5 @@ def serialize_index_projection(function):
     async def guarded(host, memory_engine, *args, **kwargs):
         async with index_projection_guard(memory_engine):
             return await function(host, memory_engine, *args, **kwargs)
+
     return guarded

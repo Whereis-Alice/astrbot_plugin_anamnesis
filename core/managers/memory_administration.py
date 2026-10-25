@@ -13,6 +13,8 @@ import secrets
 import time
 import uuid
 
+from astrbot.api import logger
+
 from ...storage.administration_store import AdministrationStore
 from ...storage.projection_outbox import ProjectionOutbox
 from .administration_jobs import AdministrationJobsMixin
@@ -46,15 +48,23 @@ class MemoryAdministration(AdministrationJobsMixin):
         self._closing = False
 
     async def initialize(self):
-        async with self._lock:
-            if self._initialized:
-                return
-            await self.store.initialize()
-            await self.projection.initialize()
-            await self.store.interrupt_jobs()
-            for operation in await self.store.list(kind="correction", limit=500):
-                await self._reconcile_correction(operation)
-            self._initialized = True
+        if self._initialized:
+            return
+        # Mutations can initialize this service while already owning the guard.
+        # Always acquire it before the service lock, including plain startup.
+        async with memory_mutation_guard(self.engine), self._lock:
+            if not self._initialized:
+                await self.store.initialize()
+                await self.projection.initialize()
+                await self.store.interrupt_jobs()
+                after_id = None
+                while operations := await self.store.list_unresolved_corrections(after_id=after_id):
+                    # Capture the stable page boundary before repairs change
+                    # which records still match the unresolved-status filter.
+                    after_id = operations[-1]["id"]
+                    for operation in operations:
+                        await self._reconcile_correction(operation)
+                self._initialized = True
 
     def option(self, key, default):
         return self.config.get(key, default) if self.config is not None else default
@@ -144,9 +154,13 @@ class MemoryAdministration(AdministrationJobsMixin):
         self._assert_jobs_open()
         async with memory_mutation_guard(self.engine):
             operation = await self._owned(operation_id, actor, allow_expired=True)
-            if operation["status"] not in (
+            expired_correction = (
+                operation["kind"] == "correction" and operation["status"] == "completed"
+                and operation["expires_at"] <= time.time()
+            )
+            if (not expired_correction and operation["status"] not in (
                 "purged", "restored", "rolled_back", "failed", "stale", "preview"
-            ) or operation["kind"] in ("import", "evaluation", "episode", "projection"):
+            )) or operation["kind"] in ("import", "evaluation", "episode", "projection"):
                 raise ValueError("保留中的删除快照或运行中操作不能直接清理")
             await self._settled(self.store.remove(operation_id))
         return {"removed": True}
@@ -354,12 +368,28 @@ class MemoryAdministration(AdministrationJobsMixin):
 
     async def _claim_and_execute(self, operation_id, token, actor):
         operation = await self._owned(operation_id, actor, "correction")
-        async with self.store.connection(write=True) as db:
-            row = await (await db.execute("SELECT status,token_hash,token_expires,token_actor FROM memory_admin_operations WHERE id=?", (operation_id,))).fetchone()
-            if row is None or row[0] != "preview" or not row[1] or row[2] <= time.time() or row[3] != actor or not secrets.compare_digest(row[1], hashlib.sha256(token.encode()).hexdigest()):
-                raise ValueError("确认凭据已过期、已使用或不匹配")
-            await db.execute("UPDATE memory_admin_operations SET token_hash=NULL,token_expires=NULL,status='executing' WHERE id=?", (operation_id,))
-        return await self._execute_correction(operation)
+        claiming = False
+        try:
+            async with self.store.connection(write=True) as db:
+                row = await (await db.execute("SELECT status,token_hash,token_expires,token_actor FROM memory_admin_operations WHERE id=?", (operation_id,))).fetchone()
+                if row is None or row[0] != "preview" or not row[1] or row[2] <= time.time() or row[3] != actor or not secrets.compare_digest(row[1], hashlib.sha256(token.encode()).hexdigest()):
+                    raise ValueError("确认凭据已过期、已使用或不匹配")
+                await db.execute("UPDATE memory_admin_operations SET token_hash=NULL,token_expires=NULL,status='executing' WHERE id=?", (operation_id,))
+                claiming = True
+            return await self._execute_correction(operation)
+        except BaseException:
+            if claiming:
+                try:
+                    await self._settled(self._settle_interrupted_claim(operation_id))
+                except BaseException:
+                    logger.warning("中断纠正未能立即核验，将在下次初始化重试", exc_info=True)
+            raise
+
+    async def _settle_interrupted_claim(self, operation_id):
+        async with memory_mutation_guard(self.engine):
+            operation = await self.store.get(operation_id)
+            if operation and operation["status"] in ("executing", "needs_review"):
+                await self._reconcile_correction(operation, compensate=True)
 
     async def _execute_correction(self, operation):
         payload, operation_id = operation["payload"], operation["id"]
@@ -379,18 +409,14 @@ class MemoryAdministration(AdministrationJobsMixin):
             await self.store.update(operation_id, status="prepared_commit", result=result)
             prepared = result
 
-        try:
-            await self.engine.replace_memory(payload["memory_id"], content=payload["content"],
-                metadata=metadata, importance=metadata.get("importance", .5), expected_memory=current,
-                expected_source=current["source_messages"], prepared_callback=journal)
-            await self.store.update(operation_id, status="completed", result=prepared)
-            return {key: value for key, value in prepared.items() if key != "after"}
-        except BaseException as exc:
-            # Never replace the durable new ID with an error-only record after
-            # commit. A retry or restart can reconcile this saved phase.
-            if prepared is None:
-                await self.store.update(operation_id, status="failed", result={"error": str(exc)[:300]})
-            raise
+        # The claim handler checks pre-journal failures against live copies.
+        # Replacement compensation can fail too; an error alone cannot safely
+        # release the original snapshot. Post-journal failures retain their ID.
+        await self.engine.replace_memory(payload["memory_id"], content=payload["content"],
+            metadata=metadata, importance=metadata.get("importance", .5), expected_memory=current,
+            expected_source=current["source_messages"], prepared_callback=journal)
+        await self.store.update(operation_id, status="completed", result=prepared)
+        return {key: value for key, value in prepared.items() if key != "after"}
 
     async def rollback_correction(self, operation_id, *, actor="webui"):
         self._assert_jobs_open()
@@ -409,6 +435,8 @@ class MemoryAdministration(AdministrationJobsMixin):
 
     async def _reconcile_correction(self, operation, *, compensate=False):
         phase = operation["status"]
+        if phase in {"executing", "needs_review"}:
+            return await self._reconcile_interrupted_claim(operation)
         if phase not in {"prepared_commit", "rollback_prepared"}:
             return operation
         result = operation["result"]
@@ -431,6 +459,56 @@ class MemoryAdministration(AdministrationJobsMixin):
                 else:
                     await self.store.update(operation["id"], status="rolled_back", result={**result, "rollback_memory_id": old_id})
         return await self.store.get(operation["id"])
+
+    async def _claim_needs_review(self, operation, candidate_ids, reason):
+        await self.store.update(operation["id"], status="needs_review", result={
+            **operation["result"], "candidate_ids": sorted(candidate_ids),
+            "error": reason, "requires_manual_review": True,
+        })
+        return await self.store.get(operation["id"])
+
+    async def _reconcile_interrupted_claim(self, operation):
+        payload, operation_id = operation["payload"], operation["id"]
+        memory_id = payload["memory_id"]
+        connection = self.engine.db_connection
+        async with connection.execute(
+            "SELECT id FROM documents WHERE CASE WHEN json_valid(metadata) THEN "
+            "json_extract(metadata,'$.previous_id')=? AND json_extract(metadata,'$.correction_operation_id')=? "
+            "ELSE 0 END LIMIT 201", (memory_id, operation_id),
+        ) as cursor:
+            tagged_ids = {row[0] for row in await cursor.fetchall()}
+        async with connection.execute(
+            "SELECT id,memory_id,status,payload FROM memory_write_ops WHERE op_type='add' "
+            "AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.metadata.previous_id')=? "
+            "AND json_extract(payload,'$.metadata.correction_operation_id')=? ELSE 0 END LIMIT 201",
+            (memory_id, operation_id),
+        ) as cursor:
+            write_rows = await cursor.fetchall()
+        candidate_ids = tagged_ids | {row[1] for row in write_rows if row[1] is not None}
+        try:
+            original = await self.snapshot(memory_id)
+            candidates = {candidate_id: await self.snapshot(candidate_id) for candidate_id in candidate_ids}
+        except (ValueError, TypeError):
+            return await self._claim_needs_review(operation, candidate_ids, "来源或副本损坏，保留快照等待人工核验")
+        candidates = {candidate_id: candidate for candidate_id, candidate in candidates.items() if candidate is not None}
+        pending = any(row[2] in ("pending", "needs_repair") for row in write_rows)
+        if candidates:
+            async with connection.execute(
+                "SELECT 1 FROM memory_write_ops WHERE status IN ('pending','needs_repair') AND memory_id IN ("
+                + ",".join("?" for _ in candidates) + ") LIMIT 1", tuple(candidates),
+            ) as cursor:
+                pending = pending or await cursor.fetchone() is not None
+        if not candidates and not pending and fingerprint(original) == payload["fingerprint"]:
+            await self.store.update(operation_id, status="failed", result={
+                "error": "纠正在替换前中断，原记忆完整保留", "candidate_ids": [],
+            })
+            return await self.store.get(operation_id)
+        # A consumed token is durable intent to correct, but is not a saved
+        # fingerprint of the replacement. Completed add logs discard payloads;
+        # adopting the live copy now could authorize deleting a later edit.
+        # Only a prepared journal may enter the existing compensation path.
+        return await self._claim_needs_review(operation, candidate_ids,
+            "原记忆、副本或待修写入缺少提交快照，保留记录等待人工核验")
 
     async def _rollback(self, operation):
         result, before = operation["result"], operation["payload"]["before"]

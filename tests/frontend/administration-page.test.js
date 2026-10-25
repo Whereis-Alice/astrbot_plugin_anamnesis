@@ -45,3 +45,26 @@ test("failed request shows feedback and releases action lock", async () => {
   await page.run(async () => { throw Error("version changed"); });
   assert.equal(page.busy, false); assert.equal(elements["admin-feedback"].textContent, "version changed");
 });
+
+test("expired completed correction exposes cleanup without rollback", () => {
+  const { page, elements } = setup();
+  page.records = [{ id: "expired", kind: "correction", status: "completed", expired: true, created_at: 1 }];
+  page.render();
+  assert.match(elements["admin-records"].innerHTML, /data-admin-action="remove"/);
+  assert.doesNotMatch(elements["admin-records"].innerHTML, /data-admin-action="rollback"/);
+});
+test("unexpired completed correction retains recovery snapshot protection", () => {
+  const { page, elements } = setup();
+  page.records = [{ id: "retained", kind: "correction", status: "completed", expired: false, created_at: 1 }];
+  page.render();
+  assert.match(elements["admin-records"].innerHTML, /data-admin-action="rollback"/);
+  assert.doesNotMatch(elements["admin-records"].innerHTML, /data-admin-action="remove"/);
+});
+test("interrupted uncertain correction offers evidence review and recheck", () => {
+  const { page, elements } = setup();
+  page.records = [{ id: "review", kind: "correction", status: "needs_review", expired: false, created_at: 1 }];
+  page.render();
+  assert.match(elements["admin-records"].innerHTML, /中断待核验/);
+  assert.match(elements["admin-records"].innerHTML, /data-admin-action="rollback"/);
+  assert.doesNotMatch(elements["admin-records"].innerHTML, /data-admin-action="remove"/);
+});

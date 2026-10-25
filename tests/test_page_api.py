@@ -60,6 +60,9 @@ class FakeMemoryEngine:
     async def get_memory_import_keys(self):
         return set()
 
+    async def has_memory_import_key(self, key):
+        return key in await self.get_memory_import_keys()
+
     async def delete_memory(self, memory_id: int):
         return True
 

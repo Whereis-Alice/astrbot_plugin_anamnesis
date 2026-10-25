@@ -61,6 +61,9 @@ class AdministrationStore:
                 title TEXT NOT NULL, summary TEXT NOT NULL, members TEXT NOT NULL,
                 created_at REAL NOT NULL, revision INTEGER NOT NULL DEFAULT 1)""")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_admin_updated ON memory_admin_operations(updated_at)")
+            await db.execute("CREATE INDEX IF NOT EXISTS idx_admin_correction_recovery "
+                "ON memory_admin_operations(id) WHERE kind='correction' "
+                "AND status IN ('executing','needs_review','prepared_commit','rollback_prepared')")
             await db.execute("CREATE INDEX IF NOT EXISTS idx_episode_scope ON memory_episodes(session_id,persona_id)")
             await self._create_budget(db)
         self._budget_configured = True
@@ -186,6 +189,24 @@ class AdministrationStore:
             where, args = ("WHERE kind=?", [kind]) if kind else ("", [])
             rows = await (await db.execute(f"SELECT * FROM memory_admin_operations {where} ORDER BY created_at DESC LIMIT ?", (*args, max(1, min(500, limit))))).fetchall()
             return [self.decode(row) for row in rows]
+
+    async def list_unresolved_corrections(self, *, after_id: str | None = None, limit: int = 100) -> list[dict]:
+        """Return one recovery page without keeping a connection across repairs.
+
+        IDs remain stable when reconciliation changes status and updated_at;
+        OFFSET or the dashboard's recent-record cap can skip older claims.
+        """
+        where = "kind='correction' AND status IN ('executing','needs_review','prepared_commit','rollback_prepared')"
+        args = []
+        if after_id is not None:
+            where += " AND id>?"
+            args.append(after_id)
+        async with self.connection() as db:
+            rows = await (await db.execute(
+                f"SELECT * FROM memory_admin_operations WHERE {where} ORDER BY id LIMIT ?",
+                (*args, max(1, min(100, limit))),
+            )).fetchall()
+        return [self.decode(row) for row in rows]
 
     async def put_item(self, operation_id, item_key, payload, *, status="pending", result=None):
         raw_payload = self._encode(payload)
