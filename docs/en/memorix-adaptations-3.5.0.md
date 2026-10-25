@@ -2,7 +2,7 @@
 
 This release adapts mechanisms from Memorix 1.4.0 within Anamnesis's existing identity, scope, persona and lifecycle boundaries.
 
-Use **3.5.6** for the earlier lock, permission and shutdown fixes plus recovery of failed import stages, recall after legacy-text correction rollback, evidence-based profile scope migration, complete proposal support and session filtering for pending review. The features and defaults below still apply.
+Use **3.5.7** for the earlier lock, permission, shutdown, import and correction fixes plus evidence merging and proposal review after repeated profile scope changes, repair of earlier chat assignments, and cleanup of expired deletion snapshots whose original documents no longer exist. The features and defaults below still apply.
 
 Profiles remain disabled by default. Enabled profiles retain explicit self-report and verbatim-evidence validation. Manual edits have independent priority; changed automatic values enter review by default. The directory shows current values, proposals, history and multiple original evidence sources. Version checks protect edits and review actions. Administrator display aliases never merge accounts.
 

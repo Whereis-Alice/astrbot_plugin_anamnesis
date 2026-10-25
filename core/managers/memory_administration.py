@@ -173,6 +173,9 @@ class MemoryAdministration(AdministrationJobsMixin):
             return await self._settled(self._restore(operation_id, actor, purge))
 
     async def _restore(self, operation_id, actor, purge):
+        # Recheck ownership and retention after acquiring the mutation guard;
+        # a restore can have waited past its deadline since the public check.
+        operation = await self._owned(operation_id, actor, "delete", allow_expired=purge)
         restored, conflicts = [], []
         for item in await self.store.items(operation_id):
             if item["status"] == "restored":
@@ -191,6 +194,14 @@ class MemoryAdministration(AdministrationJobsMixin):
                 manager = getattr(self.engine, "user_profile_manager", None)
                 if manager:
                     await manager.delete_by_source_memory(memory_id)
+                await self.store.put_item(operation_id, memory_id, {}, status="purged")
+                restored.append(memory_id)
+                continue
+            if (purge and current is None and actor.startswith("webui:")
+                    and operation["expires_at"] <= time.time()):
+                # A regular permanent-delete API may have removed this source.
+                # After retention, an administrator's explicit purge can free
+                # only its obsolete snapshot; no other source is deleted.
                 await self.store.put_item(operation_id, memory_id, {}, status="purged")
                 restored.append(memory_id)
                 continue

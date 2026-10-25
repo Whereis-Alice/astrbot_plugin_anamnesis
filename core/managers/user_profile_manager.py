@@ -191,6 +191,7 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
                                 await connection.execute(
                                     f"UPDATE user_profiles SET suppressed=1 WHERE source_memory_id IN ({placeholders})", ids)
                     await self._create_ledger(connection)
+                    await self._repair_profile_scopes(connection)
                     await connection.commit()
                 except BaseException:
                     await connection.rollback()
