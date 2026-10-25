@@ -8,6 +8,8 @@ Open Plugins → Anamnesis → Pages → dashboard → Profiles. Find a person b
 
 Directory grouping does not merge stored facts. Updates use the exact scope/key, and `user_profile.scope_mode=session` still isolates injected profiles by chat. Explicit aliases determine identity grouping. New extraction supplies readable labels; older facts have fallback titles.
 
+Since 3.4.2, latest group labels are kept separately from each fact's original source chat. Missing account IDs do not create profiles, and invalid source memories do not displace valid facts from the injection quota.
+
 ## Retrieval and lifecycle
 
 - Vector search expands when scope filtering leaves too few results, with a default cap of 8192. Document and graph routes share embeddings and checked IDs, including misses. Legacy hosts exposing only `retrieve` retain expansion; embeddings inside that API cannot be reused.
@@ -26,6 +28,8 @@ WebChat checkpoints reconcile edited/regenerated tails and retain compressed hea
 Since 3.4.1, summaries that can be reverted also require the same source-message window. Separate turns stay separate so reverting new messages preserves memories supported by older messages. Summaries with message IDs require identical valid ID sets; legacy revision-based summaries require identical source windows.
 
 ## Tools and migration
+
+Since 3.4.2, runtime migration requires a consistent, complete target chat origin in `source_session_id` or `source_window.session_id`. Bare numeric IDs and records with missing or conflicting provenance stay unchanged and require an administrator's migration preview. Automatic moves use database backups and synchronize atom and graph scopes. If a graph rebuild or selected document write is still in progress, wait for completion and run a new preview before retrying.
 
 `agent_tools.agentic_recall_enabled` adds exact speaker/time filters, excluded IDs and cursors to `anamnesis_recall_memory`, and registers `anamnesis_read_memory_evidence`. Time uses event time, source-message time ranges, then creation time, and labels the basis used. Unix seconds and ISO-8601 are accepted; timezone-free values use UTC. Pagination uses a bounded pool, default 100. Retrieval and evidence share 5 calls, 20 seconds of execution and 16000 output characters per request. Evidence additionally checks source sessions for global or historically unfiltered recall. Sources can contain superseded claims; live facts and lifecycle information accompany them.
 

@@ -572,8 +572,8 @@ class MemoryEngineWriteOpsMixin:
             status=status,
             reinforcement_count=int(payload.get("reinforcement_count", 0) or 0),
             decay_type=decay_type,
-            session_id=payload.get("session_id") or session_id,
-            persona_id=payload.get("persona_id") or persona_id,
+            session_id=session_id,
+            persona_id=persona_id,
             metadata=dict(payload.get("metadata") or {}),
         )
 
@@ -674,12 +674,13 @@ class MemoryEngineWriteOpsMixin:
         metadata = memory.get("metadata") or payload.get("metadata") or {}
         if not isinstance(metadata, dict):
             metadata = self._safe_json_dict(metadata)
+        if str(metadata.get("status") or "active") != "active":
+            await self._advance_write_op(op_id, "completed", status="completed", memory_id=int(memory_id))
+            return True
         if metadata.get("has_source") and not await self.get_memory_source(
             int(memory_id)
         ):
-            repaired_metadata = dict(metadata)
-            repaired_metadata["has_source"] = False
-            repaired_metadata["source_message_count"] = 0
+            repaired_metadata = {"has_source": False, "source_message_count": 0}
             if (
                 self.hybrid_retriever is None
                 or not await self.hybrid_retriever.update_metadata(
@@ -687,16 +688,23 @@ class MemoryEngineWriteOpsMixin:
                 )
             ):
                 raise RuntimeError("source metadata repair failed")
-            metadata = repaired_metadata
             await self._advance_write_op(
                 op_id,
                 "source_metadata_repaired",
                 memory_id=int(memory_id),
                 error="retained source was unavailable after interrupted write",
             )
+            memory = await self.get_memory(int(memory_id))
+            if memory is None:
+                await self._advance_write_op(op_id, "source_missing", status="failed", memory_id=int(memory_id))
+                return False
+            metadata = self._safe_json_dict(memory.get("metadata"))
+            if str(metadata.get("status") or "active") != "active":
+                await self._advance_write_op(op_id, "completed", status="completed", memory_id=int(memory_id))
+                return True
         content = str(memory.get("text") or "")
-        session_id = metadata.get("session_id") or payload.get("session_id")
-        persona_id = metadata.get("persona_id") or payload.get("persona_id")
+        session_id = metadata.get("session_id") if "session_id" in metadata else payload.get("session_id")
+        persona_id = metadata.get("persona_id") if "persona_id" in metadata else payload.get("persona_id")
 
         atom_payloads = payload.get("failed_atoms") or payload.get("atoms", []) or []
         atoms: list[MemoryAtom] = []
@@ -735,9 +743,9 @@ class MemoryEngineWriteOpsMixin:
                     not in existing_keys
                 ]
                 if atoms_to_insert:
-                    await self.atom_store.insert_many(atoms_to_insert)
+                    await self.atom_store.insert_many(atoms_to_insert, preserve_lifecycle=True)
             elif not existing_atoms:
-                await self.atom_store.insert_many(atoms)
+                await self.atom_store.insert_many(atoms, preserve_lifecycle=True)
             await self._advance_write_op(op_id, "atoms_repaired", memory_id=memory_id)
 
         if self.graph_memory_manager is not None and content.strip():
@@ -779,8 +787,13 @@ class MemoryEngineWriteOpsMixin:
             cursor = await self.db_connection.execute(
                 "SELECT 1 FROM documents WHERE id = ?", (int(memory_id),)
             )
-            if await cursor.fetchone() is not None and self.hybrid_retriever is not None:
-                await self.hybrid_retriever.delete_memory(int(memory_id))
+            if await cursor.fetchone() is not None:
+                if self.hybrid_retriever is None or not await self.hybrid_retriever.delete_memory(int(memory_id)):
+                    await self._advance_write_op(
+                        op_id, "document_delete_failed", status="needs_repair", memory_id=int(memory_id),
+                        error="document/vector delete repair failed",
+                    )
+                    return False
 
             await self.db_connection.execute(
                 "DELETE FROM memory_sources WHERE memory_id = ?", (int(memory_id),)
@@ -849,25 +862,35 @@ class MemoryEngineWriteOpsMixin:
             f"DELETE FROM livingmemory_memories_fts WHERE doc_id IN ({placeholders})",
             memory_ids,
         )
+        # The vector adapter uses its own writer connection to this database.
+        # Do not keep the BM25 write transaction open across that external call.
+        await self.db_connection.commit()
 
         cursor = await self.db_connection.execute(
             f"SELECT id, doc_id FROM documents WHERE id IN ({placeholders})",
             memory_ids,
         )
         uuid_rows = await cursor.fetchall()
+        vector_cleanup_failed = False
         for row in uuid_rows:
             uuid_doc_id = row["doc_id"]
             if not uuid_doc_id:
+                vector_cleanup_failed = True
                 continue
             try:
-                await self.faiss_db.delete(uuid_doc_id)
+                if await self.faiss_db.delete(uuid_doc_id) is False:
+                    vector_cleanup_failed = True
             except asyncio.CancelledError:
                 raise
             except Exception:
+                vector_cleanup_failed = True
                 logger.warning(
                     f"[批量删除] FAISS 删除失败 (id={row['id']})",
                     exc_info=True,
                 )
+
+        if vector_cleanup_failed:
+            await self._set_index_rebuild_required(True)
 
         cursor = await self.db_connection.execute(
             f"DELETE FROM documents WHERE id IN ({placeholders})",

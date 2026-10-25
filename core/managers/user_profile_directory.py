@@ -57,8 +57,10 @@ class UserProfileDirectoryMixin:
             escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             clauses.append("(identity LIKE ? ESCAPE '\\' OR sender_id LIKE ? ESCAPE '\\' "
                            "OR source_sender_name LIKE ? ESCAPE '\\' "
-                           "OR source_group_name LIKE ? ESCAPE '\\')")
-            params.extend([f"%{escaped}%"] * 4)
+                           "OR source_group_name LIKE ? ESCAPE '\\' "
+                           "OR context_sender_name LIKE ? ESCAPE '\\' "
+                           "OR context_group_name LIKE ? ESCAPE '\\')")
+            params.extend([f"%{escaped}%"] * 6)
         if source_session_id:
             clauses.append("source_session_id = ?")
             params.append(source_session_id)
@@ -83,15 +85,20 @@ class UserProfileDirectoryMixin:
             users = [dict(row) for row in await cursor.fetchall()]
         for user in users:
             async with connection.execute(
-                "SELECT source_sender_name, source_session_id FROM user_profiles "
+                "SELECT COALESCE(context_sender_name, source_sender_name), "
+                "COALESCE(context_session_id, source_session_id) FROM user_profiles "
                 "WHERE identity=? ORDER BY COALESCE(context_updated_at, updated_at) DESC, "
                 "updated_at DESC LIMIT 1", (user["identity"],),
             ) as cursor:
                 latest = await cursor.fetchone()
             async with connection.execute(
-                "SELECT source_group_name, source_group_id FROM user_profiles "
-                "WHERE identity=? AND (source_group_name IS NOT NULL OR source_group_id IS NOT NULL) "
-                "ORDER BY COALESCE(context_updated_at, updated_at) DESC, updated_at DESC LIMIT 1",
+                "SELECT CASE WHEN context_group_id IS NOT NULL THEN context_group_name "
+                "ELSE COALESCE(context_group_name, source_group_name) END, "
+                "COALESCE(context_group_id, source_group_id) FROM user_profiles "
+                "WHERE identity=? AND (COALESCE(context_group_name, source_group_name) IS NOT NULL "
+                "OR COALESCE(context_group_id, source_group_id) IS NOT NULL) "
+                "ORDER BY COALESCE(context_group_updated_at, context_updated_at, updated_at) DESC, "
+                "updated_at DESC LIMIT 1",
                 (user["identity"],),
             ) as cursor:
                 group = await cursor.fetchone()

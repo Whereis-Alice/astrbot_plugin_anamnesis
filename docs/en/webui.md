@@ -27,6 +27,8 @@ AstrBot `4.24.2` or later is recommended. Older versions can still run the plugi
 
 The User profiles page exposes all saved facts and is intended only for administrators with plugin-page access. Existing facts remain visible, editable, and deletable when extraction is off. The directory shows the latest known group, and the reader separates complete facts by category and chat source. Use View / Edit to change the title, value, category, confidence and expiry. By default, profiles are separated by platform, user identity, and `unified_msg_origin` chat origin, not by each new conversation record created by `/new`. Editing or deleting a profile fact does not delete its associated normal memory. Since 3.4.1, facts with missing or inactive source memories stop being injected; their saved profile rows remain here for administrator inspection.
 
+Since 3.4.2, latest group labels are stored separately from each fact's original chat source. Shared user profiles also display separate source-chat sections. Events without an account ID do not create profiles, and invalid source memories do not consume the injection quota for valid facts.
+
 - Editing a summary, topic, or key fact rebuilds that memory's embedding, BM25, graph, atom, and related derived data. Status-only or importance-only edits do not unconditionally rebuild every index.
 - Memories above the source-retention threshold show source messages in the detail panel. When at least two source messages are available, the Dashboard can call the LLM to replace the memory with a new summary.
 - Changing status to `archived` removes a memory from normal recall indexes while retaining its source document. Changing it back to `active` regenerates its embedding and derived indexes.

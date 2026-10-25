@@ -468,132 +468,59 @@ class MemoryEngineBatchMixin:
             raise
 
     async def _migrate_session_data_if_needed(self, unified_msg_origin: str) -> None:
+        """Migrate legacy scopes only when stored provenance identifies this chat.
+
+        A bare group/user ID cannot distinguish a private chat, a group, or a
+        different platform instance. Ambiguous records stay in their old scope
+        until an administrator reviews an explicit migrate-scope preview.
         """
-        运行时自动迁移：将旧格式的session_id更新为unified_msg_origin格式
+        from .scope_migrator import ScopeMigrator
 
-        支持各种平台的旧格式（通用匹配策略）：
-        - WebChat UUID: "ac8c2cef-959e-4146-ad22-c82d0230ad06"
-        - WebChat带前缀: "webchat!astrbot!ac8c2cef-959e-4146-ad22-c82d0230ad06"
-        - QQ号: "123456789"
-        - 其他平台: 任意字符串
-
-        目标格式: "platform:message_type:session_id"
-
-        策略：
-        1. 从unified_msg_origin解析出：platform、message_type、session_id
-        2. 生成所有可能的旧格式匹配候选（递归拆分）
-        3. 查找匹配任一候选且不含冒号的旧记录
-        4. 批量更新为unified_msg_origin
-        5. 使用unified_msg_origin本身作为迁移标记（避免重复）
-
-        Args:
-            unified_msg_origin: 完整的统一消息来源（格式：platform:type:session_id）
-        """
-
+        parts = unified_msg_origin.split(":", 2)
+        if len(parts) != 3 or any(not part or part != part.strip() for part in parts):
+            return
+        if self.db_connection is None:
+            return
+        if not hasattr(self, "_legacy_scope_migration_lock"):
+            self._legacy_scope_migration_lock = asyncio.Lock()
+            self._legacy_scope_migration_checks = {}
         try:
-            # 1. 解析 unified_msg_origin
-            parts = unified_msg_origin.split(":", 2)
-            if len(parts) != 3:
-                logger.warning(
-                    f"[自动迁移] unified_msg_origin 格式不正确: {unified_msg_origin}"
-                )
-                return
-
-            platform_id, message_type, full_session_id = parts
-
-            # 2. 生成所有可能的旧格式匹配候选
-            # 对于 "webchat!astrbot!ac8c2cef-..." 会生成:
-            #   ["webchat!astrbot!ac8c2cef-...", "astrbot!ac8c2cef-...", "ac8c2cef-..."]
-            # 对于 "123456789" 会生成: ["123456789"]
-            candidates = [full_session_id]
-
-            # 按感叹号递归拆分
-            if "!" in full_session_id:
-                parts_by_bang = full_session_id.split("!")
-                for i in range(1, len(parts_by_bang)):
-                    candidates.append("!".join(parts_by_bang[i:]))
-
-            logger.info(f"[自动迁移] 开始检查会话，候选匹配: {candidates}")
-
-            # 3. 检查是否已迁移（使用unified_msg_origin本身作为标记）
-            migration_key = f"migrated_umo_{unified_msg_origin}"
-            if self.db_connection is None:
-                return
-            cursor = await self.db_connection.execute(
-                "SELECT value FROM migration_status WHERE key = ?", (migration_key,)
-            )
-            row = await cursor.fetchone()
-            if row and row[0] == "true":
-                # 已迁移过，跳过
-                return
-
-            # 4. 查找所有需要迁移的记录
-            # 条件：session_id 匹配任一候选 且 不包含冒号（旧格式标识）
-            placeholders = " OR ".join(
-                ["json_extract(metadata, '$.session_id') = ?" for _ in candidates]
-            )
-            query = f"""
-                SELECT id, metadata FROM documents
-                WHERE ({placeholders})
-                AND json_extract(metadata, '$.session_id') NOT LIKE '%:%'
-            """
-
-            cursor = await self.db_connection.execute(query, tuple(candidates))
-            rows = list(await cursor.fetchall())
-
-            if not rows:
-                logger.info("[自动迁移] 未找到需要迁移的旧数据")
-                # 即使没有旧数据也标记为已检查，避免重复查询
-                await self.db_connection.execute(
-                    "INSERT OR REPLACE INTO migration_status (key, value, updated_at) VALUES (?, ?, datetime('now'))",
-                    (migration_key, "true"),
-                )
-                await self.db_connection.commit()
-                return
-
-            logger.info(f"[自动迁移] 找到 {len(rows)} 条旧数据需要迁移")
-
-            # 5. 批量更新
-            updates: list[tuple[str, int]] = []
-            for row in rows:
-                doc_id = row[0]
-                metadata_str = row[1]
-
-                try:
-                    metadata = json.loads(metadata_str) if metadata_str else {}
-                except (json.JSONDecodeError, TypeError):
-                    metadata = {}
-
-                old_session_id = metadata.get("session_id", "unknown")
-
-                # 更新为unified_msg_origin格式
-                metadata["session_id"] = unified_msg_origin
-                metadata["migrated_at"] = time.time()
-                metadata["old_session_id"] = old_session_id  # 保留旧值便于追溯
-
-                updates.append((json.dumps(metadata, ensure_ascii=False), doc_id))
-
-            if updates:
-                await self.db_connection.executemany(
-                    "UPDATE documents SET metadata = ? WHERE id = ?",
-                    updates,
-                )
-            updated_count = len(updates)
-
-            # 6. 提交更新
-            await self.db_connection.commit()
-
-            # 7. 标记为已迁移
-            await self.db_connection.execute(
-                "INSERT OR REPLACE INTO migration_status (key, value, updated_at) VALUES (?, ?, datetime('now'))",
-                (migration_key, "true"),
-            )
-            await self.db_connection.commit()
-
-            logger.info(
-                f"[自动迁移] 完成！已更新 {updated_count} 条记录 -> {unified_msg_origin}"
-            )
-
+            async with self._legacy_scope_migration_lock:
+                checked = self._legacy_scope_migration_checks
+                now = time.monotonic()
+                if now - checked.get(unified_msg_origin, -float("inf")) < 60:
+                    return
+                full_session_id = parts[2]
+                fragments = full_session_id.split("!")
+                candidates = list(dict.fromkeys(
+                    "!".join(fragments[index:]) for index in range(len(fragments))
+                ))
+                migrator = ScopeMigrator(self, source_anchor=unified_msg_origin)
+                for source_scope in candidates:
+                    if not source_scope or ":" in source_scope:
+                        continue
+                    plan = await migrator.preview(source_scope, unified_msg_origin)
+                    if plan["unanchored_document_count"]:
+                        logger.warning(
+                            "[自动迁移] 旧作用域 %s 有 %s 条记忆缺少一致的会话来源，"
+                            "请管理员先 /anam migrate-scope %s %s preview",
+                            source_scope, plan["unanchored_document_count"],
+                            source_scope, unified_msg_origin,
+                        )
+                    if plan["document_count"]:
+                        result = await migrator.apply(
+                            source_scope, unified_msg_origin, plan["fingerprint"],
+                        )
+                        logger.info(
+                            "[自动迁移] 已迁移 %s 条有明确来源的记忆 -> %s；备份：%s",
+                            result["document_count"], unified_msg_origin,
+                            result["backup_paths"],
+                        )
+                # A short, bounded runtime cache avoids repeated checks/notices
+                # without permanently ignoring later imports or repaired anchors.
+                checked[unified_msg_origin] = time.monotonic()
+                if len(checked) > 256:
+                    checked.pop(next(iter(checked)))
         except asyncio.CancelledError:
             raise
         except Exception as e:

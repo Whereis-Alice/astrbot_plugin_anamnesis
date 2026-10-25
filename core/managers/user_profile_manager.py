@@ -83,11 +83,11 @@ class UserProfileManager(UserProfileDirectoryMixin):
     def scope_for_event(self, event: Any) -> str | None:
         """Use sender identity, never a shared group ID, as the profile owner."""
         sender_getter = getattr(event, "get_sender_id", None)
-        sender_id = str(
-            sender_getter()
-            if callable(sender_getter)
-            else getattr(event, "sender_id", "") or ""
-        ).strip()
+        try:
+            sender = sender_getter() if callable(sender_getter) else getattr(event, "sender_id", None)
+        except Exception:
+            return None
+        sender_id = str(sender).strip() if sender is not None else ""
         if not sender_id:
             return None
         identity = resolve_event_identity(self.config_manager, event).strip().casefold()
@@ -145,17 +145,25 @@ class UserProfileManager(UserProfileDirectoryMixin):
                 async with connection.execute("PRAGMA table_info(user_profiles)") as cursor:
                     existing_columns = {row[1] for row in await cursor.fetchall()}
                 for column in ("source_group_id", "source_group_name", "source_sender_name",
-                               "identity", "platform", "sender_id", "display_label"):
+                               "identity", "platform", "sender_id", "display_label",
+                               "context_group_id", "context_group_name", "context_sender_name",
+                               "context_session_id"):
                     if column not in existing_columns:
                         await connection.execute(
                             f"ALTER TABLE user_profiles ADD COLUMN {column} TEXT"
                         )
                 for column, definition in (("suppressed", "INTEGER NOT NULL DEFAULT 0"),
-                                           ("context_updated_at", "REAL")):
+                                           ("context_updated_at", "REAL"),
+                                           ("context_group_updated_at", "REAL")):
                     if column not in existing_columns:
                         await connection.execute(
                             f"ALTER TABLE user_profiles ADD COLUMN {column} {definition}"
                         )
+                if "context_group_updated_at" not in existing_columns:
+                    await connection.execute(
+                        "UPDATE user_profiles SET context_group_updated_at=COALESCE(context_updated_at,updated_at) "
+                        "WHERE source_group_id IS NOT NULL OR source_group_name IS NOT NULL"
+                    )
                 await self._backfill_directory(connection)
                 await connection.execute("""
                     CREATE INDEX IF NOT EXISTS idx_user_profiles_scope
@@ -168,7 +176,9 @@ class UserProfileManager(UserProfileDirectoryMixin):
                 memory_connection = getattr(getattr(self, "memory_engine", None), "db_connection", None)
                 if memory_connection is not None:
                     async with memory_connection.execute(
-                        "SELECT id FROM documents WHERE COALESCE(json_extract(metadata,'$.status'),'active') <> 'active'"
+                        "SELECT id FROM documents WHERE CASE WHEN json_valid(metadata) "
+                        "THEN COALESCE(json_extract(metadata,'$.status'),'active') "
+                        "ELSE 'invalid' END <> 'active'"
                     ) as cursor:
                         while batch := await cursor.fetchmany(500):
                             ids = [row[0] for row in batch]
@@ -196,8 +206,8 @@ class UserProfileManager(UserProfileDirectoryMixin):
                WHERE profile_scope = ? AND suppressed = 0
                  AND (expires_at IS NULL OR expires_at > ?)
                ORDER BY (expires_at IS NOT NULL) ASC, confidence DESC,
-                        updated_at DESC LIMIT ?""",
-            (scope, time.time(), limit),
+                        updated_at DESC""",
+            (scope, time.time()),
         ) as cursor:
             rows = await cursor.fetchall()
         facts = [dict(row) for row in rows]
@@ -207,15 +217,19 @@ class UserProfileManager(UserProfileDirectoryMixin):
         memory_connection = getattr(getattr(self, "memory_engine", None), "db_connection", None)
         source_ids = {fact["source_memory_id"] for fact in facts if fact["source_memory_id"] is not None}
         if memory_connection is not None and source_ids:
-            placeholders = ",".join("?" for _ in source_ids)
-            async with memory_connection.execute(
-                "SELECT id FROM documents WHERE id IN (" + placeholders + ") "
-                "AND json_valid(metadata) AND COALESCE(json_extract(metadata,'$.status'),'active')='active'",
-                list(source_ids),
-            ) as cursor:
-                active_ids = {row[0] for row in await cursor.fetchall()}
+            active_ids = set()
+            sources = list(source_ids)
+            for start in range(0, len(sources), 500):
+                batch = sources[start:start + 500]
+                placeholders = ",".join("?" for _ in batch)
+                async with memory_connection.execute(
+                    "SELECT id FROM documents WHERE id IN (" + placeholders + ") "
+                    "AND json_valid(metadata) AND COALESCE(json_extract(metadata,'$.status'),'active')='active'",
+                    batch,
+                ) as cursor:
+                    active_ids.update(row[0] for row in await cursor.fetchall())
             facts = [fact for fact in facts if fact["source_memory_id"] is None or fact["source_memory_id"] in active_ids]
-        return facts
+        return facts[:limit]
 
     async def _migrate_legacy_scope_for_event(self, event: Any, scope: str) -> None:
         """Move 3.2.0 user-scoped rows only into their original chat scope.
@@ -247,11 +261,15 @@ class UserProfileManager(UserProfileDirectoryMixin):
                        (profile_scope, profile_key, category, value, confidence,
                        source_memory_id, source_session_id, source_group_id,
                        source_group_name, source_sender_name, updated_at, expires_at,
-                       identity, platform, sender_id, display_label, suppressed, context_updated_at)
+                       identity, platform, sender_id, display_label, suppressed, context_updated_at,
+                       context_group_id, context_group_name, context_sender_name, context_session_id,
+                       context_group_updated_at)
                        SELECT ?, profile_key, category, value, confidence,
                               source_memory_id, source_session_id, source_group_id,
                               source_group_name, source_sender_name, updated_at, expires_at,
-                              identity, platform, sender_id, display_label, suppressed, context_updated_at
+                              identity, platform, sender_id, display_label, suppressed, context_updated_at,
+                              context_group_id, context_group_name, context_sender_name, context_session_id,
+                              context_group_updated_at
                        FROM user_profiles
                        WHERE profile_scope IN (?, ?) AND source_session_id = ?
                        ON CONFLICT(profile_scope, profile_key) DO NOTHING""",
@@ -578,25 +596,11 @@ class UserProfileManager(UserProfileDirectoryMixin):
                             fact["display_label"], now,
                         ),
                     )
-                await connection.execute(
-                    """UPDATE user_profiles
-                       SET source_group_id = COALESCE(?, source_group_id),
-                           source_group_name = COALESCE(?, source_group_name),
-                           source_sender_name = COALESCE(?, source_sender_name),
-                           context_updated_at = ?
-                       WHERE profile_scope = ?""",
-                    (
-                        source_context["source_group_id"],
-                        source_context["source_group_name"],
-                        source_context["source_sender_name"],
-                        now,
-                        scope,
-                    ),
-                )
+                await self._update_recent_context(connection, scope, source_context, now)
                 await connection.execute(
                     """DELETE FROM user_profiles WHERE profile_scope = ? AND profile_key IN (
                          SELECT profile_key FROM user_profiles WHERE profile_scope = ?
-                         ORDER BY (expires_at IS NULL) DESC, updated_at DESC,
+                         ORDER BY (suppressed = 0) DESC, (expires_at IS NULL) DESC, updated_at DESC,
                                   confidence DESC, profile_key
                          LIMIT -1 OFFSET ?)""",
                     (scope, scope, max_items),
@@ -671,6 +675,27 @@ class UserProfileManager(UserProfileDirectoryMixin):
                 raise
         return count
 
+    async def _update_recent_context(self, connection, scope, context, now) -> None:
+        """Keep directory labels separate from each fact's original provenance."""
+        await connection.execute(
+            """UPDATE user_profiles
+               SET context_group_name = CASE
+                     WHEN ? IS NOT NULL AND COALESCE(context_group_id, source_group_id) IS NOT NULL
+                          AND ? <> COALESCE(context_group_id, source_group_id)
+                     THEN ? ELSE COALESCE(?, context_group_name, source_group_name) END,
+                   context_group_id = COALESCE(?, context_group_id, source_group_id),
+                   context_sender_name = COALESCE(?, context_sender_name, source_sender_name),
+                   context_session_id = COALESCE(?, context_session_id, source_session_id),
+                   context_group_updated_at = CASE WHEN ? IS NOT NULL OR ? IS NOT NULL
+                     THEN ? ELSE context_group_updated_at END,
+                   context_updated_at = ?
+               WHERE profile_scope = ?""",
+            (context["source_group_id"], context["source_group_id"], context["source_group_name"],
+             context["source_group_name"], context["source_group_id"], context["source_sender_name"],
+             context["source_session_id"], context["source_group_id"], context["source_group_name"],
+             now, now, scope),
+        )
+
     async def touch_source_context(self, event: Any) -> None:
         """Refresh the latest group/user label for an existing profile scope."""
         scope = self.scope_for_event(event)
@@ -682,21 +707,7 @@ class UserProfileManager(UserProfileDirectoryMixin):
             return
         async with self.store._write_lock:
             try:
-                await connection.execute(
-                    """UPDATE user_profiles
-                       SET source_group_id = COALESCE(?, source_group_id),
-                           source_group_name = COALESCE(?, source_group_name),
-                           source_sender_name = COALESCE(?, source_sender_name),
-                           context_updated_at = ?
-                       WHERE profile_scope = ?""",
-                    (
-                        context["source_group_id"],
-                        context["source_group_name"],
-                        context["source_sender_name"],
-                        time.time(),
-                        scope,
-                    ),
-                )
+                await self._update_recent_context(connection, scope, context, time.time())
                 await connection.commit()
             except BaseException:
                 await connection.rollback()

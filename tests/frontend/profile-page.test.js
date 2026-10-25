@@ -79,6 +79,24 @@ test("directory load failures remain visible and retryable", async () => {
   assert.match(elements["profile-users"].innerHTML, /offline &lt;script&gt;/);
 });
 
+test("shared user scope still displays facts under their distinct source sessions", async () => {
+  const { page, state, elements } = setup({});
+  state.profile.user = user;
+  state.profile.items = facts.map((fact, index) => ({ ...fact, profile_scope: "shared:user:alice", source_session_id: `chat-${index}` }));
+  page.renderDetail();
+  assert.equal((elements["profile-reader"].innerHTML.match(/class="profile-source-section"/g) || []).length, 2);
+  assert.match(elements["profile-reader"].innerHTML, /chat-0/);
+  assert.match(elements["profile-reader"].innerHTML, /chat-1/);
+});
+
+test("a legacy group label conflicting with its source session is not trusted", () => {
+  const { page } = setup({});
+  for (const session of ["qq:GroupMessage:42", "qq:FriendMessage:alice"]) {
+    assert.equal(page._chatName({ source_session_id: session, source_group_id: "99", source_group_name: "其他群" }), session);
+  }
+  assert.equal(page._chatName({ source_session_id: "qq:GroupMessage:42", source_group_id: "42", source_group_name: "正确群" }), "正确群");
+});
+
 test("cancelling profile deletion preserves the live editor node and unsaved input", async () => {
   let closes = 0;
   const { page, peek, elements } = setup({ async post() { throw new Error("cancel must not delete"); } });
@@ -94,4 +112,42 @@ test("cancelling profile deletion preserves the live editor node and unsaved inp
   assert.equal(elements["peek-body"].children?.[0], editor);
   assert.equal(elements["profile-edit-value"].value, "unsaved correction");
   assert.equal(page._deleting, false);
+});
+
+test("an older save response cannot close a newer profile editor", async () => {
+  let finish, closes = 0;
+  const { page, peek, elements } = setup({
+    post() { return new Promise(resolve => { finish = resolve; }); },
+    async get(path) { return path === "profiles/users" ? directory : detail; },
+  });
+  peek.close = () => { closes++; };
+  page.openItem(facts[0]);
+  elements["profile-edit-value"].value = "first correction";
+  elements["profile-edit-category"].value = "preference";
+  elements["profile-edit-confidence"].value = "0.9";
+  const saving = page.saveItem(facts[0]);
+  page.openItem(facts[1]);
+  elements["profile-edit-value"].value = "second unsaved draft";
+  finish({}); await saving;
+  assert.equal(closes, 0);
+  assert.equal(elements["profile-edit-value"].value, "second unsaved draft");
+});
+
+test("an older confirmed delete cannot close a newer profile editor", async () => {
+  let finish, started;
+  const posting = new Promise(resolve => { started = resolve; });
+  let closes = 0;
+  const { page, peek, elements } = setup({
+    post() { started(); return new Promise(resolve => { finish = resolve; }); },
+    async get(path) { return path === "profiles/users" ? directory : detail; },
+  });
+  peek.close = () => { closes++; };
+  page.openItem(facts[0]);
+  const deleting = page.deleteItem(facts[0].profile_scope, facts[0].profile_key);
+  await posting;
+  page.openItem(facts[1]);
+  elements["profile-edit-value"].value = "second unsaved draft";
+  finish({count: 1}); await deleting;
+  assert.equal(closes, 0);
+  assert.equal(elements["profile-edit-value"].value, "second unsaved draft");
 });

@@ -32,12 +32,14 @@ class ScopeMigrator:
     same attached transaction. Backups cover both files for crash recovery too.
     """
 
-    def __init__(self, memory_engine, backup_dir: str | Path | None = None):
+    def __init__(self, memory_engine, backup_dir: str | Path | None = None,
+                 *, source_anchor: str | None = None):
         self.engine = memory_engine
         self.main_path = Path(memory_engine.db_path).resolve()
         if not self.main_path.is_file():
             raise ValueError("memory database does not exist")
         self.config = getattr(memory_engine, "config", {})
+        self.source_anchor = source_anchor
         self.backup_dir = Path(backup_dir) if backup_dir else self.main_path.parent / "scope_migration_backups"
         document_store = getattr(getattr(memory_engine, "faiss_db", None), "document_storage", None)
         document_path = getattr(document_store, "db_path", None)
@@ -54,6 +56,39 @@ class ScopeMigrator:
             if self.graph_path == self.main_path:
                 raise ValueError("graph vectors must use a separate document database")
         self._lock = asyncio.Lock()
+
+    @asynccontextmanager
+    async def _graph_migration_guard(self):
+        manager = getattr(self.engine, "graph_memory_manager", None)
+        gate = getattr(manager, "_rebuild_gate", None)
+        if gate is None:
+            yield
+            return
+        # A shadow graph keeps an older copy of entry scopes outside our
+        # attached databases. Its later switch would undo the scope migration.
+        # Holding the same gate also prevents a new rebuild from starting.
+        async with gate:
+            if getattr(manager, "_rebuild_active", False):
+                raise ValueError("graph rebuild is in progress; retry migration after it finishes")
+            yield
+
+    @staticmethod
+    def _canonical_scope(value):
+        if not isinstance(value, str):
+            return False
+        parts = value.split(":", 2)
+        return len(parts) == 3 and all(part and part == part.strip() for part in parts)
+
+    @classmethod
+    def _anchored_to(cls, metadata, target_scope):
+        window = metadata.get("source_window")
+        values = (metadata.get("source_session_id"),
+                  window.get("session_id") if isinstance(window, dict) else None)
+        anchors = []
+        for value in values:
+            if cls._canonical_scope(value):
+                anchors.append(value)
+        return bool(anchors) and all(value == target_scope for value in anchors)
 
     @staticmethod
     def _validate_scopes(source_scope: str, target_scope: str):
@@ -93,13 +128,24 @@ class ScopeMigrator:
             "AND json_extract(metadata,'$.session_id')=?"+persona_sql+" ORDER BY id",
             (source_scope, *persona_parameters),
         )
+        unanchored = []
+        if self.source_anchor is not None:
+            if self.source_anchor != target_scope:
+                raise ValueError("source anchor must match the target scope")
+            anchored = []
+            for row in docs:
+                (anchored if self._anchored_to(self._metadata(row), target_scope)
+                 else unanchored).append(row)
+            docs = anchored
         targets = await self._rows(
             db, "SELECT * FROM documents WHERE json_valid(metadata) "
             "AND json_extract(metadata,'$.session_id')=?"+persona_sql+" ORDER BY id",
             (target_scope, *persona_parameters),
         )
         ids = [int(row["id"]) for row in docs]
-        rows = {"documents": docs, "target_documents": targets, "atoms": [], "graph_entries": [], "graph_vectors": []}
+        rows = {"documents": docs, "target_documents": targets,
+                "unanchored_documents": unanchored,
+                "atoms": [], "graph_entries": [], "graph_vectors": []}
         for key, table, id_column in (("atoms", "memory_atoms", "parent_memory_id"), ("graph_entries", "graph_entries", "source_memory_id")):
             if not await self._table_exists(db, table):
                 continue
@@ -139,7 +185,7 @@ class ScopeMigrator:
         # Include the exact source and target snapshots in the compare-and-swap
         # token; a new destination memory also changes what preview reviewed.
         payload = {"source_scope": source_scope, "target_scope": target_scope,
-                   "persona_id": persona_id, "rows": rows}
+                   "persona_id": persona_id, "source_anchor": self.source_anchor, "rows": rows}
         fingerprint = hashlib.sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
         return {
             "source_scope": source_scope, "target_scope": target_scope, "persona_id": persona_id,
@@ -147,6 +193,8 @@ class ScopeMigrator:
             "atom_count": len(rows["atoms"]), "graph_entry_count": len(rows["graph_entries"]),
             "graph_vector_count": len(rows["graph_vectors"]), "persona_counts": persona_counts,
             "fingerprint": fingerprint, "profile_scopes_changed": False,
+            "source_anchor": self.source_anchor,
+            "unanchored_document_count": len(rows["unanchored_documents"]),
         }
 
     async def preview(self, source_scope: str, target_scope: str, persona_id: str | None = None) -> dict:
@@ -182,6 +230,13 @@ class ScopeMigrator:
         metadata = self._metadata(row)
         metadata.setdefault("source_session_id", metadata.get("session_id") or row.get("session_id") or source_scope)
         metadata.setdefault("source_persona_id", metadata.get("persona_id", row.get("persona_id")))
+        if self.source_anchor is not None:
+            # A canonical window can anchor a legacy document whose source
+            # field was absent or still a bare ID. Keep its old scope for audit,
+            # and let checkpoint rollback use the verified original chat ID.
+            metadata.setdefault("old_session_id", metadata.get("session_id") or source_scope)
+            if not self._canonical_scope(metadata.get("source_session_id")):
+                metadata["source_session_id"] = self.source_anchor
         metadata["session_id"] = target_scope
         # Archived atom snapshots are part of the same memory, rather than
         # personal profiles; preserving old snapshot scope would hide live facts
@@ -213,12 +268,25 @@ class ScopeMigrator:
                 if cursor.rowcount != 1:
                     raise ScopeMigrationError("scope migration row changed after preview")
 
+    async def _ensure_writes_finished(self, db, rows):
+        if not await self._table_exists(db, "memory_write_ops"):
+            return
+        ids = [int(row["id"]) for row in rows["documents"]]
+        for start in range(0, len(ids), 500):
+            batch = ids[start:start+500]
+            cursor = await db.execute(
+                "SELECT 1 FROM memory_write_ops WHERE status IN ('pending','needs_repair') "
+                f"AND memory_id IN ({','.join('?' for _ in batch)}) LIMIT 1", batch,
+            )
+            if await cursor.fetchone() is not None:
+                raise ValueError("memory write or repair is in progress; retry migration after it finishes")
+
     async def _run(self, source_scope, target_scope, fingerprint, persona_id, apply):
         self._validate_scopes(source_scope, target_scope)
         if not isinstance(fingerprint, str) or not fingerprint:
             raise ValueError("preview fingerprint is required")
         backups = []
-        async with self._lock, self._connect() as db:
+        async with self._lock, self._graph_migration_guard(), self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             try:
                 if self.graph_path is not None:
@@ -231,6 +299,7 @@ class ScopeMigrator:
                     raise ValueError("preview is stale; run preview again")
                 if not rows["documents"]:
                     raise ValueError("source scope has no matching memories")
+                await self._ensure_writes_finished(db, rows)
                 backups = await self._backups()
                 if apply:
                     await self._update_rows(db, rows, source_scope, target_scope)

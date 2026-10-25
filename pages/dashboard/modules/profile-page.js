@@ -71,7 +71,13 @@ export class ProfilePage {
   }
   _formatTime(value) { if (!value) return this.t("table.na"); const n = Number(value); return Number.isFinite(n) && n > 0 ? new Date(n < 1e11 ? n * 1000 : n).toLocaleString() : String(value); }
   _formatConfidence(value) { return value != null && value !== "" && Number.isFinite(Number(value)) ? Math.round(Math.min(1, Math.max(0, Number(value))) * 100) + "%" : this.t("table.na"); }
-  _chatName(item) { return item.source_group_name || (item.source_group_id ? this.t("profile.groupWithId", item.source_group_id) : this.t("profile.privateOrUnknown")); }
+  _chatName(item) {
+    const session = String(item.source_session_id || "");
+    const source = session.match(/:(GroupMessage|FriendMessage):(.+)$/);
+    if (source && ((source[1] === "FriendMessage" && (item.source_group_id || item.source_group_name)) ||
+        (source[1] === "GroupMessage" && item.source_group_id && String(item.source_group_id) !== source[2]))) return session;
+    return item.source_group_name || (item.source_group_id ? this.t("profile.groupWithId", item.source_group_id) : this.t("profile.privateOrUnknown"));
+  }
   render() { this.renderDirectory(); this.renderDetail(); }
 
   renderDirectory() {
@@ -101,7 +107,11 @@ export class ProfilePage {
     const now = Date.now() / 1000;
     const visible = p.items.map((item, index) => ({ item, index })).filter(({ item }) => (!p.category || item.category === p.category) && (!p.lifecycle || this.lifecycle(item, now) === p.lifecycle));
     const scopes = new Map();
-    visible.forEach(row => { if (!scopes.has(row.item.profile_scope)) scopes.set(row.item.profile_scope, []); scopes.get(row.item.profile_scope).push(row); });
+    visible.forEach(row => {
+      const source = JSON.stringify([row.item.profile_scope, row.item.source_session_id || ""]);
+      if (!scopes.has(source)) scopes.set(source, []);
+      scopes.get(source).push(row);
+    });
     let html = `<header class="profile-reader-header"><div><span class="eyebrow">${esc(this.t("profile.detailBadge"))}</span><h2>${esc(u.sender_name || u.sender_id || this.t("profile.unknownUser"))}</h2><p>${esc(u.platform || "")} · ${esc(u.sender_id || "--")}<br>${esc(this.t("profile.recentGroup"))}：${esc(u.last_group_name || (u.last_group_id ? this.t("profile.groupWithId", u.last_group_id) : this.t("profile.privateOrUnknown")))}</p></div><span class="type-tag">${esc(this.t("profile.groupFactCount", p.detailTotal))}</span></header><div class="profile-reader-filters"><label>${esc(this.t("profile.category"))}<select class="select input" id="profile-category"><option value="">${esc(this.t("profile.allCategories"))}</option>${CATEGORIES.map(c => `<option value="${c}"${p.category === c ? " selected" : ""}>${esc(this.t("profile.category." + c))}</option>`).join("")}</select></label><label>${esc(this.t("profile.lifecycle"))}<select class="select input" id="profile-lifecycle"><option value="">${esc(this.t("profile.allLifecycle"))}</option>${["stable", "temporary", "expired", "suppressed"].map(c => `<option value="${c}"${p.lifecycle === c ? " selected" : ""}>${esc(this.t("profile.lifecycle." + c))}</option>`).join("")}</select></label></div>`;
     if (p.detailError) html += '<div class="inline-feedback" role="alert">' + esc(p.detailError) + '<button class="btn btn-sm" data-profile-retry="detail">' + esc(this.t("common.retry")) + '</button></div>';
     if (!visible.length) html += '<div class="table-empty">' + esc(this.t(p.detailLoading ? "common.loading" : "profile.noFacts")) + '</div>';
@@ -153,29 +163,33 @@ export class ProfilePage {
     if (!value || !category || !text || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) { fail(this.t("profile.invalidFields")); return; }
     if (expiresText && !Number.isFinite(expiry)) { fail(this.t("profile.invalidExpiry")); return; }
     this._saving = true;
+    const generation = this.peek._detailGeneration;
     const button = document.getElementById("profile-editor-save"); if (button) button.disabled = true;
     try {
       await this.api.post("profiles/update", { profile_scope: item.profile_scope, profile_key: item.profile_key, value, category, confidence, expires_at: expiry }, { retries: 0 });
-      this._showToast(this.t("profile.updateSuccess")); this.peek.close(); await this.fetch();
+      this._showToast(this.t("profile.updateSuccess"));
+      if (generation === this.peek._detailGeneration) this.peek.close();
+      await this.fetch();
     } catch (error) { fail(error.message || this.t("profile.updateFailed")); }
     finally { this._saving = false; if (button) button.disabled = false; }
   }
   async deleteItem(scope, key) {
     if (!scope || !key || this._deleting) return;
     this._deleting = true; this.peek.open(true);
+    const generation = this.peek._detailGeneration;
     const editor = document.getElementById("profile-editor-form");
     let cancelled = false;
     try {
       if (!await this.peek.showConfirmDialog(this.t("profile.deleteConfirmTitle"), this.t("profile.deleteConfirmMessage", key, scope))) {
         cancelled = true;
         // Restore the original form node, including live inputs and listeners.
-        if (editor) document.getElementById("peek-body")?.replaceChildren(editor);
+        if (editor && generation === this.peek._detailGeneration) document.getElementById("peek-body")?.replaceChildren(editor);
         return;
       }
       const result = await this.api.post("profiles/delete", { profile_scope: scope, profile_key: key }, { retries: 0 });
       this._showToast(this.t("profile.deleteSuccess", Number(result.count) || 1)); await this.fetch();
     } catch (error) { this._showToast(error.message || this.t("profile.deleteFailed"), true); }
-    finally { if (!cancelled) this.peek.close(); this._deleting = false; }
+    finally { if (!cancelled && generation === this.peek._detailGeneration) this.peek.close(); this._deleting = false; }
   }
   initEventListeners() {
     if (this._bound) return; this._bound = true;

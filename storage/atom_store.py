@@ -170,8 +170,12 @@ class AtomStore:
             await db.commit()
         return atom_id
 
-    async def insert_many(self, atoms: list[MemoryAtom]) -> list[int]:
-        """Insert atoms in chunked transactions and return their ids."""
+    async def insert_many(self, atoms: list[MemoryAtom], *, preserve_lifecycle: bool = False) -> list[int]:
+        """Insert in batches; interrupted-write replay can retain original times.
+
+        Lifecycle preservation requires a finite positive stored expiry. Atoms
+        that have never been prepared still receive their initial TTL normally.
+        """
         if not atoms:
             return []
 
@@ -183,7 +187,8 @@ class AtomStore:
                 prepared_batch: list[MemoryAtom] = []
                 try:
                     for atom in batch:
-                        self._prepare_atom_for_insert(atom)
+                        if not (preserve_lifecycle and math.isfinite(atom.expires_at) and atom.expires_at > 0):
+                            self._prepare_atom_for_insert(atom)
                         prepared_batch.append(atom)
                         batch_atom_ids.append(await self._insert_atom(db, atom))
                     await db.commit()
@@ -481,76 +486,20 @@ class AtomStore:
             return cursor.rowcount
 
     async def cleanup_forgotten(self, older_than_days: float = 7.0) -> int:
-        """Remove FORGOTTEN atoms older than the threshold from FTS. Returns count."""
+        """Purge old forgotten atoms and their FTS rows in one transaction."""
         cutoff = time.time() - older_than_days * 86400.0
-        async with self._connect() as db:
-            cursor = await db.execute(
-                "SELECT id FROM memory_atoms WHERE status = 'forgotten' AND expires_at < ?",
-                (cutoff,),
-            )
-            rows = await cursor.fetchall()
-            atom_ids = [int(row[0]) for row in rows]
-            if atom_ids:
-                placeholders = ",".join("?" * len(atom_ids))
-                await db.execute(
-                    f"DELETE FROM memory_atoms_fts WHERE atom_id IN ({placeholders})",
-                    atom_ids,
-                )
-                await db.execute(
-                    f"DELETE FROM memory_atoms WHERE id IN ({placeholders})",
-                    atom_ids,
-                )
-                await db.commit()
-            return len(atom_ids)
+        return await self._remove_atom_matches([("status = 'forgotten' AND expires_at < ?", [cutoff])])
 
     async def forget_expired_atoms(self, older_than_days: float = 7.0) -> int:
         """Soft-delete old expired atoms and remove them from the FTS index."""
         cutoff = time.time() - older_than_days * 86400.0
-        async with self._connect() as db:
-            cursor = await db.execute(
-                "SELECT id FROM memory_atoms WHERE status = 'expired' AND expires_at < ?",
-                (cutoff,),
-            )
-            rows = await cursor.fetchall()
-            atom_ids = [int(row[0]) for row in rows]
-            if atom_ids:
-                placeholders = ",".join("?" * len(atom_ids))
-                await db.execute(
-                    f"DELETE FROM memory_atoms_fts WHERE atom_id IN ({placeholders})",
-                    atom_ids,
-                )
-                await db.execute(
-                    f"""
-                    UPDATE memory_atoms
-                    SET status = ?
-                    WHERE id IN ({placeholders})
-                    """,
-                    (AtomStatus.FORGOTTEN.value, *atom_ids),
-                )
-                await db.commit()
-            return len(atom_ids)
+        return await self._remove_atom_matches(
+            [("status = 'expired' AND expires_at < ?", [cutoff])], new_status=AtomStatus.FORGOTTEN,
+        )
 
     async def delete_by_parent(self, parent_memory_id: int) -> int:
         """Delete all atoms belonging to a parent memory. Returns count."""
-        async with self._connect() as db:
-            cursor = await db.execute(
-                "SELECT id FROM memory_atoms WHERE parent_memory_id = ?",
-                (parent_memory_id,),
-            )
-            rows = await cursor.fetchall()
-            atom_ids = [int(row[0]) for row in rows]
-            if atom_ids:
-                placeholders = ",".join("?" * len(atom_ids))
-                await db.execute(
-                    f"DELETE FROM memory_atoms_fts WHERE atom_id IN ({placeholders})",
-                    atom_ids,
-                )
-                await db.execute(
-                    f"DELETE FROM memory_atoms WHERE id IN ({placeholders})",
-                    atom_ids,
-                )
-                await db.commit()
-            return len(atom_ids)
+        return await self._remove_atom_matches([("parent_memory_id = ?", [parent_memory_id])])
 
     async def batch_delete_by_parent(self, parent_memory_ids: list[int]) -> int:
         """Delete atoms for multiple parent memories in bulk."""
@@ -558,38 +507,42 @@ class AtomStore:
         if not normalized_ids:
             return 0
 
-        deleted_count = 0
+        matches = []
+        for index in range(0, len(normalized_ids), self._SQLITE_BATCH_SIZE):
+            batch = normalized_ids[index : index + self._SQLITE_BATCH_SIZE]
+            matches.append(("parent_memory_id IN (" + ",".join("?" * len(batch)) + ")", batch))
+        return await self._remove_atom_matches(matches)
+
+    async def _remove_atom_matches(
+        self, matches: list[tuple[str, list[Any]]], *, new_status: AtomStatus | None = None,
+    ) -> int:
+        """Apply internal predicates to atoms and FTS under the same writer lock.
+
+        Subqueries avoid one parameter per atom when a parent has many facts.
+        Predicates remain current until both updates commit, preventing cleanup
+        from deleting a fact concurrently moved to another lifecycle state.
+        """
+        affected = 0
         async with self._connect() as db:
-            for index in range(0, len(normalized_ids), self._SQLITE_BATCH_SIZE):
-                batch = normalized_ids[index : index + self._SQLITE_BATCH_SIZE]
-                parent_placeholders = ",".join("?" * len(batch))
-                cursor = await db.execute(
-                    f"""
-                    SELECT id
-                    FROM memory_atoms
-                    WHERE parent_memory_id IN ({parent_placeholders})
-                    """,
-                    batch,
-                )
-                rows = await cursor.fetchall()
-                atom_ids = [int(row[0]) for row in rows]
-                if not atom_ids:
-                    continue
-
-                atom_placeholders = ",".join("?" * len(atom_ids))
-                await db.execute(
-                    f"DELETE FROM memory_atoms_fts WHERE atom_id IN ({atom_placeholders})",
-                    atom_ids,
-                )
-                cursor = await db.execute(
-                    f"DELETE FROM memory_atoms WHERE id IN ({atom_placeholders})",
-                    atom_ids,
-                )
-                deleted_count += cursor.rowcount
-
-            if deleted_count:
+            try:
+                await db.execute("BEGIN IMMEDIATE")
+                for where, parameters in matches:
+                    await db.execute(
+                        "DELETE FROM memory_atoms_fts WHERE CAST(atom_id AS INTEGER) IN "
+                        f"(SELECT id FROM memory_atoms WHERE {where})", parameters,
+                    )
+                    if new_status is None:
+                        cursor = await db.execute(f"DELETE FROM memory_atoms WHERE {where}", parameters)
+                    else:
+                        cursor = await db.execute(
+                            f"UPDATE memory_atoms SET status=? WHERE {where}", [new_status.value, *parameters],
+                        )
+                    affected += max(0, cursor.rowcount)
                 await db.commit()
-        return deleted_count
+            except BaseException:
+                await db.rollback()
+                raise
+        return affected
 
     async def get_stats(self) -> dict[str, int]:
         """Return per-status atom counts."""

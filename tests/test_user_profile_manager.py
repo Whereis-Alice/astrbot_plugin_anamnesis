@@ -8,7 +8,6 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 import pytest_asyncio
-
 from astrbot.api.platform import MessageType
 from astrbot.api.provider import ProviderRequest
 from astrbot_plugin_anamnesis.core.base.config_manager import ConfigManager
@@ -198,6 +197,115 @@ async def test_profile_scope_platform_and_isolated_session(profile_manager):
         _event("same-id", "qq", "qq:GroupMessage:43")
     ) != isolated.scope_for_event(qq)
     assert profile_manager.scope_for_event(_event(session="")) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("missing_id", [None, "", "   "])
+async def test_missing_account_cannot_create_a_profile_from_display_name(profile_manager, missing_id):
+    event = _event(missing_id)
+    event.get_sender_name.return_value = "共同昵称"
+    assert profile_manager.scope_for_event(event) is None
+    assert await profile_manager.upsert_facts(event, [_fact()]) == 0
+
+
+@pytest.mark.asyncio
+async def test_shared_profile_recent_context_does_not_relabel_fact_source(profile_manager):
+    profile_manager.config_manager = ConfigManager({"user_profile": {"enabled": True, "scope_mode": "user"}})
+    first = _event("alice", session="qq:GroupMessage:42")
+    first.message_obj = SimpleNamespace(group=SimpleNamespace(group_id="42", group_name="来源群"))
+    await profile_manager.upsert_facts(first, [_fact()], source_memory_id=7)
+    latest = _event("alice", session="qq:GroupMessage:99")
+    latest.message_obj = SimpleNamespace(group=SimpleNamespace(group_id="99", group_name="最近群"))
+    await profile_manager.touch_source_context(latest)
+    row = (await profile_manager.list_for_web())["items"][0]
+    assert row["source_session_id"] == first.unified_msg_origin
+    assert row["source_group_id"] == "42" and row["source_group_name"] == "来源群"
+    directory = await profile_manager.list_users_for_web(query="最近群")
+    assert directory["total"] == 1
+    assert directory["users"][0]["last_group_name"] == "最近群"
+    assert directory["users"][0]["last_session_id"] == latest.unified_msg_origin
+    unknown = _event("alice", session="qq:GroupMessage:100")
+    unknown.message_obj = SimpleNamespace(group=SimpleNamespace(group_id="100", group_name=None))
+    await profile_manager.touch_source_context(unknown)
+    directory = await profile_manager.list_users_for_web()
+    assert directory["users"][0]["last_group_id"] == "100"
+    assert directory["users"][0]["last_group_name"] is None
+
+
+@pytest.mark.asyncio
+async def test_suppressed_facts_cannot_evict_a_new_active_temporary_fact(profile_manager):
+    profile_manager.config_manager = ConfigManager({"user_profile": {"enabled": True, "max_items": 1}})
+    event = _event()
+    await profile_manager.upsert_facts(event, [_fact()], source_memory_id=7)
+    await profile_manager.set_source_suppressed([7], True)
+    await profile_manager.upsert_facts(event, [_fact("mood", "暂时不舒服", category="status")], source_memory_id=8)
+    facts = await profile_manager.get_profile(event)
+    assert [fact["profile_key"] for fact in facts] == ["mood"]
+
+
+@pytest.mark.asyncio
+async def test_invalid_parent_before_limit_cannot_hide_a_valid_profile_fact(profile_manager):
+    profile_manager.config_manager = ConfigManager({"user_profile": {"enabled": True, "max_items": 2}})
+    event = _event()
+    await profile_manager.upsert_facts(event, [_fact()], source_memory_id=7)
+    await profile_manager.upsert_facts(event, [_fact("mood", "暂时不舒服", category="status")], source_memory_id=8)
+    await profile_manager.store.connection.execute("CREATE TABLE documents(id INTEGER PRIMARY KEY, metadata TEXT)")
+    await profile_manager.store.connection.execute("INSERT INTO documents VALUES (8, '{\"status\":\"active\"}')")
+    await profile_manager.store.connection.commit()
+    profile_manager.memory_engine = SimpleNamespace(db_connection=profile_manager.store.connection)
+    profile_manager.config_manager = ConfigManager({"user_profile": {"enabled": True, "max_items": 1}})
+    assert [fact["profile_key"] for fact in await profile_manager.get_profile(event)] == ["mood"]
+
+
+@pytest.mark.asyncio
+async def test_corrupt_unrelated_parent_metadata_cannot_disable_profile_schema(profile_manager):
+    connection = profile_manager.store.connection
+    await connection.execute("CREATE TABLE documents(id INTEGER PRIMARY KEY, metadata TEXT)")
+    await connection.execute("INSERT INTO documents VALUES (7, 'not-json'), (8, '{\"status\":\"active\"}')")
+    await connection.commit()
+    profile_manager.memory_engine = SimpleNamespace(db_connection=connection)
+    event = _event()
+    assert await profile_manager.upsert_facts(event, [_fact()], source_memory_id=8) == 1
+    assert len(await profile_manager.get_profile(event)) == 1
+
+
+@pytest.mark.asyncio
+async def test_private_context_does_not_make_an_older_group_the_most_recent(profile_manager):
+    profile_manager.config_manager = ConfigManager({
+        "user_profile": {"enabled": True, "scope_mode": "user"},
+        "filtering_settings": {"isolated_sessions": "qq:GroupMessage:99"},
+    })
+    for session, group_id, name in [("qq:GroupMessage:42", "42", "较早群"), ("qq:GroupMessage:99", "99", "最近群")]:
+        event = _event("alice", session=session)
+        event.message_obj = SimpleNamespace(group=SimpleNamespace(group_id=group_id, group_name=name))
+        await profile_manager.upsert_facts(event, [_fact()])
+    await profile_manager.touch_source_context(_event("alice", session="qq:FriendMessage:alice"))
+    user = (await profile_manager.list_users_for_web())["users"][0]
+    assert user["last_session_id"] == "qq:FriendMessage:alice"
+    assert user["last_group_name"] == "最近群"
+
+
+@pytest.mark.asyncio
+async def test_legacy_recent_group_time_survives_new_context_columns(profile_manager):
+    profile_manager.config_manager = ConfigManager({
+        "user_profile": {"enabled": True, "scope_mode": "user"},
+        "filtering_settings": {"isolated_sessions": "qq:GroupMessage:99"},
+    })
+    connection = profile_manager.store.connection
+    await connection.execute("""CREATE TABLE user_profiles (
+        profile_scope TEXT, profile_key TEXT, category TEXT, value TEXT, confidence REAL,
+        source_memory_id INTEGER, source_session_id TEXT, source_group_id TEXT,
+        source_group_name TEXT, source_sender_name TEXT, updated_at REAL, expires_at REAL,
+        PRIMARY KEY (profile_scope, profile_key))""")
+    for session, group_id, name, stamp in [("qq:GroupMessage:42", "42", "较早群", 10),
+                                          ("qq:GroupMessage:99", "99", "最近群", 20)]:
+        scope = profile_manager.scope_for_event(_event("alice", session=session))
+        await connection.execute("INSERT INTO user_profiles VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                                 (scope, "fact", "preference", "tea", .9, None, session, group_id, name, "alice", stamp, None))
+    await connection.commit()
+    await profile_manager.touch_source_context(_event("alice", session="qq:FriendMessage:alice"))
+    user = (await profile_manager.list_users_for_web())["users"][0]
+    assert user["last_group_name"] == "最近群"
 
 
 @pytest.mark.asyncio
