@@ -524,6 +524,34 @@ class AdministrationJobsMixin:
         getattr(self, "_job_preparations", set()).clear()
         getattr(self, "_job_action_locks", {}).clear()
 
+    @staticmethod
+    def _episode_source_session(metadata):
+        """Accept only explicit, consistent local chat provenance."""
+        window = metadata.get("source_window")
+        hints = (
+            metadata.get("source_session_id"),
+            window.get("session_id") if isinstance(window, dict) else None,
+        )
+        origins = set()
+        for hint in hints:
+            if not isinstance(hint, str):
+                continue
+            parts = hint.split(":", 2)
+            if len(parts) == 3 and all(part and part == part.strip() for part in parts):
+                origins.add(hint)
+        if len(origins) != 1:
+            raise ValueError("事件成员缺少明确且一致的真实来源会话")
+        return origins.pop()
+
+    @staticmethod
+    def _episode_member_matches(current, saved):
+        # Older jobs omitted the source field despite a recorded local window.
+        # Every other captured field must still match; this does not authorize
+        # content changes or a move to another memory scope/persona.
+        if saved.get("source_session_id") is None:
+            saved = {**saved, "source_session_id": current["source_session_id"]}
+        return current == saved
+
     async def _episode_member(self, memory_id):
         from .memory_administration import fingerprint
 
@@ -542,7 +570,7 @@ class AdministrationJobsMixin:
             "content": content,
             "session_id": snapshot["metadata"].get("session_id"),
             "persona_id": snapshot["metadata"].get("persona_id"),
-            "source_session_id": snapshot["metadata"].get("source_session_id"),
+            "source_session_id": self._episode_source_session(snapshot["metadata"]),
         }
 
     async def _run_episode_job(self, job):
@@ -611,18 +639,23 @@ class AdministrationJobsMixin:
                 if job["payload"].get("episode_id"):
                     old = await (
                         await db.execute(
-                            "SELECT revision,session_id,persona_id,source_session_id FROM memory_episodes WHERE id=?",
+                            "SELECT revision,session_id,persona_id,source_session_id,members FROM memory_episodes WHERE id=?",
                             (episode_id,),
                         )
                     ).fetchone()
                     if (
                         not old
                         or old[0] != job["payload"].get("expected_revision")
-                        or tuple(old[1:]) != (scope, persona, source)
+                        or tuple(old[1:3]) != (scope, persona)
                     ):
                         raise ValueError("事件版本或范围已经变化，请刷新")
+                    if old[3] != source:
+                        old_members = json.loads(old[4])
+                        old_ids = sorted(member["memory_id"] for member in old_members)
+                        if old[3] is not None or old_ids != sorted(ids):
+                            raise ValueError("事件来源或成员已经变化，请刷新")
                 await db.execute(
-                    "INSERT INTO memory_episodes(id,session_id,persona_id,source_session_id,title,summary,members,created_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,summary=excluded.summary,members=excluded.members,revision=memory_episodes.revision+1",
+                    "INSERT INTO memory_episodes(id,session_id,persona_id,source_session_id,title,summary,members,created_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET source_session_id=excluded.source_session_id,title=excluded.title,summary=excluded.summary,members=excluded.members,revision=memory_episodes.revision+1",
                     (
                         episode_id,
                         scope,
@@ -674,14 +707,23 @@ class AdministrationJobsMixin:
         for row in rows:
             episode = self.store.decode(row)
             valid = True
+            sources = set()
             for member in episode["members"]:
                 try:
-                    if await self._episode_member(member["memory_id"]) != member:
+                    current = await self._episode_member(member["memory_id"])
+                    if not self._episode_member_matches(current, member):
                         valid = False
                         break
+                    sources.add(current["source_session_id"])
                 except ValueError:
                     valid = False
                     break
+            if valid:
+                valid = len(sources) == 1 and (
+                    episode["source_session_id"] is None or episode["source_session_id"] in sources
+                )
+                if valid:
+                    episode["source_session_id"] = next(iter(sources))
             if valid or include_stale:
                 episode["stale"] = not valid
                 episode["memory_ids"] = [

@@ -51,7 +51,14 @@ async def test_add_repair_does_not_reindex_inactive_parent(tmp_path, state):
         engine.graph_memory_manager = SimpleNamespace(index_memory=AsyncMock())
         payload = {"failed_atoms": [engine._serialize_atom_for_repair(MemoryAtom(parent_memory_id=1, content="lost fact"))]}
         op_id = await engine._start_write_op("add", payload, memory_id=1)
-        assert await engine._repair_add_write_op(op_id, 1, payload)
+        repaired = await engine._repair_add_write_op(op_id, 1, payload)
+        assert repaired is (state != "archived")
+        if state == "archived":
+            row = await (await engine.db_connection.execute(
+                "SELECT status,payload,retry_count FROM memory_write_ops WHERE id=?", (op_id,),
+            )).fetchone()
+            assert row["status"] == "needs_repair" and json.loads(row["payload"]) == payload
+            assert row["retry_count"] == 0
         assert await engine.atom_store.get_by_parent(1) == []
         engine.graph_memory_manager.index_memory.assert_not_awaited()
         assert (await engine.get_memory(1))["metadata"]["status"] == state

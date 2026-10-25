@@ -150,6 +150,7 @@ class MemoryForgetTool(FunctionTool[AstrAgentContext]):
                 if action == "restore":
                     if metadata.get("status") != "archived" and not metadata.get("restored_at"):
                         return _json_result({"restored": False, "error": "memory_is_not_archived"})
+                    use_recovery = False
                     if metadata.get("recovery_operation_id"):
                         from ..managers.memory_administration import (
                             MemoryAdministration,
@@ -158,10 +159,26 @@ class MemoryForgetTool(FunctionTool[AstrAgentContext]):
                         if not isinstance(administration, MemoryAdministration):
                             administration = MemoryAdministration(self.memory_engine, self.config_manager)
                             self.memory_engine.memory_administration = administration
+                        await administration.initialize()
+                        # Audit tags survive restoration and journal cleanup.
+                        # Only this document's unfinished deletion item may
+                        # authorize the journal route and its owner/TTL checks.
+                        async with administration.store.connection() as db:
+                            item = await (await db.execute(
+                                "SELECT i.status FROM memory_admin_items i "
+                                "JOIN memory_admin_operations o ON o.id=i.operation_id "
+                                "WHERE o.id=? AND o.kind='delete' AND i.item_key=?",
+                                (metadata["recovery_operation_id"], str(memory_id)),
+                            )).fetchone()
+                        use_recovery = item is not None and item[0] not in ("restored", "purged")
+                    if use_recovery:
                         recovered = await administration.restore(metadata["recovery_operation_id"], actor=actor)
                         success = memory_id in recovered["ids"]
                     else:
                         success = await self.memory_engine.restore_memory(memory_id)
+                    if success:
+                        current = await _owned_metadata(self, event, memory_id, scope, origin)
+                        success = current is not None and current.get("status", "active") == "active"
                 elif mode == "recoverable":
                     from ..managers.memory_administration import MemoryAdministration
                     administration = getattr(self.memory_engine, "memory_administration", None)

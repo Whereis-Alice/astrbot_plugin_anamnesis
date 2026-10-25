@@ -410,6 +410,13 @@ class MemoryAdministration(AdministrationJobsMixin):
         if fingerprint(current) != payload["fingerprint"]:
             await self.store.update(operation_id, status="stale")
             raise ValueError("原记忆已变化，请重新预览")
+        # Preview can precede lifecycle maintenance or reinforcement. The
+        # rollback journal must retain the state that this execution replaces,
+        # including its absolute expiry, rather than undoing intervening changes.
+        payload = {**payload, "before_atom_lifecycle":
+                   await self.engine.snapshot_archived_atom_lifecycle(payload["memory_id"])}
+        if await self.store.update(operation_id, payload=payload, expected_status=("executing",)) != 1:
+            raise ValueError("纠正计划已执行或已作废，请重新预览")
         metadata = dict(current["metadata"])
         metadata.update(canonical_summary=payload["content"], persona_summary=payload["content"],
                         key_facts=payload["key_facts"], correction_operation_id=operation_id)

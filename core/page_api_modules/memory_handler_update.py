@@ -9,6 +9,8 @@ from typing import Any
 from astrbot.api import logger
 from quart import request
 
+from ..managers.memory_mutation import memory_mutation_guard
+
 
 class MemoryHandlerUpdateMixin:
     """MemoryHandler 拆分模块：MemoryHandlerUpdateMixin"""
@@ -34,6 +36,11 @@ class MemoryHandlerUpdateMixin:
         Returns:
             包含更新结果的字典
         """
+        async with memory_mutation_guard(memory_engine):
+            return await self._update_memory_locked(memory_engine)
+
+    async def _update_memory_locked(self, memory_engine) -> dict[str, Any]:
+        """Read the current record and append its history under one writer guard."""
         from ..utils.number_utils import clamp_float
 
         payload = await request.get_json(silent=True) or {}

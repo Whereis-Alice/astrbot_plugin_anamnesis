@@ -18,6 +18,7 @@ from ..models.memory_atom import AtomStatus, AtomType, DecayType, MemoryAtom
 from ..recall_persona import (
     is_null_persona_filter,
     persona_filter_requested,
+    persona_matches,
     persona_sql_filter,
 )
 from ..retrieval.hybrid_retriever import HybridResult
@@ -543,6 +544,7 @@ class MemoryEngineWriteOpsMixin:
         parent_memory_id: int,
         session_id: str | None,
         persona_id: str | None,
+        *, original_metadata: dict[str, Any] | None = None,
     ) -> MemoryAtom | None:
         """Rebuild a MemoryAtom from repair payload."""
         content = str(payload.get("content") or "")
@@ -564,6 +566,15 @@ class MemoryEngineWriteOpsMixin:
         except ValueError:
             status = AtomStatus.ACTIVE
 
+        # Only evidence belonging to the captured parent may follow a later
+        # parent move. Explicit foreign provenance must remain foreign.
+        captured_session = payload.get("session_id")
+        captured_persona = payload.get("persona_id")
+        if original_metadata is not None:
+            if captured_session is not None and captured_session != original_metadata.get("session_id"):
+                session_id = captured_session
+            if captured_persona is not None and not persona_matches(captured_persona, original_metadata.get("persona_id")):
+                persona_id = captured_persona
         return MemoryAtom(
             parent_memory_id=parent_memory_id,
             atom_type=atom_type,
@@ -587,6 +598,46 @@ class MemoryEngineWriteOpsMixin:
             metadata=dict(payload.get("metadata") or {}),
         )
 
+    async def _merge_pending_archive_atoms(
+        self, memory_id: int, snapshots: list[dict], metadata: dict[str, Any],
+    ) -> list[dict]:
+        """Transfer captured add intent into an archive without renewing facts."""
+        if not isinstance(snapshots, list) or any(not isinstance(row, dict) for row in snapshots):
+            raise ValueError("invalid archived atom lifecycle snapshot")
+        merged = copy.deepcopy(snapshots)
+        async with self.db_connection.execute(
+            "SELECT payload FROM memory_write_ops WHERE memory_id=? AND op_type='add' "
+            "AND status IN ('pending','needs_repair') ORDER BY id",
+            (int(memory_id),),
+        ) as cursor:
+            operations = await cursor.fetchall()
+        keys = {
+            (row.get("content"), row.get("atom_type", "unknown"),
+             row.get("session_id"), row.get("persona_id"))
+            for row in merged
+        }
+        for operation in operations:
+            payload = self._safe_json_dict(operation[0])
+            original_metadata = {
+                "session_id": payload.get("session_id"), "persona_id": payload.get("persona_id"),
+                **self._safe_json_dict(payload.get("metadata")),
+            }
+            for captured in payload.get("failed_atoms") or payload.get("atoms") or []:
+                if not isinstance(captured, dict):
+                    continue
+                atom = self._deserialize_atom_from_repair(
+                    captured, int(memory_id), metadata.get("session_id"), metadata.get("persona_id"),
+                    original_metadata=original_metadata,
+                )
+                if atom is None:
+                    continue
+                row = self._serialize_atom_for_repair(atom)
+                key = (row["content"], row["atom_type"], row["session_id"], row["persona_id"])
+                if key not in keys:
+                    merged.append(row)
+                    keys.add(key)
+        return merged
+
     async def _repair_incomplete_write_ops(self) -> int:
         """Best-effort replay for incomplete add/delete operations."""
         if self.db_connection is None:
@@ -599,6 +650,9 @@ class MemoryEngineWriteOpsMixin:
                 FROM memory_write_ops
                 WHERE status IN ('pending', 'needs_repair')
                   AND retry_count < ?
+                  AND (step <> 'archive_atoms_deferred' OR NOT EXISTS (
+                       SELECT 1 FROM documents d WHERE d.id=memory_write_ops.memory_id
+                       AND json_valid(d.metadata) AND json_extract(d.metadata,'$.status')='archived'))
                   AND (? OR step NOT IN ('atoms_deferred','atoms_deferred_no_graph')
                        OR (? AND step='atoms_deferred_no_graph'))
                 ORDER BY id ASC
@@ -687,6 +741,21 @@ class MemoryEngineWriteOpsMixin:
         metadata = memory.get("metadata") or payload.get("metadata") or {}
         if not isinstance(metadata, dict):
             metadata = self._safe_json_dict(metadata)
+        if str(metadata.get("status") or "active") == "archived":
+            snapshots = metadata.get("archived_atom_lifecycle")
+            if snapshots is None:
+                snapshots = await self.snapshot_archived_atom_lifecycle(int(memory_id))
+            merged = await self._merge_pending_archive_atoms(int(memory_id), snapshots, metadata)
+            if merged != snapshots:
+                # Old archives may have recovery fingerprints bound to their
+                # exact metadata. Keep the journal until restoration consumes
+                # its atoms, rather than rewriting the archived snapshot.
+                await self._advance_write_op(
+                    op_id, "archive_atoms_deferred", status="needs_repair", memory_id=int(memory_id),
+                )
+                return False
+            await self._advance_write_op(op_id, "completed", status="completed", memory_id=int(memory_id))
+            return True
         if str(metadata.get("status") or "active") != "active":
             await self._advance_write_op(op_id, "completed", status="completed", memory_id=int(memory_id))
             return True
@@ -720,6 +789,10 @@ class MemoryEngineWriteOpsMixin:
         persona_id = metadata.get("persona_id") if "persona_id" in metadata else payload.get("persona_id")
 
         atom_payloads = payload.get("failed_atoms") or payload.get("atoms", []) or []
+        original_metadata = {
+            "session_id": payload.get("session_id"), "persona_id": payload.get("persona_id"),
+            **self._safe_json_dict(payload.get("metadata")),
+        }
         atoms: list[MemoryAtom] = []
         for atom_payload in atom_payloads:
             if isinstance(atom_payload, dict):
@@ -728,6 +801,7 @@ class MemoryEngineWriteOpsMixin:
                     int(memory_id),
                     session_id,
                     persona_id,
+                    original_metadata=original_metadata,
                 )
                 if atom is not None:
                     atoms.append(atom)

@@ -282,6 +282,9 @@ class MemoryEngineBatchMixin:
             if str(metadata.get("status") or "active") != "active":
                 continue
             metadata["archived_atom_lifecycle"] = await self.snapshot_archived_atom_lifecycle(int(document["id"]))
+            metadata["archived_atom_lifecycle"] = await self._merge_pending_archive_atoms(
+                int(document["id"]), metadata["archived_atom_lifecycle"], metadata,
+            )
             metadata["status"] = "archived"
             metadata["archived_at"] = archived_at
             active_documents.append(document)
@@ -407,7 +410,7 @@ class MemoryEngineBatchMixin:
                 ),
                 session_id=metadata.get("session_id"),
                 persona_id=metadata.get("persona_id"),
-            )
+            ) if self.atom_enabled else []
             for atom in atoms:
                 atom.parent_memory_id = memory_id
             if atoms and self.atom_store is not None:
@@ -416,6 +419,7 @@ class MemoryEngineBatchMixin:
                 snapshots = metadata["archived_atom_lifecycle"]
                 if not isinstance(snapshots, list) or any(not isinstance(row, dict) for row in snapshots):
                     raise ValueError("invalid archived atom lifecycle snapshot")
+                snapshots = await self._merge_pending_archive_atoms(memory_id, snapshots, metadata)
                 await self.restore_archived_atom_lifecycle(
                     memory_id, [snapshot for snapshot in snapshots
                                 if atom_scope_matches_parent(snapshot.get("session_id"), snapshot.get("persona_id"), metadata)],

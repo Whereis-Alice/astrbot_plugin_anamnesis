@@ -300,6 +300,8 @@ async def test_forget_cooldown_is_atomic_across_distinct_events(operation_name, 
     async def operate(*_args):
         entered.set()
         await release.wait()
+        if action == "restore":
+            memory["metadata"]["status"] = "active"
         return True
     engine.get_memory.side_effect = load
     operation = AsyncMock(side_effect=operate)
