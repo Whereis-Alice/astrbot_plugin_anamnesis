@@ -2017,7 +2017,7 @@ async def test_get_session_memories_sorted_by_create_time_desc(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_update_memory_status_only_skips_graph_reindex(tmp_path: Path):
-    """纯状态编辑不应触发图谱整图重建（审计 M3 回归守卫）。"""
+    """状态编辑和归档记忆不重建图；active 记忆的打分字段才重建。"""
     db_path = tmp_path / "update_skip_graph.db"
     engine = MemoryEngine(
         db_path=str(db_path),
@@ -2039,13 +2039,31 @@ async def test_update_memory_status_only_skips_graph_reindex(tmp_path: Path):
     engine.graph_memory_manager = Mock()
     engine.graph_memory_manager.index_memory = AsyncMock()
     engine.hybrid_retriever = Mock()
-    engine.hybrid_retriever.update_metadata = AsyncMock(return_value=True)
+    async def persist_metadata(doc_id: int, updates: dict) -> bool:
+        metadata = engine.faiss_db.docs[doc_id]["metadata"]
+        metadata.update(updates)
+        await engine.db_connection.execute(
+            "UPDATE documents SET metadata=? WHERE id=?",
+            (json.dumps(metadata), doc_id),
+        )
+        await engine.db_connection.commit()
+        return True
+    engine.hybrid_retriever.update_metadata = AsyncMock(side_effect=persist_metadata)
 
-    await engine.update_memory(mid, {"metadata": {"status": "archived"}})
+    assert await engine.update_memory(mid, {"metadata": {"status": "archived"}})
+    assert (await engine.get_memory(mid))["metadata"]["status"] == "archived"
     engine.graph_memory_manager.index_memory.assert_not_awaited()
 
-    # importance 参与图谱打分，仍必须重建
-    await engine.update_memory(mid, {"importance": 0.9})
+    # Archived parents must stay out of the graph even when scoring changes.
+    assert await engine.update_memory(mid, {"importance": 0.9})
+    engine.graph_memory_manager.index_memory.assert_not_awaited()
+
+    assert await engine.update_memory(mid, {"metadata": {"status": "active"}})
+    engine.graph_memory_manager.index_memory.assert_not_awaited()
+    assert await engine.update_memory(mid, {"importance": 0.8})
     engine.graph_memory_manager.index_memory.assert_awaited_once()
+    indexed_metadata = engine.graph_memory_manager.index_memory.await_args.args[2]
+    assert indexed_metadata["status"] == "active"
+    assert indexed_metadata["importance"] == .8
 
     await engine.close()

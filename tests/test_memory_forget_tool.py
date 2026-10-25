@@ -2,11 +2,12 @@
 
 import asyncio
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-
 from astrbot_plugin_anamnesis.core.base.config_manager import ConfigManager
+from astrbot_plugin_anamnesis.core.tools.agentic_recall import request_state
 from astrbot_plugin_anamnesis.core.tools.memory_forget_tool import MemoryForgetTool
 
 
@@ -16,6 +17,9 @@ def _run_context(*, sender_id: str = "user-1", origin: str = "test:private:sessi
     event.get_platform_name.return_value = "test"
     event.get_sender_id.return_value = sender_id
     event.get_sender_name.return_value = sender_id
+    extras = {}
+    event.get_extra.side_effect = lambda key, default=None: extras.get(key, default)
+    event.set_extra.side_effect = lambda key, value: extras.__setitem__(key, value)
     context = Mock()
     context.context.event = event
     return context
@@ -267,3 +271,69 @@ async def test_forget_tool_propagates_cancellation():
 
     with pytest.raises(asyncio.CancelledError):
         await tool.call(_run_context(), memory_id=7, reason="删除")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_name,mode,action", [
+    ("delete_memory", "delete", "forget"),
+    ("archive_memories", "archive", "forget"),
+    ("restore_memory", "archive", "restore"),
+])
+async def test_forget_cooldown_is_atomic_across_distinct_events(operation_name, mode, action):
+    tool, engine = _tool(config={
+        "filtering_settings": {"use_persona_filtering": False},
+        "agent_tools": {"forget_mode": mode, "forget_cooldown_seconds": 2},
+    })
+    engine.get_memory.return_value["metadata"]["status"] = "archived" if action == "restore" else "active"
+    memory = engine.get_memory.return_value
+    second_loaded = asyncio.Event()
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    async def load(memory_id):
+        if memory_id == 8:
+            second_loaded.set()
+        return memory
+    async def operate(*_args):
+        entered.set()
+        await release.wait()
+        return True
+    engine.get_memory.side_effect = load
+    operation = AsyncMock(side_effect=operate)
+    setattr(engine, operation_name, operation)
+    first_context, second_context = _run_context(), _run_context()
+    first_state = request_state(first_context.context.event)
+    second_state = request_state(second_context.context.event)
+    assert first_state is not second_state
+    first_state.update(calls=2, seconds=.5)
+    with patch("astrbot_plugin_anamnesis.core.tools.memory_forget_tool.time", SimpleNamespace(monotonic=lambda: 100)):
+        first = asyncio.create_task(tool.call(first_context, 7, "删除", action))
+        await entered.wait()
+        second = asyncio.create_task(tool.call(second_context, 8, "删除", action))
+        await second_loaded.wait()
+        await asyncio.sleep(0)
+        release.set()
+        results = [json.loads(value) for value in await asyncio.gather(first, second)]
+    operation.assert_awaited_once()
+    assert results[1] == {"deleted": False, "error": "forget_cooldown"}
+    assert first_state["forget_count"] == 1
+    assert second_state.get("forget_count", 0) == 0
+    assert first_state["calls"] == 2 and first_state["seconds"] == .5
+
+
+@pytest.mark.asyncio
+async def test_forget_instance_lock_keeps_same_request_quota_and_shared_budget():
+    tool, engine = _tool(config={
+        "filtering_settings": {"use_persona_filtering": False},
+        "agent_tools": {"forget_max_per_request": 1, "forget_cooldown_seconds": 0},
+    })
+    context = _run_context()
+    state = request_state(context.context.event)
+    state.update(calls=2, seconds=.5)
+    results = [json.loads(value) for value in await asyncio.gather(
+        tool.call(context, 7, "删除"), tool.call(context, 8, "删除"),
+    )]
+    engine.delete_memory.assert_awaited_once()
+    assert sum(bool(result.get("deleted")) for result in results) == 1
+    assert any(result.get("error") == "forget_limit_reached" for result in results)
+    assert state["forget_count"] == 1
+    assert state["calls"] == 2 and state["seconds"] == .5

@@ -1797,6 +1797,7 @@ async def test_webchat_alignment_wiring_preserves_new_conversation_memories(
     req.conversation_id = "new-cid" if fallback_id else None
     conversation_manager.align_webchat_history = AsyncMock(return_value={
         "cutoff": 0, "revision": 1, "preserve_long_term": preserve_long_term,
+        "removed_message_ids": [31, 32],
     })
     memory_engine.delete_reverted_summaries = AsyncMock(return_value=[])
     await handler.handle_memory_recall(event, req)
@@ -1807,7 +1808,9 @@ async def test_webchat_alignment_wiring_preserves_new_conversation_memories(
     if preserve_long_term:
         memory_engine.delete_reverted_summaries.assert_not_awaited()
     else:
-        memory_engine.delete_reverted_summaries.assert_awaited_once_with(event.unified_msg_origin, 0, 1)
+        memory_engine.delete_reverted_summaries.assert_awaited_once_with(
+            event.unified_msg_origin, 0, 1, removed_message_ids=[31, 32]
+        )
 
 
 @pytest.mark.asyncio

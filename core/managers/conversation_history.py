@@ -112,7 +112,7 @@ class ConversationHistoryMixin:
             async with self.store._write_lock:
                 try:
                     async with connection.execute(
-                        "SELECT id,role,metadata FROM messages WHERE session_id=? ORDER BY timestamp,id", (session_id,)
+                        "SELECT id,role,metadata FROM messages WHERE session_id=? ORDER BY id", (session_id,)
                     ) as cursor:
                         rows = [dict(row) for row in await cursor.fetchall()]
                     for row in rows:
@@ -163,7 +163,8 @@ class ConversationHistoryMixin:
                     await connection.rollback()
                     raise
             await self.invalidate_cache(session_id)
-            return {"cutoff": cutoff, "revision": previous_revision}
+            return {"cutoff": cutoff, "revision": previous_revision,
+                    "removed_message_ids": removed_ids}
 
     async def response_checkpoint_valid(self, event: Any) -> bool:
         getter = getattr(event, "get_extra", None)

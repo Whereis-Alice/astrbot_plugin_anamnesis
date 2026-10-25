@@ -277,10 +277,9 @@ class MemoryEngine(MemoryEngineOperationsMixin, MemoryEngineEvidenceMixin, Memor
             rerank_provider_resolver=self.rerank_provider_resolver,
         )
 
-        if self.graph_enabled and self.graph_vector_db is not None:
-            self.graph_store = GraphStore(self.db_path, self.config, cache_reads=True)
-            await self.graph_store.initialize()
-
+        if self.atom_enabled or (self.graph_enabled and self.graph_vector_db is not None):
+            # Atomic writes and their independent recall route remain available
+            # when graph retrieval is disabled or its vector DB is unavailable.
             self.atom_store = AtomStore(self.db_path, self.config)
             await self.atom_store.initialize()
 
@@ -290,6 +289,10 @@ class MemoryEngine(MemoryEngineOperationsMixin, MemoryEngineEvidenceMixin, Memor
                 )
                 self.atom_retriever = AtomRetriever(self.atom_store, self.config)
                 await self.atom_lifecycle_manager.start()
+
+        if self.graph_enabled and self.graph_vector_db is not None:
+            self.graph_store = GraphStore(self.db_path, self.config, cache_reads=True)
+            await self.graph_store.initialize()
 
             self.graph_extractor = GraphExtractor(self.config)
             self.graph_keyword_retriever = GraphKeywordRetriever(

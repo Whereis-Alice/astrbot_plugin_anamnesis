@@ -23,6 +23,8 @@ WebChat checkpoints reconcile edited/regenerated tails and retain compressed hea
 
 `reflection_engine.dedup_enabled=false` by default. Merging requires equivalent facts, matching scope/persona/source chat/identity and text similarity ≥0.97. Negation, changed numbers and new facts stay separate. Merges retain the original ID/summary and append provenance and retained sources.
 
+Since 3.4.1, summaries that can be reverted also require the same source-message window. Separate turns stay separate so reverting new messages preserves memories supported by older messages. Summaries with message IDs require identical valid ID sets; legacy revision-based summaries require identical source windows.
+
 ## Tools and migration
 
 `agent_tools.agentic_recall_enabled` adds exact speaker/time filters, excluded IDs and cursors to `anamnesis_recall_memory`, and registers `anamnesis_read_memory_evidence`. Time uses event time, source-message time ranges, then creation time, and labels the basis used. Unix seconds and ISO-8601 are accepted; timezone-free values use UTC. Pagination uses a bounded pool, default 100. Retrieval and evidence share 5 calls, 20 seconds of execution and 16000 output characters per request. Evidence additionally checks source sessions for global or historically unfiltered recall. Sources can contain superseded claims; live facts and lifecycle information accompany them.

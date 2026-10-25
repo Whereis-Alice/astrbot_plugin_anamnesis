@@ -94,7 +94,7 @@ async def test_successful_dedup_undo_restores_exact_metadata_source_and_graph(tm
         assert (await engine.get_memory(1))["metadata"] == before
         assert await engine.get_memory_source(1) == old_source
         restored = engine.graph_memory_manager.index_memory.await_args.args
-        assert restored == (1, "likes coffee", before, None)
+        assert restored == (1, "likes coffee", before, [])
     finally:
         await engine.close()
 
@@ -151,7 +151,7 @@ async def test_failed_source_write_restores_exact_snapshot_after_committed_sourc
         assert (await engine.get_memory(1))["metadata"] == before
         assert await engine.get_memory_source(1) == old_source
         assert engine.graph_memory_manager.index_memory.await_args.args == (
-            1, "likes coffee", before, None,
+            1, "likes coffee", before, [],
         )
     finally:
         await engine.close()

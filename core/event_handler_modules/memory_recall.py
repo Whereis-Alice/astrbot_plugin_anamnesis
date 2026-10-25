@@ -209,8 +209,10 @@ class MemoryRecall:
                             setter("anamnesis_conversation_id", conversation_id)
                         reverted = await align(event, getattr(req, "contexts", []), conversation_id=conversation_id)
                         if reverted and not reverted.get("preserve_long_term") and self.memory_engine:
+                            provenance = ({"removed_message_ids": reverted["removed_message_ids"]}
+                                          if "removed_message_ids" in reverted else {})
                             removed = await self.memory_engine.delete_reverted_summaries(
-                                session_id, reverted["cutoff"], reverted["revision"]
+                                session_id, reverted["cutoff"], reverted["revision"], **provenance
                             )
                             if removed and self.user_profile_manager:
                                 await self.user_profile_manager.delete_by_source_memories(removed)

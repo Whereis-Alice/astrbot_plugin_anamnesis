@@ -519,6 +519,13 @@ class MemoryReflection:
                         "message_count": end_index - start_index,
                     }
                     metadata["source_session_id"] = session_id
+                    source_message_ids = [
+                        message.get("id") if isinstance(message, dict) else getattr(message, "id", None)
+                        for message in history_messages
+                    ]
+                    if all(isinstance(value, int) and not isinstance(value, bool) and value > 0
+                           for value in source_message_ids):
+                        metadata["source_message_ids"] = source_message_ids
                     if expected_revision is not None:
                         metadata["source_revision"] = expected_revision
 

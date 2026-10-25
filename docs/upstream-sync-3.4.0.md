@@ -26,6 +26,8 @@ WebChat 有 checkpoint 时，编辑或重新生成对齐历史尾部，撤销的
 
 `reflection_engine.dedup_enabled` 默认关闭。启用后只合并同作用域、人格、源聊天与身份，事实完全一致且文本足够接近的总结；默认文本阈值 0.97。否定、数值和新事实变化会另存。合并保留原 ID 和摘要，追加来源窗口及保留原文，不用相似向量替换新事实。
 
+从 3.4.1 起，可回退的总结还要求来源消息窗口相同；不同轮次另存，撤回新消息不会连带删除旧消息支持的记忆。带消息 ID 的总结使用相同的有效 ID 集合判断，旧版仅有修订号的总结要求来源窗口完全一致。
+
 ## 分步回忆与遗忘工具
 
 启用 `agent_tools.agentic_recall_enabled` 后，`anamnesis_recall_memory` 增加 `speaker`、`start_time`、`end_time`、`exclude_ids`、`cursor`，另注册 `anamnesis_read_memory_evidence` 读取保留原文。人物按准确账号或名称匹配；时间依次使用事件时间、来源消息时间范围、记忆创建时间，并注明依据。时间参数接受 Unix 秒或 ISO-8601，无时区的值按 UTC 解释。

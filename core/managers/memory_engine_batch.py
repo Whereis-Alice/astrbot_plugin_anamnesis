@@ -250,6 +250,12 @@ class MemoryEngineBatchMixin:
 
     async def archive_memories(self, memory_ids: list[int]) -> int:
         """Remove memories from retrieval indexes while retaining their documents."""
+        if not hasattr(self, "_archive_restore_lock"):
+            self._archive_restore_lock = asyncio.Lock()
+        async with self._archive_restore_lock:
+            return await self._archive_memories_impl(memory_ids)
+
+    async def _archive_memories_impl(self, memory_ids: list[int]) -> int:
         if not memory_ids or self.db_connection is None:
             return 0
 
@@ -332,6 +338,12 @@ class MemoryEngineBatchMixin:
 
     async def restore_memory(self, memory_id: int) -> bool:
         """Restore one archived document and rebuild every retrieval index."""
+        if not hasattr(self, "_archive_restore_lock"):
+            self._archive_restore_lock = asyncio.Lock()
+        async with self._archive_restore_lock:
+            return await self._restore_memory_impl(memory_id)
+
+    async def _restore_memory_impl(self, memory_id: int) -> bool:
         if self.db_connection is None:
             return False
         memory = await self.get_memory(memory_id)
@@ -340,6 +352,8 @@ class MemoryEngineBatchMixin:
         metadata = self._safe_json_dict(memory.get("metadata"))
         original_metadata = dict(metadata)
         if str(metadata.get("status") or "active") != "archived":
+            if str(metadata.get("status") or "active") != "active":
+                return False
             profile_manager = getattr(self, "user_profile_manager", None)
             if profile_manager is not None and metadata.get("status", "active") == "active":
                 await profile_manager.set_source_suppressed([memory_id], False)
@@ -360,6 +374,7 @@ class MemoryEngineBatchMixin:
         content = str(memory.get("text") or "")
         vector_inserted = False
         fts_inserted = False
+        metadata_committed = False
         metadata["status"] = "active"
         metadata["restored_at"] = time.time()
         metadata.pop("archived_at", None)
@@ -397,11 +412,21 @@ class MemoryEngineBatchMixin:
                     memory_id, content, metadata, atoms
                 )
 
-            await self.db_connection.execute(
-                "UPDATE documents SET metadata = ? WHERE id = ?",
-                (json.dumps(metadata, ensure_ascii=False), memory_id),
+            cursor = await self.db_connection.execute(
+                "UPDATE documents SET metadata=json_remove(json_set(metadata, '$.status','active', "
+                "'$.restored_at', ?), '$.archived_at') WHERE id=? "
+                "AND json_extract(metadata,'$.status')='archived' "
+                "AND json_extract(metadata,'$.session_id') IS ? "
+                "AND json_extract(metadata,'$.persona_id') IS ? "
+                "AND json_extract(metadata,'$.archived_at') IS ? AND text=?",
+                (metadata["restored_at"], memory_id, original_metadata.get("session_id"),
+                 original_metadata.get("persona_id"), original_metadata.get("archived_at"), content),
             )
+            if cursor.rowcount != 1:
+                await self.db_connection.rollback()
+                raise RuntimeError("记忆在恢复期间已修改，请刷新后重试")
             await self.db_connection.commit()
+            metadata_committed = True
             profile_manager = getattr(self, "user_profile_manager", None)
             if profile_manager is not None:
                 try:
@@ -413,12 +438,17 @@ class MemoryEngineBatchMixin:
             self._invalidate_search_cache()
             return True
         except BaseException:
-            original_metadata["status"] = "archived"
-            await self.db_connection.execute(
-                "UPDATE documents SET metadata=? WHERE id=?",
-                (json.dumps(original_metadata, ensure_ascii=False), memory_id),
-            )
-            await self.db_connection.commit()
+            # Until the final commit the document stays archived. Reversing
+            # that commit changes only our state fields, never a newer scope,
+            # note, access counter, or a newer archive operation.
+            if metadata_committed:
+                await self.db_connection.execute(
+                    "UPDATE documents SET metadata=json_set(metadata, '$.status','archived', '$.archived_at', ?) "
+                    "WHERE id=? AND json_extract(metadata,'$.status')='active' "
+                    "AND json_extract(metadata,'$.restored_at')=?",
+                    (original_metadata.get("archived_at"), memory_id, metadata["restored_at"]),
+                )
+                await self.db_connection.commit()
             if fts_inserted:
                 await self.db_connection.execute(
                     "DELETE FROM livingmemory_memories_fts WHERE doc_id = ?",
@@ -426,7 +456,11 @@ class MemoryEngineBatchMixin:
                 )
                 await self.db_connection.commit()
             if vector_inserted and callable(embedding_delete):
-                await embedding_delete([memory_id])
+                try:
+                    await embedding_delete([memory_id])
+                except Exception:
+                    await self._set_index_rebuild_required(True)
+                    logger.warning("恢复回滚时向量清理失败，已标记重建", exc_info=True)
             if self.graph_memory_manager is not None:
                 await self.graph_memory_manager.delete_memory(memory_id)
             if self.atom_store is not None:

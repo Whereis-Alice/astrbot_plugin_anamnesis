@@ -748,10 +748,12 @@ class MemoryEngineCrudMixin:
 
             if success:
                 logger.info(f"[更新] 元数据更新成功 (memory_id={memory_id})")
+                latest = await self.get_memory(memory_id)
+                latest_metadata = self._safe_json_dict(latest.get("metadata")) if latest else {}
                 profile_manager = getattr(self, "user_profile_manager", None)
                 if "status" in metadata_updates and profile_manager is not None:
                     await profile_manager.set_source_suppressed(
-                        [memory_id], metadata_updates["status"] != "active")
+                        [memory_id], not latest or latest_metadata.get("status", "active") != "active")
                 # 仅当更新触及图谱提取依赖的字段时才重建图谱索引；
                 # 状态/类型等纯元数据编辑重建整图（删节点+FAISS 落盘）纯属浪费
                 graph_affecting = metadata_updates.keys() & {
@@ -767,11 +769,12 @@ class MemoryEngineCrudMixin:
                     "summary_schema_version",
                     "source_window",
                 }
-                if graph_affecting and self.graph_memory_manager is not None:
+                if (graph_affecting and self.graph_memory_manager is not None
+                        and latest and latest_metadata.get("status", "active") == "active"):
                     await self.graph_memory_manager.index_memory(
                         memory_id,
-                        memory["text"],
-                        current_metadata,
+                        latest["text"],
+                        latest_metadata,
                     )
                 self._invalidate_search_cache()
             else:

@@ -35,3 +35,34 @@ test("a failed save retains the user's changes and displays an inline error", as
   assert.equal(page.draft.get("user_profile.enabled"), true);
   assert.match(elements["settings-feedback"].innerHTML, /database busy &lt;x&gt;/);
 });
+
+test("an older refresh cannot overwrite the configuration accepted by a later save", async () => {
+  let finishFetch;
+  const { page } = setup({
+    get() { return new Promise(resolve => { finishFetch = resolve; }); },
+    async post() { return { config: { user_profile: { enabled: true } } }; },
+  });
+  const refreshing = page.fetch();
+  page.change(input("user_profile.enabled", "", { checked: true }));
+  await page.save();
+  finishFetch({ sections: [{ key: "profiles", fields: structuredClone(fields) }], config: { user_profile: { enabled: false } } });
+  await refreshing;
+  assert.equal(page.config.user_profile.enabled, true);
+  assert.equal(page.fields().find(field => field.path === "user_profile.enabled").value, true);
+});
+
+test("refresh during a save cannot replace the disabled editor with old values", async () => {
+  let finishSave;
+  let reads = 0;
+  const { page } = setup({
+    async get() { reads++; return { sections: [], config: {} }; },
+    post() { return new Promise(resolve => { finishSave = resolve; }); },
+  });
+  page.change(input("user_profile.enabled", "", { checked: true }));
+  const saving = page.save();
+  await page.fetch();
+  assert.equal(reads, 0);
+  finishSave({ config: { user_profile: { enabled: true } } });
+  await saving;
+  assert.equal(page.fields().length, fields.length);
+});

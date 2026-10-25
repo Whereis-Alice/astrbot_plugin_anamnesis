@@ -7,6 +7,7 @@ import json
 import time
 
 from astrbot.api import logger
+
 from ..core.models.conversation_models import Message, serialize_to_json
 
 
@@ -269,39 +270,63 @@ class ConversationStoreMessagesMixin:
             if safe_delete_count <= 0:
                 return 0
 
-            cursor = await self.connection.execute(
-                """
-                DELETE FROM messages
-                WHERE id IN (
-                    SELECT id FROM messages
-                    WHERE session_id = ?
-                    ORDER BY timestamp ASC, id ASC
-                    LIMIT ?
+            try:
+                cursor = await self.connection.execute(
+                    """
+                    DELETE FROM messages
+                    WHERE id IN (
+                        SELECT id FROM messages
+                        WHERE session_id = ?
+                        ORDER BY id ASC
+                        LIMIT ?
+                    )
+                    """,
+                    (session_id, safe_delete_count),
                 )
-                """,
-                (session_id, safe_delete_count),
-            )
-            deleted_count = max(0, cursor.rowcount)
-            if deleted_count <= 0:
-                return 0
+                deleted_count = max(0, cursor.rowcount)
+                await cursor.close()
+                if deleted_count <= 0:
+                    await self.connection.rollback()
+                    return 0
 
-            metadata["last_summarized_index"] = max(
-                0, last_summarized_index - deleted_count
-            )
-            await self.connection.execute(
-                """
-                UPDATE sessions
-                SET message_count = ?,
-                    metadata = ?
-                WHERE session_id = ?
-                """,
-                (
-                    max(0, actual_count - deleted_count),
-                    json.dumps(metadata, ensure_ascii=False),
-                    session_id,
-                ),
-            )
-            await self.connection.commit()
+                metadata["last_summarized_index"] = max(
+                    0, last_summarized_index - deleted_count
+                )
+                try:
+                    revision = int(metadata.get("history_revision", 0) or 0)
+                except (TypeError, ValueError):
+                    revision = 0
+                # Copied summary windows use the old relative offsets. Make
+                # their CAS fail, and retain retryable work at its new offsets.
+                metadata["history_revision"] = max(0, revision) + 1
+                pending = metadata.get("pending_summary")
+                if isinstance(pending, dict):
+                    try:
+                        start = int(pending["start_index"]) - deleted_count
+                        end = int(pending["end_index"]) - deleted_count
+                        metadata["pending_summary"] = (
+                            dict(pending, start_index=start, end_index=end)
+                            if 0 <= start < end <= actual_count - deleted_count else None
+                        )
+                    except (KeyError, TypeError, ValueError):
+                        metadata["pending_summary"] = None
+                await self.connection.execute(
+                    """
+                    UPDATE sessions
+                    SET message_count = ?,
+                        metadata = ?
+                    WHERE session_id = ?
+                    """,
+                    (
+                        max(0, actual_count - deleted_count),
+                        json.dumps(metadata, ensure_ascii=False),
+                        session_id,
+                    ),
+                )
+                await self.connection.commit()
+            except BaseException:
+                await self.connection.rollback()
+                raise
         return deleted_count
 
     async def delete_session_messages(self, session_id: str) -> int:
@@ -462,22 +487,23 @@ class ConversationStoreMessagesMixin:
 
         Args:
             session_id: 会话ID
-            offset: 跳过的消息数量（从最旧的开始计算）
+            offset: 跳过的消息数量（按写入顺序，从最旧的开始计算）
             limit: 获取的消息数量
 
         Returns:
-            List[Message]: 消息列表（按时间升序）
+            List[Message]: 消息列表（按写入顺序，平台时间不改变总结索引）
         """
         if self.connection is None:
             return []
 
-        # 使用子查询确保按时间升序后再应用 OFFSET/LIMIT
+        # Summary offsets and safe trimming share append order. A delayed event
+        # can carry an older platform timestamp without entering a committed prefix.
         query = """
             SELECT id, session_id, role, content, sender_id, sender_name,
                    group_id, platform, timestamp, metadata
             FROM messages
             WHERE session_id = ?
-            ORDER BY timestamp ASC, id ASC
+            ORDER BY id ASC
             LIMIT ? OFFSET ?
         """
 

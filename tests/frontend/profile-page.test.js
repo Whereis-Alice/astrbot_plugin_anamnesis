@@ -4,6 +4,7 @@ import { ProfilePage } from "../../pages/dashboard/modules/profile-page.js";
 function element() {
   const classes = new Set();
   return { innerHTML: "", textContent: "", value: "", disabled: false, listeners: {}, focus() {},
+    replaceChildren(...nodes) { this.children = nodes; },
     addEventListener(type, handler) { this.listeners[type] = handler; },
     classList: { add: name => classes.add(name), remove: name => classes.delete(name), toggle: (name, yes) => yes ? classes.add(name) : classes.delete(name), contains: name => classes.has(name) } };
 }
@@ -76,4 +77,21 @@ test("directory load failures remain visible and retryable", async () => {
   await page.fetch(); assert.match(elements["profile-users"].innerHTML, /role="alert"/);
   assert.match(elements["profile-users"].innerHTML, /data-profile-retry="list"/);
   assert.match(elements["profile-users"].innerHTML, /offline &lt;script&gt;/);
+});
+
+test("cancelling profile deletion preserves the live editor node and unsaved input", async () => {
+  let closes = 0;
+  const { page, peek, elements } = setup({ async post() { throw new Error("cancel must not delete"); } });
+  peek.close = () => { closes++; };
+  const editor = elements["profile-editor-form"];
+  elements["profile-edit-value"].value = "unsaved correction";
+  peek.showConfirmDialog = async () => {
+    elements["profile-editor-form"] = element(); // Reconstructed confirmation fallback loses listeners/draft.
+    return false;
+  };
+  await page.deleteItem("scope:A", "favorite_food");
+  assert.equal(closes, 0);
+  assert.equal(elements["peek-body"].children?.[0], editor);
+  assert.equal(elements["profile-edit-value"].value, "unsaved correction");
+  assert.equal(page._deleting, false);
 });

@@ -327,8 +327,25 @@ class MemoryEngineEvidenceMixin:
                 await connection.execute("RELEASE SAVEPOINT anam_restore_atom_lifecycle")
                 raise
 
-        async def finish(connection):
-            operation = asyncio.create_task(write(connection))
+        async def transaction(connection, *, dedicated):
+            if not dedicated:
+                # A compatibility connection may already belong to a caller's
+                # transaction. Keep the savepoint without committing that work.
+                return await write(connection)
+            try:
+                # FTS deletion reads its parent subquery before writing. Obtain
+                # the writer lock first so maintenance cannot invalidate this
+                # transaction's read snapshot (SQLITE_BUSY_SNAPSHOT).
+                await connection.execute("BEGIN IMMEDIATE")
+                inserted = await write(connection)
+                await connection.commit()
+                return inserted
+            except BaseException:
+                await connection.rollback()
+                raise
+
+        async def finish(connection, *, dedicated=False):
+            operation = asyncio.create_task(transaction(connection, dedicated=dedicated))
             try:
                 return await asyncio.shield(operation)
             except asyncio.CancelledError:
@@ -346,5 +363,5 @@ class MemoryEngineEvidenceMixin:
         atom_store = getattr(self, "atom_store", None)
         if atom_store is not None:
             async with atom_store._connect() as connection:
-                return await finish(connection)
+                return await finish(connection, dedicated=True)
         return await finish(self.db_connection)

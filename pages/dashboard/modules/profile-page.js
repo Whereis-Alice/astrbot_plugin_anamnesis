@@ -163,12 +163,19 @@ export class ProfilePage {
   async deleteItem(scope, key) {
     if (!scope || !key || this._deleting) return;
     this._deleting = true; this.peek.open(true);
+    const editor = document.getElementById("profile-editor-form");
+    let cancelled = false;
     try {
-      if (!await this.peek.showConfirmDialog(this.t("profile.deleteConfirmTitle"), this.t("profile.deleteConfirmMessage", key, scope))) return;
+      if (!await this.peek.showConfirmDialog(this.t("profile.deleteConfirmTitle"), this.t("profile.deleteConfirmMessage", key, scope))) {
+        cancelled = true;
+        // Restore the original form node, including live inputs and listeners.
+        if (editor) document.getElementById("peek-body")?.replaceChildren(editor);
+        return;
+      }
       const result = await this.api.post("profiles/delete", { profile_scope: scope, profile_key: key }, { retries: 0 });
       this._showToast(this.t("profile.deleteSuccess", Number(result.count) || 1)); await this.fetch();
     } catch (error) { this._showToast(error.message || this.t("profile.deleteFailed"), true); }
-    finally { this.peek.close(); this._deleting = false; }
+    finally { if (!cancelled) this.peek.close(); this._deleting = false; }
   }
   initEventListeners() {
     if (this._bound) return; this._bound = true;

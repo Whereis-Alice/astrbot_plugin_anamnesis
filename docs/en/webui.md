@@ -17,7 +17,7 @@ AstrBot `4.24.2` or later is recommended. Older versions can still run the plugi
 | Area | Purpose |
 | --- | --- |
 | Memory management | Inspect and filter memories; edit summaries, topics, key facts, status, and importance; batch-delete; import and export |
-| User profiles | Use a compact table for facts and recent group/user labels; filter by scope, source chat, and key, then click a row to edit or delete exactly one item |
+| User profiles | Find people by name, account or latest known group; read complete categorized facts per chat source, with exact editing, deletion and source-memory navigation |
 | Recall debugging | Enter a query and inspect returned memories and ranking |
 | Graph view | Browse entities, relationships, and memory connections |
 | System status | Review active, archived, and deleted counts plus graph, atom, importance, and session statistics |
@@ -25,7 +25,7 @@ AstrBot `4.24.2` or later is recommended. Older versions can still run the plugi
 
 ## Memory details and lifecycle
 
-The User profiles page exposes all saved facts and is intended only for administrators with plugin-page access. Existing facts remain visible, editable, and deletable when extraction is off. The compact table shows the latest group/user label first; click a row for the full scope, source session, source memory ID, and an editor for value, category, confidence, and expiry. By default, profiles are separated by platform, user identity, and `unified_msg_origin` chat origin, not by each new conversation record created by `/new`. Editing or deleting a profile fact does not delete its associated normal memory.
+The User profiles page exposes all saved facts and is intended only for administrators with plugin-page access. Existing facts remain visible, editable, and deletable when extraction is off. The directory shows the latest known group, and the reader separates complete facts by category and chat source. Use View / Edit to change the title, value, category, confidence and expiry. By default, profiles are separated by platform, user identity, and `unified_msg_origin` chat origin, not by each new conversation record created by `/new`. Editing or deleting a profile fact does not delete its associated normal memory. Since 3.4.1, facts with missing or inactive source memories stop being injected; their saved profile rows remain here for administrator inspection.
 
 - Editing a summary, topic, or key fact rebuilds that memory's embedding, BM25, graph, atom, and related derived data. Status-only or importance-only edits do not unconditionally rebuild every index.
 - Memories above the source-retention threshold show source messages in the detail panel. When at least two source messages are available, the Dashboard can call the LLM to replace the memory with a new summary.

@@ -1,5 +1,6 @@
 """Revert, retry and summary races must never resurrect stale chat state."""
 import asyncio
+import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -13,6 +14,9 @@ from astrbot_plugin_anamnesis.core.event_handler_modules.memory_reflection impor
 )
 from astrbot_plugin_anamnesis.core.managers.conversation_manager import (
     ConversationManager,
+)
+from astrbot_plugin_anamnesis.core.managers.memory_engine_operations import (
+    MemoryEngineOperationsMixin,
 )
 from astrbot_plugin_anamnesis.core.models.conversation_models import Message
 from astrbot_plugin_anamnesis.core.utils.history_alignment import split_summary_windows
@@ -68,7 +72,7 @@ async def test_revert_deletes_only_tail_and_atomically_clamps_summary_state(mana
         await add(manager, role, checkpoint, stamp)
     await manager.update_session_metadata(SESSION,"last_summarized_index",6)
     await manager.update_session_metadata(SESSION,"pending_summary",{"start_index":4,"end_index":6})
-    assert await manager.align_webchat_history(Event("new"),contexts("A","B")) == {"cutoff":4,"revision":0}
+    assert await manager.align_webchat_history(Event("new"),contexts("A","B")) == {"cutoff":4,"revision":0,"removed_message_ids":[5,6]}
     assert await manager.get_session_revision(SESSION) == 1
     assert await manager.get_session_metadata(SESSION,"last_summarized_index") == 4
     assert await manager.get_session_metadata(SESSION,"pending_summary") is None
@@ -94,6 +98,120 @@ async def test_latest_checkpoint_uses_append_order_when_user_timestamp_is_backda
     await add(manager,"assistant","A",1000)
     await add(manager,"user","B",10)
     assert await manager.add_message_from_event(Event("B"),"assistant","current") is not None
+
+@pytest.mark.asyncio
+async def test_backdated_message_remains_after_the_summary_cursor(manager):
+    await add(manager, "assistant", "A", 1000)
+    await manager.update_session_metadata(SESSION, "last_summarized_index", 2)
+    late = await add(manager, "user", "B", 10)
+    tail = await manager.get_messages_range(SESSION, start_index=2, end_index=3)
+    assert [message.id for message in tail] == [late.id]
+
+@pytest.mark.asyncio
+async def test_backdated_checkpoint_revert_preserves_the_allowed_turn(manager):
+    await add(manager, "assistant", "A", 1000)
+    await add(manager, "user", "B", 10)
+    await add(manager, "assistant", "B", 2000)
+    result = await manager.align_webchat_history(Event("retry"), contexts("A"))
+    assert result == {"cutoff": 2, "revision": 0, "removed_message_ids": [3, 4]}
+    remaining = await manager.get_messages_range(SESSION)
+    assert [message.metadata["llm_checkpoint_id"] for message in remaining] == ["A", "A"]
+
+@pytest.mark.asyncio
+async def test_trim_summarized_prefix_never_deletes_a_backdated_new_message(manager):
+    await add(manager, "assistant", "A", 1000)
+    await manager.update_session_metadata(SESSION, "last_summarized_index", 2)
+    late = await add(manager, "user", "B", 10)
+    deleted = await manager.store.trim_session_messages(SESSION, 2)
+    assert deleted == 2
+    remaining = await manager.get_messages_range(SESSION)
+    assert [message.id for message in remaining] == [late.id]
+
+@pytest.mark.asyncio
+async def test_trim_invalidates_old_summary_cas_and_shifts_pending_window(manager):
+    await add(manager, "assistant", "A", 2)
+    await add(manager, "user", "B", 3)
+    await add(manager, "assistant", "B", 4)
+    await manager.update_session_metadata(SESSION, "last_summarized_index", 2)
+    await manager.update_session_metadata(SESSION, "pending_summary", {"start_index": 2, "end_index": 4, "retry_count": 1})
+    assert await manager.store.trim_session_messages(SESSION, 2) == 2
+    assert await manager.get_session_revision(SESSION) == 1
+    assert await manager.get_session_metadata(SESSION, "pending_summary") == {"start_index": 0, "end_index": 2, "retry_count": 1}
+    assert not await manager.update_session_metadata_batch_if_revision(SESSION, {"last_summarized_index": 4}, 0)
+
+@pytest.mark.asyncio
+async def test_trim_during_summary_write_compensates_old_window(manager):
+    await add(manager, "assistant", "A", 2)
+    await add(manager, "user", "B", 3)
+    await add(manager, "assistant", "B", 4)
+    await manager.update_session_metadata(SESSION, "last_summarized_index", 2)
+    window = await manager.get_messages_range(SESSION, 2, 4)
+    async def write(**kwargs):
+        await manager.store.trim_session_messages(SESSION, 2)
+        return 44
+    engine = SimpleNamespace(add_memory=AsyncMock(side_effect=write), undo_summary_write=AsyncMock())
+    worker = reflection(manager, engine=engine)
+    await worker._storage_task(SESSION, window, None, 2, 4, 0, expected_revision=0)
+    engine.undo_summary_write.assert_awaited_once_with(44, None)
+    assert await manager.get_session_metadata(SESSION, "last_summarized_index") == 0
+
+@pytest.mark.asyncio
+async def test_trim_rolls_back_deleted_messages_if_metadata_write_fails(manager):
+    await add(manager, "assistant", "A", 2)
+    await manager.update_session_metadata(SESSION, "last_summarized_index", 2)
+    await manager.store.connection.execute("CREATE TRIGGER reject_trim_metadata BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT,'trim failure'); END")
+    await manager.store.connection.commit()
+    with pytest.raises(Exception, match="trim failure"):
+        await manager.store.trim_session_messages(SESSION, 2)
+    assert not manager.store.connection.in_transaction
+    assert await manager.store.get_message_count(SESSION) == 2
+
+@pytest.mark.asyncio
+async def test_successive_reverts_remove_earlier_revision_summary_by_message_ids(manager):
+    for role, checkpoint, stamp in [("assistant", "A", 2), ("user", "B", 3),
+                                    ("assistant", "B", 4), ("user", "C", 5),
+                                    ("assistant", "C", 6)]:
+        await add(manager, role, checkpoint, stamp)
+    connection = manager.store.connection
+    await connection.execute("CREATE TABLE documents(id INTEGER PRIMARY KEY, metadata TEXT)")
+    engine = MemoryEngineOperationsMixin()
+    engine.db_connection = connection
+    async def delete(memory_id):
+        cursor = await connection.execute("DELETE FROM documents WHERE id=?", (memory_id,))
+        await connection.commit()
+        return cursor.rowcount == 1
+    engine.delete_memory = delete
+    async def summary(memory_id, revision, ids, end):
+        await connection.execute("INSERT INTO documents VALUES (?,?)", (memory_id, json.dumps({
+            "source_session_id": SESSION, "source_revision": revision,
+            "source_message_ids": ids, "source_window": {"end_index": end},
+        })))
+        await connection.commit()
+    await summary(101, 0, [1, 2], 2)
+    await summary(102, 0, [3, 4], 4)
+    await summary(103, 0, [5, 6], 6)
+    first = await manager.align_webchat_history(Event("retry"), contexts("A", "B"))
+    assert await engine.delete_reverted_summaries(SESSION, first["cutoff"], first["revision"],
+                                                 removed_message_ids=first["removed_message_ids"]) == [103]
+    new_user = await add(manager, "user", "C2", 7)
+    new_assistant = await add(manager, "assistant", "C2", 8)
+    await summary(104, 1, [new_user.id, new_assistant.id], 6)
+    second = await manager.align_webchat_history(Event("retry2"), contexts("A"))
+    deleted = await engine.delete_reverted_summaries(SESSION, second["cutoff"], second["revision"],
+                                                     removed_message_ids=second["removed_message_ids"])
+    assert sorted(deleted) == [102, 104]
+    async with connection.execute("SELECT id FROM documents") as cursor:
+        assert [row[0] for row in await cursor.fetchall()] == [101]
+
+@pytest.mark.asyncio
+async def test_summary_provenance_keeps_stable_ids_without_retaining_raw_text(manager):
+    worker = reflection(manager)
+    window = messages()[:2]
+    worker.memory_processor.process_conversation.return_value = ("summary", {}, .5)
+    await worker._storage_task(SESSION, window, None, 0, 2, 0, expected_revision=0)
+    write = worker.memory_engine.add_memory.await_args.kwargs
+    assert write["metadata"]["source_message_ids"] == [message.id for message in window]
+    assert write["source_messages"] is None
 
 @pytest.mark.asyncio
 async def test_corrupt_legacy_provenance_does_not_authorize_deletion(manager):
@@ -124,7 +242,7 @@ async def test_same_conversation_first_turn_retry_is_a_true_revert(manager):
     await manager.add_message_from_event(Event("A","same-cid"),"assistant","reply")
     revision = await manager.get_session_revision(SESSION)
     result = await manager.align_webchat_history(Event("retry","same-cid"),[],conversation_id="same-cid")
-    assert result == {"cutoff":0,"revision":revision}
+    assert result == {"cutoff":0,"revision":revision,"removed_message_ids":[2,3]}
     assert await manager.store.get_message_count(SESSION) == 0
 
 @pytest.mark.asyncio

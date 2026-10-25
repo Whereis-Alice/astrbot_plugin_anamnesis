@@ -291,11 +291,11 @@ class VectorRetriever:
 
     async def update_metadata(self, doc_id: int, metadata: dict[str, Any]) -> bool:
         """
-        更新文档元数据（使用ORM方式）
+        原子更新文档元数据字段，不覆盖其它写入者修改的字段。
 
         Args:
             doc_id: 文档ID (整数 id)
-            metadata: 新的元数据字典
+            metadata: 元数据字段补丁，None 保留为显式 JSON null。
 
         Returns:
             bool: 是否成功更新
@@ -306,44 +306,43 @@ class VectorRetriever:
 
         try:
             doc_storage = self.faiss_db.document_storage
-
-            # 通过 id 获取文档
-            docs = await doc_storage.get_documents(
-                metadata_filters={}, ids=[doc_id], limit=1
+            if not isinstance(metadata, dict) or any(not isinstance(key, str) for key in metadata):
+                raise ValueError("metadata patch must be an object with string keys")
+            updates = [
+                (
+                    "$." + json.dumps(key, ensure_ascii=False),
+                    json.dumps(value, ensure_ascii=False, allow_nan=False),
+                )
+                for key, value in metadata.items()
+            ]
+            # The row's current JSON is read by SQLite in the UPDATE itself.
+            # json_set keeps explicit nulls, unlike JSON Merge Patch. Bound
+            # paths also treat dots/brackets in metadata keys literally.
+            object_json = (
+                "CASE WHEN json_valid(metadata) THEN "
+                "CASE WHEN json_type(metadata)='object' THEN metadata ELSE '{}' END "
+                "ELSE '{}' END"
             )
-
-            if not docs or len(docs) == 0:
-                logger.warning(f"[元数据更新] 文档不存在 (doc_id={doc_id})")
-                return False
-
-            doc = docs[0]
-
-            # 获取当前元数据并更新
-            current_metadata_str = doc.get("metadata", "{}")
-            if isinstance(current_metadata_str, str):
-                try:
-                    current_metadata = json.loads(current_metadata_str)
-                except (json.JSONDecodeError, TypeError):
-                    current_metadata = {}
-            else:
-                current_metadata = current_metadata_str or {}
-
-            # 合并新元数据
-            current_metadata.update(metadata)
-
-            # 优化2: 使用参数化查询确保SQL安全
+            chunks = [updates[start:start + 50] for start in range(0, len(updates), 50)] or [[]]
             async with doc_storage.get_session() as session, session.begin():
                 from sqlalchemy import text
 
-                # 使用参数化查询，避免SQL注入
-                stmt = text("UPDATE documents SET metadata = :metadata WHERE id = :id")
-                await session.execute(
-                    stmt,
-                    {
-                        "metadata": json.dumps(current_metadata, ensure_ascii=False),
-                        "id": doc_id,
-                    },
-                )
+                for chunk in chunks:
+                    parameters = {"id": doc_id}
+                    arguments = []
+                    for index, (path, value) in enumerate(chunk):
+                        parameters[f"path_{index}"] = path
+                        parameters[f"value_{index}"] = value
+                        arguments.extend((f":path_{index}", f"json(:value_{index})"))
+                    expression = (
+                        f"json_set({object_json},{','.join(arguments)})" if arguments else "metadata"
+                    )
+                    result = await session.execute(
+                        text(f"UPDATE documents SET metadata={expression} WHERE id=:id"), parameters,
+                    )
+                    if result.rowcount == 0:
+                        logger.warning(f"[元数据更新] 文档不存在 (doc_id={doc_id})")
+                        return False
 
             logger.debug(f"[元数据更新] 成功 (doc_id={doc_id})")
             return True

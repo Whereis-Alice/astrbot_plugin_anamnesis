@@ -200,7 +200,22 @@ class UserProfileManager(UserProfileDirectoryMixin):
             (scope, time.time(), limit),
         ) as cursor:
             rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
+        facts = [dict(row) for row in rows]
+        # Source cleanup spans two SQLite databases and may be interrupted or
+        # bypassed by maintenance/replacement. Verify live parent state before
+        # injecting, while keeping administrator-visible rows for inspection.
+        memory_connection = getattr(getattr(self, "memory_engine", None), "db_connection", None)
+        source_ids = {fact["source_memory_id"] for fact in facts if fact["source_memory_id"] is not None}
+        if memory_connection is not None and source_ids:
+            placeholders = ",".join("?" for _ in source_ids)
+            async with memory_connection.execute(
+                "SELECT id FROM documents WHERE id IN (" + placeholders + ") "
+                "AND json_valid(metadata) AND COALESCE(json_extract(metadata,'$.status'),'active')='active'",
+                list(source_ids),
+            ) as cursor:
+                active_ids = {row[0] for row in await cursor.fetchall()}
+            facts = [fact for fact in facts if fact["source_memory_id"] is None or fact["source_memory_id"] in active_ids]
+        return facts
 
     async def _migrate_legacy_scope_for_event(self, event: Any, scope: str) -> None:
         """Move 3.2.0 user-scoped rows only into their original chat scope.

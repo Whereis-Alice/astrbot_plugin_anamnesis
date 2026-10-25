@@ -12,6 +12,7 @@ export class SettingsPage {
   }
   t(key, ...args) { return window.t?.(key, ...args) || key; }
   async fetch() {
+    if (this.saving) return;
     const generation = ++this._generation;
     this.feedback(this.t("common.loading"));
     try {
@@ -60,6 +61,8 @@ export class SettingsPage {
   updateDirty() {
     const save = document.getElementById("settings-save");
     if (save) save.disabled = this.saving || !this.draft.size || this.invalid.size > 0;
+    const refresh = document.getElementById("settings-refresh");
+    if (refresh) refresh.disabled = Boolean(this.saving);
     const dirty = document.getElementById("settings-dirty");
     if (dirty) dirty.textContent = this.draft.size ? this.t("settings.dirty", this.draft.size) : "";
   }
@@ -90,6 +93,7 @@ export class SettingsPage {
   }
   async save() {
     if (this.saving || !this.draft.size || this.invalid.size) return;
+    ++this._generation; // A refresh started before this write is now stale.
     this.saving = true; const updates = Object.fromEntries(this.draft); this.render();
     try {
       const data = await this.api.post("config/update", { updates }, { retries: 0 });

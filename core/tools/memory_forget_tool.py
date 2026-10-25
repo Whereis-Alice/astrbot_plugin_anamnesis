@@ -37,6 +37,7 @@ class MemoryForgetTool(FunctionTool[AstrAgentContext]):
     memory_engine: Any = None
     user_profile_manager: Any = None
     _forget_times: dict = field(default_factory=dict)
+    _forget_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     name: str = "anamnesis_forget_memory"
     description: str = (
@@ -147,7 +148,9 @@ class MemoryForgetTool(FunctionTool[AstrAgentContext]):
                 return _json_result({"deleted": False, "error": "invalid_action"})
             mode = self.config_manager.get("agent_tools.forget_mode", "delete")
             state = request_state(event)
-            async with state["lock"]:
+            # The event lock protects the per-request quota; the tool lock
+            # makes cooldown checking and accounting atomic across events.
+            async with state["lock"], self._forget_lock:
                 if state.get("forget_count", 0) >= int(self.config_manager.get("agent_tools.forget_max_per_request", 3)):
                     return _json_result({"deleted": False, "error": "forget_limit_reached"})
                 key = scope or origin

@@ -3,20 +3,20 @@ MemoryEngine 的 MemoryEngineWriteOpsMixin 拆分模块
 自动从 core/managers/memory_engine.py 拆分，保持行为不变
 """
 
-from typing import Any
 import asyncio
-from ..models.memory_atom import AtomStatus, AtomType, DecayType, MemoryAtom
-from ..utils.number_utils import clamp_float
 import copy
-from ..retrieval.hybrid_retriever import HybridResult
 import json
-from astrbot.api import logger
 import time
+from collections import OrderedDict
+from typing import Any
 
 import aiosqlite
-from collections import OrderedDict
+from astrbot.api import logger
 
 from ...storage.atom_store import AtomStore
+from ..models.memory_atom import AtomStatus, AtomType, DecayType, MemoryAtom
+from ..retrieval.hybrid_retriever import HybridResult
+from ..utils.number_utils import clamp_float
 
 
 class MemoryEngineWriteOpsMixin:
@@ -413,7 +413,13 @@ class MemoryEngineWriteOpsMixin:
             )
             for row in rows
         ]
-        return self._filter_by_retrieval_policy(recent)[:count]
+        recent = self._filter_by_retrieval_policy(recent)
+        lifecycle_filter = getattr(self, "filter_recall_lifecycle", None)
+        if callable(lifecycle_filter):
+            # Expired atom-backed parents must not consume the reserved recent
+            # slots and displace valid results from the relevance routes.
+            recent = await lifecycle_filter(recent)
+        return recent[:count]
 
     async def _merge_recent_memories(
         self,

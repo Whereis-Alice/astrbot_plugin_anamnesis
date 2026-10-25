@@ -1,5 +1,6 @@
 """Independent atom candidates and archive lifecycle preservation."""
 
+import asyncio
 import json
 import time
 from types import SimpleNamespace
@@ -112,5 +113,50 @@ async def test_failed_archive_restore_rolls_back_both_source_and_fts(tmp_path):
             await engine.restore_archived_atom_lifecycle(1, snapshots)
         assert [atom.content for atom in await store.get_by_parent(1)] == ["existing source"]
         assert [atom.content for atom in await store.search_fts("source")] == ["existing source"]
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_archive_restore_waits_for_concurrent_atom_writer(tmp_path):
+    engine, store, db = await _archive_engine(tmp_path / "writer.db")
+    restoration = None
+    try:
+        await db.execute("PRAGMA journal_mode=WAL")
+        await store.insert(MemoryAtom(parent_memory_id=1, content="existing source"))
+        snapshots = await engine.snapshot_archived_atom_lifecycle(1)
+        await db.execute("BEGIN IMMEDIATE")
+        await db.execute("UPDATE memory_atoms SET reinforcement_count=7 WHERE parent_memory_id=1")
+        restoration = asyncio.create_task(engine.restore_archived_atom_lifecycle(1, snapshots))
+        # SQLite's busy handler must wait for the writer, instead of failing
+        # immediately while upgrading an FTS read snapshot to a transaction.
+        await asyncio.sleep(0.05)
+        await db.commit()
+        assert await asyncio.wait_for(restoration, timeout=3) == 1
+        assert [atom.content for atom in await store.get_by_parent(1)] == ["existing source"]
+        assert [atom.content for atom in await store.search_fts("source")] == ["existing source"]
+    finally:
+        await db.rollback()
+        if restoration is not None and not restoration.done():
+            restoration.cancel()
+            await asyncio.gather(restoration, return_exceptions=True)
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_archive_restore_fallback_preserves_callers_transaction(tmp_path):
+    engine, store, db = await _archive_engine(tmp_path / "outer.db")
+    try:
+        await store.insert(MemoryAtom(parent_memory_id=1, content="existing source"))
+        engine.atom_store = None
+        await db.execute("CREATE TABLE caller_work(value TEXT)")
+        await db.commit()
+        await db.execute("INSERT INTO caller_work VALUES('uncommitted')")
+        assert await engine.restore_archived_atom_lifecycle(1, [{"content": "temporary source"}]) == 1
+        assert db.in_transaction
+        await db.rollback()
+        async with db.execute("SELECT COUNT(*) FROM caller_work") as cursor:
+            assert (await cursor.fetchone())[0] == 0
+        assert [atom.content for atom in await store.get_by_parent(1)] == ["existing source"]
     finally:
         await db.close()

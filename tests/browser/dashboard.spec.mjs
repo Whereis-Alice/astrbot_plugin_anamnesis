@@ -31,6 +31,11 @@ try {
   const frame = page.frames().find(frame => frame.parentFrame()); assert.ok(frame);
   await frame.locator('[data-profile-edit="1"]').click();
   await frame.locator('#profile-edit-value').fill('浏览器测试修改：喜欢合作游戏');
+  await frame.locator('#profile-editor-delete').click();
+  await frame.locator('#confirm-cancel-btn').click();
+  assert.equal(await frame.locator('#profile-edit-value').inputValue(), '浏览器测试修改：喜欢合作游戏');
+  assert.equal(await frame.locator('#peek-panel').getAttribute('aria-hidden'), 'false');
+  passes.push('PASS cancel deletion: the editor preserves its draft and save listener');
   await frame.locator('#profile-editor-save').click();
   await frame.waitForFunction(() => window.profileFixturePosts.some(post => post.path === 'page/profiles/update'));
   const update = await frame.evaluate(() => window.profileFixturePosts.find(post => post.path === 'page/profiles/update'));
