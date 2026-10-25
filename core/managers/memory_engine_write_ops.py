@@ -760,11 +760,18 @@ class MemoryEngineWriteOpsMixin:
             await self._advance_write_op(op_id, "atoms_repaired", memory_id=memory_id)
 
         if self.graph_memory_manager is not None and content.strip():
+            # A failed-atoms payload is only the missing subset. Build the
+            # graph from the full current store, including earlier successes.
+            graph_atoms = atoms or None
+            if self.atom_enabled and self.atom_store is not None:
+                stored_atoms = await self.atom_store.get_by_parent(int(memory_id))
+                if stored_atoms or metadata.get("atom_types"):
+                    graph_atoms = stored_atoms
             await self.graph_memory_manager.index_memory(
                 int(memory_id),
                 content,
                 metadata,
-                atoms or None,
+                graph_atoms,
             )
             await self._advance_write_op(op_id, "graph_repaired", memory_id=memory_id)
 

@@ -364,8 +364,10 @@ class MemoryAdministration(AdministrationJobsMixin):
             raise ValueError("原记忆已变化，请重新预览")
         token = secrets.token_urlsafe(32)
         async with self.store.connection(write=True) as db:
-            await db.execute("UPDATE memory_admin_operations SET token_hash=?,token_expires=?,token_actor=? WHERE id=? AND status='preview'",
-                             (hashlib.sha256(token.encode()).hexdigest(), time.time()+300, actor, operation_id))
+            cursor = await db.execute("UPDATE memory_admin_operations SET token_hash=?,token_expires=?,token_actor=? WHERE id=? AND status='preview'",
+                                      (hashlib.sha256(token.encode()).hexdigest(), time.time()+300, actor, operation_id))
+            if cursor.rowcount != 1:
+                raise ValueError("计划已执行或已作废，请刷新后重新预览")
         return {"operation_id": operation_id, "confirmation_token": token, "expires_in": 300}
 
     async def execute_correction(self, operation_id, token, *, actor="webui"):

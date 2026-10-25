@@ -31,7 +31,7 @@ class UserProfileMigrationMixin:
             return
         async with self.store._write_lock:
             try:
-                await self._repair_profile_scopes(connection, legacy)
+                migrations = await self._repair_profile_scopes(connection, legacy)
                 # Refresh under the writer lock; another event may already
                 # have moved this session's evidence while admission awaited.
                 for previous in previous_scopes:
@@ -40,10 +40,11 @@ class UserProfileMigrationMixin:
                     ) as cursor:
                         rows = [dict(row) for row in await cursor.fetchall()]
                     for row in rows:
-                        await self._split_profile_session(
+                        if await self._split_profile_session(
                             connection, row, scope, session
-                        )
-                await connection.commit()
+                        ):
+                            migrations.add((previous, session))
+                await self._commit_profile_invalidation(migrated_sources=migrations)
             except BaseException:
                 await connection.rollback()
                 raise
@@ -64,8 +65,9 @@ class UserProfileMigrationMixin:
         ) as cursor:
             return [dict(row) for row in await cursor.fetchall()]
 
-    async def _repair_profile_scopes(self, connection, identity=None):
+    async def _repair_profile_scopes(self, connection, identity=None) -> set[tuple[str, str]]:
         """Repair published whole-claim migrations without guessing missing origins."""
+        migrations = set()
         for row in await self._misplaced_profile_rows(connection, identity):
             prefix = next(
                 marker
@@ -92,12 +94,14 @@ class UserProfileMigrationMixin:
                 ) as cursor:
                     remaining = await cursor.fetchone()
                 if remaining:
-                    await self._split_profile_session(
+                    if await self._split_profile_session(
                         connection,
                         dict(remaining),
                         row["identity"] + ":session:" + session,
                         session,
-                    )
+                    ):
+                        migrations.add((row["profile_scope"], session))
+        return migrations
 
     @staticmethod
     def _profile_evidence_key(item):
@@ -257,7 +261,7 @@ class UserProfileMigrationMixin:
         )
         return snapshot
 
-    async def _split_profile_session(self, connection, row, scope, session):
+    async def _split_profile_session(self, connection, row, scope, session) -> bool:
         previous, key = row["profile_scope"], row["profile_key"]
         async with connection.execute(
             "SELECT * FROM user_profile_claims WHERE profile_scope=? AND profile_key=? ORDER BY claim_id",
@@ -273,7 +277,7 @@ class UserProfileMigrationMixin:
             if belonging:
                 selected[claim["claim_id"]] = belonging
         if not selected:
-            return
+            return False
         context = [item for evidence in selected.values() for item in evidence]
         async with connection.execute(
             "SELECT * FROM user_profiles WHERE profile_scope=? AND profile_key=?",
@@ -419,6 +423,9 @@ class UserProfileMigrationMixin:
         await self._split_profile_transitions(connection, previous, scope, key, mapping)
         await self._finish_profile_split(connection, row)
         await self._prune_ledger(connection, scope, key)
+        # The caller fences only committed moves. The old chat's extraction
+        # must not recreate its pre-migration scope after a config round trip.
+        return True
 
     async def _split_profile_transitions(
         self, connection, previous, scope, key, mapping

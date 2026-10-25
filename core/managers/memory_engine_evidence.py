@@ -12,6 +12,7 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..atom_evidence import atom_scope_matches_parent
 from ..recall_persona import (
     is_null_persona_filter,
     persona_filter_requested,
@@ -164,14 +165,7 @@ class MemoryEngineEvidenceMixin:
                 continue
             # Legacy atoms may omit scope; a populated scope must agree with
             # the parent already authorized by the recall/read entry point.
-            if (
-                row[5] is not None
-                and metadata.get("session_id") is not None
-                and row[5] != metadata["session_id"]
-            ) or (
-                row[6] is not None
-                and not persona_matches(row[6], metadata.get("persona_id"))
-            ):
+            if not atom_scope_matches_parent(row[5], row[6], metadata):
                 continue
             live.append(row)
         return live

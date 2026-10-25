@@ -191,8 +191,8 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
                                 await connection.execute(
                                     f"UPDATE user_profiles SET suppressed=1 WHERE source_memory_id IN ({placeholders})", ids)
                     await self._create_ledger(connection)
-                    await self._repair_profile_scopes(connection)
-                    await connection.commit()
+                    migrations = await self._repair_profile_scopes(connection)
+                    await self._commit_profile_invalidation(migrated_sources=migrations)
                 except BaseException:
                     await connection.rollback()
                     raise
@@ -667,9 +667,14 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
     def _invalidate_profile_extractions(
         self, *, scope: str | None = None, key: str | None = None,
         source_ids: set[int] | None = None,
+        migrated_sources: set[tuple[str, str]] | None = None,
     ) -> None:
-        """Called under the store write lock after a successful deletion."""
+        """Fence old extraction snapshots after a committed deletion or migration."""
         for extraction in self._profile_extractions().values():
+            if migrated_sources and (
+                extraction["scope"], extraction.get("source_session_id")
+            ) in migrated_sources:
+                extraction["cancelled"] = True
             if source_ids is not None:
                 if extraction["source_memory_id"] in source_ids:
                     extraction["cancelled"] = True
@@ -682,6 +687,7 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
     async def _commit_profile_invalidation(
         self, *, scope: str | None = None, key: str | None = None,
         source_ids: set[int] | None = None,
+        migrated_sources: set[tuple[str, str]] | None = None,
     ) -> None:
         """Hold the writer lock until commit's actual result is known."""
         commit = asyncio.create_task(self.store.connection.commit())
@@ -689,9 +695,13 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
             await asyncio.shield(commit)
         except asyncio.CancelledError:
             await settle_memory_mutation_task(commit)
-            self._invalidate_profile_extractions(scope=scope, key=key, source_ids=source_ids)
+            self._invalidate_profile_extractions(
+                scope=scope, key=key, source_ids=source_ids, migrated_sources=migrated_sources,
+            )
             raise
-        self._invalidate_profile_extractions(scope=scope, key=key, source_ids=source_ids)
+        self._invalidate_profile_extractions(
+            scope=scope, key=key, source_ids=source_ids, migrated_sources=migrated_sources,
+        )
 
     async def update_from_messages(
         self, event: Any, messages: list[Any], memory_processor: Any, *, source_memory_id: int,
@@ -704,6 +714,7 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
             return 0
         ticket = object()
         extraction = {"scope": scope, "source_memory_id": source_memory_id,
+                      "source_session_id": str(getattr(event, "unified_msg_origin", "") or ""),
                       "deleted_keys": set(), "cancelled": False}
         async with self.store._write_lock:
             if not await self._extraction_source_is_live(source_memory_id):

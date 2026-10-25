@@ -12,6 +12,7 @@ from typing import Any
 from astrbot.api import logger
 
 from ...storage.graph_store import GraphStore
+from ..atom_evidence import live_atoms_for_parent
 from ..models.graph_models import GraphEntry
 from ..processors.graph_extractor import GraphExtractor
 from ..retrieval.graph_vector_retriever import GraphVectorRetriever
@@ -26,11 +27,14 @@ class GraphMemoryManager:
         graph_vector_retriever: GraphVectorRetriever,
         graph_extractor: GraphExtractor,
         alias_store: Any = None,
+        *,
+        atom_store: Any = None,
     ):
         self.graph_store = graph_store
         self.graph_vector_retriever = graph_vector_retriever
         self.graph_extractor = graph_extractor
         self.alias_store = alias_store
+        self.atom_store = atom_store
         self._rebuild_gate = asyncio.Lock()
         self._rebuild_active = False
         self._rebuild_delta: dict[
@@ -92,6 +96,22 @@ class GraphMemoryManager:
         atoms: list | None = None,
     ) -> tuple[list[GraphEntry], list[int]]:
         """Persist graph structure without touching the vector index."""
+        if metadata and str(metadata.get("status") or "active") != "active":
+            return [], []
+        if atoms is None:
+            if self.atom_store is not None:
+                stored = await self.atom_store.get_by_parent(source_memory_id)
+                if stored or (metadata or {}).get("atom_types"):
+                    atoms = stored
+            elif (metadata or {}).get("atom_types"):
+                # An atom-backed source must not fall back to its historical
+                # summary when its current lifecycle is unavailable.
+                return [], []
+        if atoms is not None:
+            atom_backed = bool(atoms or (metadata or {}).get("atom_types"))
+            atoms = live_atoms_for_parent(atoms, metadata or {})
+            if atom_backed and not atoms:
+                return [], []
         metadata = await self._with_alias_history(metadata)
         extracted = self.graph_extractor.extract(
             source_memory_id, content, metadata, atoms
@@ -269,6 +289,7 @@ class GraphMemoryManager:
             shadow_store,
             self.graph_vector_retriever,
             self.graph_extractor,
+            atom_store=self.atom_store,
         )
         new_vector_doc_ids: dict[int, set[int]] = {}
         old_vector_doc_ids = await self.graph_store.list_vector_doc_ids_by_source()

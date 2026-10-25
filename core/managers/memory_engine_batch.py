@@ -14,9 +14,14 @@ from astrbot.api import logger
 
 from ...storage.atom_store import AtomStore
 from ...storage.sqlite_utils import configure_sqlite_connection
+from ..atom_evidence import atom_scope_matches_parent
 from ..processors.atom_classifier import classify_atoms
 from ..utils.number_utils import clamp_float, safe_float
-from .memory_mutation import serialize_memory_mutation
+from .memory_mutation import (
+    memory_mutation_task,
+    serialize_memory_mutation,
+    settle_memory_mutation_task,
+)
 
 
 class MemoryEngineBatchMixin:
@@ -378,18 +383,20 @@ class MemoryEngineBatchMixin:
         content = str(memory.get("text") or "")
         vector_inserted = False
         fts_inserted = False
-        metadata_committed = False
         metadata["status"] = "active"
         metadata["restored_at"] = time.time()
+        # Bind JSON text on both sides of the commit/compensation check. JSON1
+        # otherwise rounds a bound REAL when rendering json_set's numeric value.
+        restore_marker = json.dumps(metadata["restored_at"], allow_nan=False)
         metadata.pop("archived_at", None)
         try:
             vector = np.asarray(await get_embedding(content), dtype=np.float32)
-            await embedding_insert(vector, memory_id)
             vector_inserted = True
+            await embedding_insert(vector, memory_id)
             if self.bm25_retriever is None:
                 raise RuntimeError("BM25 检索器未初始化")
-            await self.bm25_retriever.add_document(memory_id, content, metadata)
             fts_inserted = True
+            await self.bm25_retriever.add_document(memory_id, content, metadata)
 
             atoms = classify_atoms(
                 key_facts=list(metadata.get("key_facts") or []),
@@ -406,8 +413,12 @@ class MemoryEngineBatchMixin:
             if atoms and self.atom_store is not None:
                 await self.atom_store.insert_many(atoms)
             if "archived_atom_lifecycle" in metadata:
+                snapshots = metadata["archived_atom_lifecycle"]
+                if not isinstance(snapshots, list) or any(not isinstance(row, dict) for row in snapshots):
+                    raise ValueError("invalid archived atom lifecycle snapshot")
                 await self.restore_archived_atom_lifecycle(
-                    memory_id, metadata["archived_atom_lifecycle"],
+                    memory_id, [snapshot for snapshot in snapshots
+                                if atom_scope_matches_parent(snapshot.get("session_id"), snapshot.get("persona_id"), metadata)],
                     session_id=metadata.get("session_id"), persona_id=metadata.get("persona_id"))
                 if self.atom_store is not None:
                     atoms = await self.atom_store.get_by_parent(memory_id)
@@ -418,19 +429,18 @@ class MemoryEngineBatchMixin:
 
             cursor = await self.db_connection.execute(
                 "UPDATE documents SET metadata=json_remove(json_set(metadata, '$.status','active', "
-                "'$.restored_at', ?), '$.archived_at') WHERE id=? "
+                "'$.restored_at', json(?)), '$.archived_at') WHERE id=? "
                 "AND json_extract(metadata,'$.status')='archived' "
                 "AND json_extract(metadata,'$.session_id') IS ? "
                 "AND json_extract(metadata,'$.persona_id') IS ? "
                 "AND json_extract(metadata,'$.archived_at') IS ? AND text=?",
-                (metadata["restored_at"], memory_id, original_metadata.get("session_id"),
+                (restore_marker, memory_id, original_metadata.get("session_id"),
                  original_metadata.get("persona_id"), original_metadata.get("archived_at"), content),
             )
             if cursor.rowcount != 1:
                 await self.db_connection.rollback()
                 raise RuntimeError("记忆在恢复期间已修改，请刷新后重试")
             await self.db_connection.commit()
-            metadata_committed = True
             profile_manager = getattr(self, "user_profile_manager", None)
             if profile_manager is not None:
                 try:
@@ -442,33 +452,56 @@ class MemoryEngineBatchMixin:
             self._invalidate_search_cache()
             return True
         except BaseException:
-            # Until the final commit the document stays archived. Reversing
-            # that commit changes only our state fields, never a newer scope,
-            # note, access counter, or a newer archive operation.
-            if metadata_committed:
+            async def compensate():
+                # A cancelled commit may already have completed. First roll
+                # back any unfinished transaction, then reverse only our marker
+                # and scope without overwriting notes or access statistics.
+                await self.db_connection.rollback()
+                expression = "json_set(metadata, '$.status','archived', '$.archived_at', json(?))"
+                parameters = [json.dumps(original_metadata.get("archived_at"), allow_nan=False)]
+                if "restored_at" in original_metadata:
+                    expression = f"json_set({expression}, '$.restored_at', json(?))"
+                    parameters.append(json.dumps(original_metadata["restored_at"], allow_nan=False))
+                else:
+                    expression = f"json_remove({expression}, '$.restored_at')"
                 await self.db_connection.execute(
-                    "UPDATE documents SET metadata=json_set(metadata, '$.status','archived', '$.archived_at', ?) "
+                    f"UPDATE documents SET metadata={expression} "
                     "WHERE id=? AND json_extract(metadata,'$.status')='active' "
-                    "AND json_extract(metadata,'$.restored_at')=?",
-                    (original_metadata.get("archived_at"), memory_id, metadata["restored_at"]),
+                    "AND json_extract(metadata,'$.restored_at') IS json_extract(?, '$') "
+                    "AND json_extract(metadata,'$.session_id') IS ? "
+                    "AND json_extract(metadata,'$.persona_id') IS ? AND text=?",
+                    (*parameters, memory_id, restore_marker,
+                     original_metadata.get("session_id"), original_metadata.get("persona_id"), content),
                 )
                 await self.db_connection.commit()
-            if fts_inserted:
-                await self.db_connection.execute(
-                    "DELETE FROM livingmemory_memories_fts WHERE doc_id = ?",
-                    (memory_id,),
-                )
-                await self.db_connection.commit()
-            if vector_inserted and callable(embedding_delete):
-                try:
-                    await embedding_delete([memory_id])
-                except Exception:
+                current = await self._replacement_snapshot(memory_id)
+                if current and str(self._safe_json_dict(current.get("metadata")).get("status") or "active") == "active":
+                    # A newer active source no longer belongs to this restore;
+                    # do not delete its indexes during old-request cleanup.
                     await self._set_index_rebuild_required(True)
-                    logger.warning("恢复回滚时向量清理失败，已标记重建", exc_info=True)
-            if self.graph_memory_manager is not None:
-                await self.graph_memory_manager.delete_memory(memory_id)
-            if self.atom_store is not None:
-                await self.atom_store.delete_by_parent(memory_id)
+                    return
+                if fts_inserted:
+                    await self.db_connection.execute(
+                        "DELETE FROM livingmemory_memories_fts WHERE doc_id = ?", (memory_id,),
+                    )
+                    await self.db_connection.commit()
+                if vector_inserted and callable(embedding_delete):
+                    try:
+                        await embedding_delete([memory_id])
+                    except Exception:
+                        await self._set_index_rebuild_required(True)
+                        logger.warning("恢复回滚时向量清理失败，已标记重建", exc_info=True)
+                if self.graph_memory_manager is not None:
+                    await self.graph_memory_manager.delete_memory(memory_id)
+                if self.atom_store is not None:
+                    await self.atom_store.delete_by_parent(memory_id)
+                self._invalidate_search_cache()
+
+            cleanup = memory_mutation_task(self, compensate())
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await settle_memory_mutation_task(cleanup)
             raise
 
     async def _migrate_session_data_if_needed(self, unified_msg_origin: str) -> None:

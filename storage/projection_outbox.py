@@ -7,11 +7,10 @@ primary transaction; completion is conditional on the version read by a worker.
 from __future__ import annotations
 
 import asyncio
-import math
-import time
 
 from astrbot.api import logger
 
+from ..core.atom_evidence import live_atoms_for_parent
 from ..core.managers.memory_mutation import (
     index_projection_guard,
     memory_mutation_guard,
@@ -64,27 +63,7 @@ class ProjectionOutbox:
     @staticmethod
     def _live_atoms(atoms, metadata):
         """Use the same TTL and parent-scope policy as live fact retrieval."""
-        now, live = time.time(), []
-        for atom in atoms:
-            try:
-                expiry = float(atom.expires_at)
-            except (TypeError, ValueError, OverflowError):
-                continue
-            if (
-                getattr(atom.status, "value", atom.status) != "active"
-                or not math.isfinite(expiry)
-                or expiry <= now
-            ):
-                continue
-            if any(
-                getattr(atom, key, None) is not None
-                and metadata.get(key) is not None
-                and getattr(atom, key) != metadata[key]
-                for key in ("session_id", "persona_id")
-            ):
-                continue
-            live.append(atom)
-        return live
+        return live_atoms_for_parent(atoms, metadata)
 
     async def repair(self, limit=10):
         engine = self.engine
