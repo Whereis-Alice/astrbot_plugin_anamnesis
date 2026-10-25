@@ -9,9 +9,12 @@ from difflib import SequenceMatcher
 import aiosqlite
 
 from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
+from .memory_mutation import memory_mutation_guard, serialize_memory_mutation
 
 
 class MemoryEngineOperationsMixin:
+    memory_mutation_guard = memory_mutation_guard
+
     async def _set_index_rebuild_required(self, required):
         self.index_rebuild_required = bool(required)
         if self.db_connection is not None:
@@ -89,6 +92,7 @@ class MemoryEngineOperationsMixin:
             return old_window == new_window
         return True
 
+    @serialize_memory_mutation
     async def add_memory_conservatively(self, *, threshold=0.97, candidate_count=10, **kwargs):
         """Only merge equivalent facts in the same scope, persona and source chat.
 
@@ -169,6 +173,7 @@ class MemoryEngineOperationsMixin:
                     return candidate.doc_id, previous
             return await self.add_memory(**kwargs), None
 
+    @serialize_memory_mutation
     async def undo_summary_write(self, memory_id, previous=None):
         if previous is None:
             await self.delete_memory(memory_id)
@@ -178,6 +183,7 @@ class MemoryEngineOperationsMixin:
         else:
             await self._restore_summary_snapshot(memory_id, previous)
 
+    @serialize_memory_mutation
     async def _restore_summary_snapshot(self, memory_id, previous):
         """Undo only this merge's fields, preserving later independent writes."""
         async def restore():

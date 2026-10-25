@@ -6,7 +6,7 @@
 
 本文件覆盖：
 - backup_settings.enabled / skip_if_larger_than_mb / 磁盘不足 三条跳过分支
-  （每条都必须写入 .plugin_version，否则每次启动都会重新尝试复制数百 MB）
+  （显式禁用/尺寸限制记录版本号，磁盘不足保留版本以便清理后重试）
 - max_keep 对版本目录与每日备份文件的独立裁剪
 - max_total_size_mb 从最旧开始删除
 - 删除动作绝不越出 <data_dir>/backups（含符号链接场景）
@@ -20,13 +20,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sqlite3
 import time
+from contextlib import closing
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-
 from astrbot_plugin_anamnesis.core.managers import backup_manager as bm
 from astrbot_plugin_anamnesis.core.managers.backup_manager import (
     DEFAULT_KEEP_DAYS,
@@ -62,6 +63,19 @@ BACKUP_INFO_FIELDS = (
     "skipped",
     "skip_reason",
 )
+
+
+def _write_db(path: Path, content: str | bytes) -> None:
+    with closing(sqlite3.connect(path)) as db:
+        db.execute("CREATE TABLE records(content)")
+        db.execute("INSERT INTO records VALUES (?)", (content,))
+        db.commit()
+
+
+def _read_db(path: Path) -> str | bytes:
+    with closing(sqlite3.connect(path)) as db:
+        assert db.execute("PRAGMA quick_check").fetchall() == [("ok",)]
+        return db.execute("SELECT content FROM records").fetchone()[0]
 
 
 # --------------------------------------------------------------------------
@@ -159,9 +173,9 @@ def test_resolve_settings_partial_group_fills_defaults() -> None:
 
 
 def test_resolve_settings_missing_group_uses_defaults() -> None:
-    assert resolve_backup_settings({"other_group": {"x": 1}}) == resolve_backup_settings(
-        None
-    )
+    assert resolve_backup_settings(
+        {"other_group": {"x": 1}}
+    ) == resolve_backup_settings(None)
 
 
 def test_resolve_settings_accepts_bare_group() -> None:
@@ -230,8 +244,8 @@ def test_config_none_keeps_documented_defaults(tmp_path: Path) -> None:
 
 def test_config_none_still_creates_backup(tmp_path: Path) -> None:
     """回归：单参数构造（旧调用方式）仍能正常完成版本变更备份。"""
-    (tmp_path / "anamnesis.db").write_text("legacy content", encoding="utf-8")
-    (tmp_path / "conversations.db").write_text("legacy conv", encoding="utf-8")
+    _write_db(tmp_path / "anamnesis.db", "legacy content")
+    _write_db(tmp_path / "conversations.db", "legacy conv")
 
     mgr = BackupManager(str(tmp_path))
     mgr.version_file.write_text("2.0.0", encoding="utf-8")
@@ -240,7 +254,7 @@ def test_config_none_still_creates_backup(tmp_path: Path) -> None:
     assert backup_dir is not None
     assert "v2.0.0" in backup_dir
     copied = Path(backup_dir) / "anamnesis.db"
-    assert copied.read_text(encoding="utf-8") == "legacy content"
+    assert _read_db(copied) == "legacy content"
     assert (Path(backup_dir) / "conversations.db").exists()
     assert mgr.get_stored_version() == PLUGIN_VERSION
 
@@ -288,7 +302,7 @@ def test_skip_if_larger_than_mb_skips_and_warns(
 
 def test_skip_if_larger_than_mb_zero_disables_guard(tmp_path: Path) -> None:
     """阈值 <=0 表示不限，超大数据也照常备份。"""
-    (tmp_path / "anamnesis.db").write_bytes(b"x" * (2 * _MB))
+    _write_db(tmp_path / "anamnesis.db", b"x" * (2 * _MB))
 
     mgr = BackupManager(
         str(tmp_path), {"backup_settings": {"skip_if_larger_than_mb": 0}}
@@ -297,13 +311,16 @@ def test_skip_if_larger_than_mb_zero_disables_guard(tmp_path: Path) -> None:
 
     backup_dir = mgr.backup_if_needed()
     assert backup_dir is not None
-    assert (Path(backup_dir) / "anamnesis.db").stat().st_size == 2 * _MB
+    assert (Path(backup_dir) / "anamnesis.db").stat().st_size == (
+        tmp_path / "anamnesis.db"
+    ).stat().st_size
+    assert _read_db(Path(backup_dir) / "anamnesis.db") == b"x" * (2 * _MB)
 
 
 def test_low_disk_space_skips_backup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """磁盘剩余空间不足 数据体积*1.1 时跳过复制，但仍写版本号。"""
+    """磁盘剩余空间不足时保留版本号，清理空间后可重试。"""
     (tmp_path / "anamnesis.db").write_bytes(b"x" * _MB)
 
     def fake_disk_usage(path):
@@ -320,17 +337,15 @@ def test_low_disk_space_skips_backup(
         assert mgr.backup_if_needed() is None
 
     assert not (tmp_path / "backups").exists()
-    assert mgr.get_stored_version() == PLUGIN_VERSION
-    assert any(
-        "磁盘剩余空间" in record.getMessage() for record in caplog.records
-    )
+    assert mgr.get_stored_version() == "2.6.1"
+    assert any("磁盘剩余空间" in record.getMessage() for record in caplog.records)
 
 
 def test_unknown_free_space_does_not_block_backup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """拿不到磁盘信息时不应误判为磁盘不足。"""
-    (tmp_path / "anamnesis.db").write_bytes(b"x" * 1024)
+    _write_db(tmp_path / "anamnesis.db", b"x" * 1024)
 
     def boom(path):
         raise OSError("disk_usage unavailable")
@@ -344,15 +359,13 @@ def test_unknown_free_space_does_not_block_backup(
 
 def test_backup_info_contains_retention_fields(tmp_path: Path) -> None:
     """backup_info.json 在原有字段之上追加 total_bytes / skipped / skip_reason。"""
-    (tmp_path / "anamnesis.db").write_bytes(b"x" * 512)
+    _write_db(tmp_path / "anamnesis.db", b"x" * 512)
 
     mgr = BackupManager(str(tmp_path))
     mgr.version_file.write_text("2.6.1", encoding="utf-8")
     backup_dir = mgr.backup_if_needed()
 
-    info = json.loads(
-        (Path(backup_dir) / _BACKUP_INFO).read_text(encoding="utf-8")
-    )
+    info = json.loads((Path(backup_dir) / _BACKUP_INFO).read_text(encoding="utf-8"))
     for field in BACKUP_INFO_FIELDS:
         assert field in info, field
     assert info["total_bytes"] >= 512
@@ -363,7 +376,7 @@ def test_backup_info_contains_retention_fields(tmp_path: Path) -> None:
 
 def test_backup_if_needed_prunes_old_version_dirs(tmp_path: Path) -> None:
     """版本变更备份成功后立刻执行保留策略。"""
-    (tmp_path / "anamnesis.db").write_bytes(b"x" * 512)
+    _write_db(tmp_path / "anamnesis.db", b"x" * 512)
     _make_version_dir(tmp_path, "v1.0.0", age_days=30)
     _make_version_dir(tmp_path, "v2.0.0", age_days=20)
     _make_version_dir(tmp_path, "v3.0.0", age_days=10)
@@ -388,9 +401,7 @@ def test_max_keep_trims_version_dirs(tmp_path: Path) -> None:
     kept_old = _make_version_dir(tmp_path, "v3.0.0", age_days=10)
     kept_new = _make_version_dir(tmp_path, "v4.0.0", age_days=1)
 
-    result = prune_backups_in(
-        tmp_path, max_keep=2, max_total_size_mb=0, keep_days=0
-    )
+    result = prune_backups_in(tmp_path, max_keep=2, max_total_size_mb=0, keep_days=0)
 
     assert kept_old.exists()
     assert kept_new.exists()
@@ -411,9 +422,7 @@ def test_max_keep_trims_daily_files_including_legacy_names(tmp_path: Path) -> No
         tmp_path, "anamnesis_backup_20260904_000000.db", age_days=1
     )
 
-    result = prune_backups_in(
-        tmp_path, max_keep=2, max_total_size_mb=0, keep_days=0
-    )
+    result = prune_backups_in(tmp_path, max_keep=2, max_total_size_mb=0, keep_days=0)
 
     assert legacy.exists()
     assert newest.exists()
@@ -460,9 +469,7 @@ def test_non_positive_limits_disable_pruning(tmp_path: Path) -> None:
         tmp_path, "anamnesis_backup_20250101_000000.db", age_days=400
     )
 
-    result = prune_backups_in(
-        tmp_path, max_keep=0, max_total_size_mb=0, keep_days=0
-    )
+    result = prune_backups_in(tmp_path, max_keep=0, max_total_size_mb=0, keep_days=0)
 
     assert stale.exists()
     assert result["removed_dirs"] == []
@@ -486,9 +493,7 @@ def test_keep_days_only_expires_daily_files(tmp_path: Path) -> None:
         tmp_path, "anamnesis_backup_20260906_000000.db", age_days=1
     )
 
-    result = prune_backups_in(
-        tmp_path, max_keep=0, max_total_size_mb=0, keep_days=7
-    )
+    result = prune_backups_in(tmp_path, max_keep=0, max_total_size_mb=0, keep_days=7)
 
     assert stale_dir.exists()
     assert not stale_file.exists()
@@ -514,9 +519,7 @@ def test_max_total_size_removes_oldest_first(tmp_path: Path) -> None:
         tmp_path, "anamnesis_backup_20260905_000000.db", size=size, age_days=1
     )
 
-    result = prune_backups_in(
-        tmp_path, max_keep=0, max_total_size_mb=1, keep_days=0
-    )
+    result = prune_backups_in(tmp_path, max_keep=0, max_total_size_mb=1, keep_days=0)
 
     assert not oldest.exists()
     assert not middle.exists()
@@ -535,9 +538,7 @@ def test_max_total_size_mixes_dirs_and_files_in_one_timeline(tmp_path: Path) -> 
     )
     new_dir = _make_version_dir(tmp_path, "v2.0.0", size=size, age_days=1)
 
-    result = prune_backups_in(
-        tmp_path, max_keep=0, max_total_size_mb=1, keep_days=0
-    )
+    result = prune_backups_in(tmp_path, max_keep=0, max_total_size_mb=1, keep_days=0)
 
     assert not old_dir.exists()
     assert not mid_file.exists()
@@ -562,9 +563,7 @@ def test_max_total_size_warns_when_still_over_limit(
 
     assert (backups / "manual_dump.tar").exists()
     assert result["removed_files"] == []
-    assert any(
-        "仍超出上限" in record.getMessage() for record in caplog.records
-    )
+    assert any("仍超出上限" in record.getMessage() for record in caplog.records)
 
 
 # --------------------------------------------------------------------------
@@ -626,9 +625,7 @@ def test_prune_refuses_symlinked_version_dir(tmp_path: Path) -> None:
     _make_version_dir(tmp_path, "v9.0.0", age_days=2)
     _make_version_dir(tmp_path, "v9.1.0", age_days=1)
 
-    result = prune_backups_in(
-        tmp_path, max_keep=2, max_total_size_mb=0, keep_days=0
-    )
+    result = prune_backups_in(tmp_path, max_keep=2, max_total_size_mb=0, keep_days=0)
 
     assert outside.exists()
     assert important.exists()
@@ -656,9 +653,7 @@ def test_prune_refuses_symlinked_daily_file(tmp_path: Path) -> None:
     _make_daily_file(tmp_path, "anamnesis_backup_20260905_000000.db", age_days=1)
     _make_daily_file(tmp_path, "anamnesis_backup_20260906_000000.db", age_days=0)
 
-    result = prune_backups_in(
-        tmp_path, max_keep=2, max_total_size_mb=0, keep_days=7
-    )
+    result = prune_backups_in(tmp_path, max_keep=2, max_total_size_mb=0, keep_days=7)
 
     assert real.exists()
     assert real.read_bytes() == b"y" * 256
@@ -678,9 +673,7 @@ def test_unrelated_entries_in_backups_are_never_removed(tmp_path: Path) -> None:
     _set_age(manual, 999)
     _make_version_dir(tmp_path, "v1.0.0", age_days=1)
 
-    result = prune_backups_in(
-        tmp_path, max_keep=1, max_total_size_mb=0, keep_days=1
-    )
+    result = prune_backups_in(tmp_path, max_keep=1, max_total_size_mb=0, keep_days=1)
 
     assert readme.exists()
     assert manual.exists()
@@ -890,9 +883,7 @@ async def test_scheduler_runs_daily_backup_when_db_is_small(tmp_path: Path) -> N
     (tmp_path / "anamnesis.db").write_bytes(b"x" * 1024)
     (tmp_path / "backups").mkdir()
 
-    scheduler, migration = _make_scheduler(
-        tmp_path, backup_skip_if_larger_than_mb=512
-    )
+    scheduler, migration = _make_scheduler(tmp_path, backup_skip_if_larger_than_mb=512)
     await scheduler._run_backup()
 
     migration.create_backup.assert_awaited_once()
@@ -903,9 +894,7 @@ async def test_scheduler_skip_guard_disabled_when_zero(tmp_path: Path) -> None:
     (tmp_path / "anamnesis.db").write_bytes(b"x" * (2 * _MB))
     (tmp_path / "backups").mkdir()
 
-    scheduler, migration = _make_scheduler(
-        tmp_path, backup_skip_if_larger_than_mb=0
-    )
+    scheduler, migration = _make_scheduler(tmp_path, backup_skip_if_larger_than_mb=0)
     await scheduler._run_backup()
 
     migration.create_backup.assert_awaited_once()
@@ -918,6 +907,7 @@ async def test_scheduler_cleanup_without_migration_is_noop(tmp_path: Path) -> No
     await scheduler._cleanup_old_backups()
     await scheduler._run_backup()
     assert not (tmp_path / "backups").exists()
+
 
 def test_prune_refuses_injected_out_of_scope_candidate(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture

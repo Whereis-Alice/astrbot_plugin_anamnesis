@@ -4,13 +4,28 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 from astrbot_plugin_anamnesis.core.managers.backup_manager import (
+    _BACKUP_INFO_FILE,
     PLUGIN_VERSION,
     BackupManager,
-    _BACKUP_INFO_FILE,
 )
+
+
+def _write_db(path: Path, content: str) -> None:
+    with closing(sqlite3.connect(path)) as db:
+        db.execute("CREATE TABLE records(content TEXT)")
+        db.execute("INSERT INTO records VALUES (?)", (content,))
+        db.commit()
+
+
+def _read_db(path: Path) -> str:
+    with closing(sqlite3.connect(path)) as db:
+        assert db.execute("PRAGMA quick_check").fetchall() == [("ok",)]
+        return db.execute("SELECT content FROM records").fetchone()[0]
 
 
 def test_get_stored_version_first_run(tmp_path: Path) -> None:
@@ -50,9 +65,9 @@ def test_backup_if_needed_no_change(tmp_path: Path) -> None:
 
 def test_backup_if_needed_creates_backup_dir(tmp_path: Path) -> None:
     # Create mock data files
-    (tmp_path / "anamnesis.db").write_text("mock db content")
+    _write_db(tmp_path / "anamnesis.db", "database content")
     (tmp_path / "anamnesis.index").write_text("mock index")
-    (tmp_path / "conversations.db").write_text("mock conversations")
+    _write_db(tmp_path / "conversations.db", "conversations")
     (tmp_path / "decay_state.json").write_text('{"last_run": "2025-01-01"}')
 
     mgr = BackupManager(str(tmp_path))
@@ -83,7 +98,7 @@ def test_backup_if_needed_creates_backup_dir(tmp_path: Path) -> None:
 
 
 def test_backup_if_needed_first_install(tmp_path: Path) -> None:
-    (tmp_path / "anamnesis.db").write_text("fresh install")
+    _write_db(tmp_path / "anamnesis.db", "fresh install")
 
     mgr = BackupManager(str(tmp_path))
     backup_dir = mgr.backup_if_needed()
@@ -109,14 +124,14 @@ def test_backup_handles_missing_files_gracefully(tmp_path: Path) -> None:
 
 def test_backup_preserves_file_content(tmp_path: Path) -> None:
     original_content = "original database content for verification"
-    (tmp_path / "anamnesis.db").write_text(original_content)
+    _write_db(tmp_path / "anamnesis.db", original_content)
 
     mgr = BackupManager(str(tmp_path))
     mgr.version_file.write_text("1.0.0", encoding="utf-8")
     backup_dir = mgr.backup_if_needed()
 
     backup_file = Path(backup_dir) / "anamnesis.db"
-    assert backup_file.read_text(encoding="utf-8") == original_content
+    assert _read_db(backup_file) == original_content
 
 
 def test_list_backups_empty(tmp_path: Path) -> None:
@@ -135,9 +150,7 @@ def test_list_backups_with_data(tmp_path: Path) -> None:
         "backup_timestamp": "2025-01-01T00:00:00+00:00",
         "files_copied": 1,
     }
-    (backup_root / _BACKUP_INFO_FILE).write_text(
-        json.dumps(info, ensure_ascii=False)
-    )
+    (backup_root / _BACKUP_INFO_FILE).write_text(json.dumps(info, ensure_ascii=False))
 
     result = BackupManager.list_backups(str(tmp_path))
     assert len(result) == 1
@@ -149,7 +162,7 @@ def test_list_backups_with_data(tmp_path: Path) -> None:
 
 def test_backup_includes_graph_files(tmp_path: Path) -> None:
     """图数据库文件应被通配符匹配并备份。"""
-    (tmp_path / "anamnesis_graph_documents.db").write_text("graph docs")
+    _write_db(tmp_path / "anamnesis_graph_documents.db", "graph docs")
     (tmp_path / "anamnesis_graph.index").write_text("graph index")
 
     mgr = BackupManager(str(tmp_path))
@@ -161,19 +174,20 @@ def test_backup_includes_graph_files(tmp_path: Path) -> None:
     assert (backup_path / "anamnesis_graph.index").exists()
 
 
-def test_backup_includes_wal_shm_files(tmp_path: Path) -> None:
-    """WAL 和 SHM 日志文件应通过通配符被备份。"""
-    (tmp_path / "anamnesis.db").write_text("main")
-    (tmp_path / "anamnesis.db-wal").write_text("wal")
-    (tmp_path / "anamnesis.db-shm").write_text("shm")
-
-    mgr = BackupManager(str(tmp_path))
-    mgr.version_file.write_text("2.0.0", encoding="utf-8")
-    backup_dir = mgr.backup_if_needed()
-
-    backup_path = Path(backup_dir)
-    assert (backup_path / "anamnesis.db-wal").exists()
-    assert (backup_path / "anamnesis.db-shm").exists()
+def test_backup_includes_committed_wal_data(tmp_path: Path) -> None:
+    """WAL 中已提交的数据应进入无需日志副文件的数据库快照。"""
+    _write_db(tmp_path / "anamnesis.db", "main")
+    with closing(sqlite3.connect(tmp_path / "anamnesis.db")) as db:
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("PRAGMA wal_autocheckpoint=0")
+        db.execute("UPDATE records SET content='wal data'")
+        db.commit()
+        mgr = BackupManager(str(tmp_path))
+        mgr.version_file.write_text("2.0.0", encoding="utf-8")
+        backup_path = Path(mgr.backup_if_needed())
+        assert not (backup_path / "anamnesis.db-wal").exists()
+        assert not (backup_path / "anamnesis.db-shm").exists()
+        assert _read_db(backup_path / "anamnesis.db") == "wal data"
 
 
 def test_get_stored_version_oserror_returns_none(tmp_path: Path) -> None:
@@ -184,16 +198,14 @@ def test_get_stored_version_oserror_returns_none(tmp_path: Path) -> None:
     assert mgr.get_stored_version() is None
 
 
-def test_backup_continues_on_copy_failure(tmp_path: Path) -> None:
-    """单个文件复制失败不应中断整个备份流程。"""
-    (tmp_path / "anamnesis.db").write_text("ok")
-    (tmp_path / "conversations.db").write_text("ok")
+def test_backup_snapshots_multiple_databases(tmp_path: Path) -> None:
+    """两个数据库都应创建可独立读取的快照。"""
+    _write_db(tmp_path / "anamnesis.db", "ok")
+    _write_db(tmp_path / "conversations.db", "ok")
 
     mgr = BackupManager(str(tmp_path))
     mgr.version_file.write_text("1.0.0", encoding="utf-8")
 
-    # 用一个不存在的假路径模拟失败——实际场景中 copy2 抛 OSError 会被捕获
-    # 这里我们验证正常文件被复制而整体流程不中断
     backup_dir = mgr.backup_if_needed()
     assert backup_dir is not None
     backup_path = Path(backup_dir)
@@ -260,7 +272,7 @@ def test_write_current_version_creates_missing_dir(tmp_path: Path) -> None:
 
 def test_backup_info_json_contains_all_fields(tmp_path: Path) -> None:
     """验证 backup_info.json 包含所有必要字段。"""
-    (tmp_path / "anamnesis.db").write_text("test")
+    _write_db(tmp_path / "anamnesis.db", "test")
 
     mgr = BackupManager(str(tmp_path))
     previous_version = "0.0.0"
@@ -271,8 +283,12 @@ def test_backup_info_json_contains_all_fields(tmp_path: Path) -> None:
         (Path(backup_dir) / _BACKUP_INFO_FILE).read_text(encoding="utf-8")
     )
     required_fields = [
-        "plugin_version", "previous_version", "backup_timestamp",
-        "backup_unix_time", "files_copied", "data_dir",
+        "plugin_version",
+        "previous_version",
+        "backup_timestamp",
+        "backup_unix_time",
+        "files_copied",
+        "data_dir",
     ]
     for field in required_fields:
         assert field in info, f"Missing field: {field}"

@@ -23,8 +23,13 @@ import asyncio
 import fnmatch
 import json
 import os
+import re
 import shutil
+import sqlite3
+import threading
 import time
+import uuid
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -33,7 +38,7 @@ from astrbot.api import logger
 
 # Match metadata.yaml - single source of truth for the plugin version.
 # Keep in sync with the @register decorator in main.py.
-PLUGIN_VERSION = "3.4.2"
+PLUGIN_VERSION = "3.4.3"
 
 _VERSION_FILE = ".plugin_version"
 _BACKUP_INFO_FILE = "backup_info.json"
@@ -432,6 +437,7 @@ class BackupManager:
         self.data_dir = Path(data_dir)
         self.version_file = self.data_dir / _VERSION_FILE
         self.config = config
+        self._backup_lock = threading.Lock()
 
         settings = resolve_backup_settings(config)
         self.settings = settings
@@ -462,7 +468,12 @@ class BackupManager:
     def write_current_version(self) -> None:
         """Persist the current plugin version."""
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.version_file.write_text(PLUGIN_VERSION, encoding="utf-8")
+        temporary = self.data_dir / f"{_VERSION_FILE}-{uuid.uuid4().hex}.tmp"
+        try:
+            temporary.write_text(PLUGIN_VERSION, encoding="utf-8")
+            os.replace(temporary, self.version_file)
+        finally:
+            temporary.unlink(missing_ok=True)
 
     def needs_backup(self) -> bool:
         """Return True when the plugin version has changed (or is fresh)."""
@@ -477,15 +488,27 @@ class BackupManager:
         Returns the backup directory, or None when nothing was copied (no
         version change, backups disabled, data too large, or disk too full).
 
-        The stored version is written in every branch, including the skipped
-        ones: otherwise a plugin that cannot be backed up would re-run this
-        check - and potentially copy hundreds of MB - on every single start.
+        Failed backups preserve the stored version for a later retry. Only
+        explicit disabled/size-limit skips record the version without a backup.
         """
+        with self._backup_lock:
+            try:
+                return self._backup_if_needed_locked()
+            except Exception:
+                logger.error(
+                    "[BackupManager] 备份未完成，保留旧版本标记和已有备份，后续启动可重试",
+                    exc_info=True,
+                )
+                return None
+
+    def _backup_if_needed_locked(self) -> str | None:
         if not self.needs_backup():
             return None
 
         stored = self.get_stored_version()
         old_label = stored or "unknown"
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", old_label):
+            raise ValueError("备份版本标签包含非法路径字符")
         change_label = f"{old_label} -> {PLUGIN_VERSION}"
 
         if not self.enabled:
@@ -519,48 +542,65 @@ class BackupManager:
                 f"[BackupManager] 检测到版本变更 ({change_label})，但磁盘剩余空间仅 "
                 f"{free_bytes / _MB:.1f}MB，低于备份所需的 "
                 f"{required_bytes / _MB:.1f}MB（数据体积 {total_mb:.1f}MB 的 1.1 倍），"
-                f"本次未执行备份。已记录当前版本号避免每次启动重试；"
-                f"请清理磁盘后手动复制数据目录 {self.data_dir}。"
+                f"本次未执行备份，保留旧版本号；清理磁盘后下次启动可重试。"
             )
-            self.write_current_version()
             return None
 
-        backup_dir = self.backups_dir / f"v{old_label}"
-        backup_dir.mkdir(parents=True, exist_ok=True)
+        self.backups_dir.mkdir(parents=True, exist_ok=True)
+        root = self.backups_dir.resolve()
+        if not _is_inside(root, self.data_dir.resolve()):
+            raise ValueError("备份目录位于数据目录之外")
+        staging = self.backups_dir / f".staging-{uuid.uuid4().hex}"
+        if not _is_inside(staging.resolve(), root):
+            raise ValueError("备份临时目录越出备份范围")
+        staging.mkdir()
 
         logger.info(
             f"[BackupManager] 检测到版本变更 ({change_label})，"
-            f"正在备份 {len(source_files)} 个文件 / {total_mb:.1f}MB 到 {backup_dir} ..."
+            f"正在创建完整备份 / {total_mb:.1f}MB ..."
         )
 
         copied_count = 0
-        for file_path in source_files:
-            dest = backup_dir / file_path.name
-            try:
-                shutil.copy2(file_path, dest)
+        try:
+            for file_path in source_files:
+                # WAL 内容由 SQLite backup API 合并进独立快照；不能逐文件复制
+                # WAL/SHM，否则它们可能来自不同事务时间点。
+                if file_path.name.endswith((".db-wal", ".db-shm")):
+                    continue
+                dest = staging / file_path.name
+                if file_path.suffix == ".db":
+                    self._backup_sqlite(file_path, dest)
+                else:
+                    shutil.copy2(file_path, dest)
                 copied_count += 1
-            except OSError as exc:
-                logger.error(f"[BackupManager] 备份文件失败 {file_path.name}: {exc}")
-
-        # Write backup metadata
-        info = {
-            "plugin_version": PLUGIN_VERSION,
-            "previous_version": old_label,
-            "backup_timestamp": datetime.now(timezone.utc).isoformat(),
-            "backup_unix_time": time.time(),
-            "files_copied": copied_count,
-            "data_dir": str(self.data_dir),
-            "total_bytes": total_bytes,
-            "skipped": False,
-            "skip_reason": None,
-        }
-        info_path = backup_dir / _BACKUP_INFO_FILE
-        info_path.write_text(
-            json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-
-        # Update stored version AFTER successful backup
-        self.write_current_version()
+            info = {
+                "plugin_version": PLUGIN_VERSION,
+                "previous_version": old_label,
+                "backup_timestamp": datetime.now(timezone.utc).isoformat(),
+                "backup_unix_time": time.time(),
+                "files_copied": copied_count,
+                "data_dir": str(self.data_dir),
+                "total_bytes": _path_size(staging),
+                "source_bytes": total_bytes,
+                "skipped": False,
+                "skip_reason": None,
+            }
+            (staging / _BACKUP_INFO_FILE).write_text(
+                json.dumps(info, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            backup_dir = self.backups_dir / f"v{old_label}"
+            # Never overlay an older backup: retries after marker-write failure
+            # must preserve the already completed snapshot too.
+            while backup_dir.exists() or backup_dir.is_symlink():
+                backup_dir = self.backups_dir / f"v{old_label}-{uuid.uuid4().hex[:12]}"
+            if not _is_inside(backup_dir.resolve(), root):
+                raise ValueError("备份发布路径越出备份目录")
+            staging.rename(backup_dir)
+            self.write_current_version()
+        except Exception:
+            if staging.exists():
+                _safe_remove(staging, root, {"removed_dirs": [], "removed_files": []})
+            raise
 
         logger.info(f"[BackupManager] 备份完成: {copied_count} 个文件 -> {backup_dir}")
 
@@ -599,24 +639,45 @@ class BackupManager:
         seen: set[Path] = set()
         total = 0
         for pattern in _BACKUP_PATTERNS:
-            try:
-                matches = sorted(self.data_dir.glob(pattern))
-            except OSError as exc:
-                logger.warning(f"[BackupManager] 匹配备份文件失败 {pattern}: {exc}")
-                continue
+            matches = sorted(self.data_dir.glob(pattern))
             for file_path in matches:
                 if file_path in seen:
                     continue
-                try:
-                    if not file_path.is_file():
-                        continue
-                    size = file_path.stat().st_size
-                except OSError:
-                    continue
+                if not file_path.is_file():
+                    raise OSError(f"备份来源不是普通文件: {file_path}")
+                if not _is_inside(file_path.resolve(), self.data_dir.resolve()):
+                    raise ValueError(f"备份来源越出数据目录: {file_path}")
+                if file_path.name.endswith((".db-wal", ".db-shm")):
+                    database = file_path.with_name(file_path.name[:-4])
+                    if not database.is_file():
+                        raise OSError(f"备份日志缺少主数据库: {file_path}")
+                size = file_path.stat().st_size
                 seen.add(file_path)
                 files.append(file_path)
                 total += size
         return files, total
+
+    @staticmethod
+    def _backup_sqlite(source: Path, destination: Path) -> None:
+        """Create and validate a standalone snapshot, including committed WAL rows."""
+        deadline = time.monotonic() + 30.0
+
+        def progress(_status: int, _remaining: int, _total: int) -> None:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"SQLite 备份超过 30 秒: {source.name}")
+
+        with closing(
+            sqlite3.connect(
+                source.resolve().as_uri() + "?mode=ro", uri=True, timeout=30.0
+            )
+        ) as origin:
+            with closing(sqlite3.connect(destination, timeout=30.0)) as target:
+                origin.backup(target, pages=256, progress=progress, sleep=0.05)
+                if target.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                    raise sqlite3.DatabaseError(
+                        f"SQLite 备份完整性检查失败: {source.name}"
+                    )
+                target.execute("PRAGMA journal_mode=DELETE")
 
     def _free_disk_bytes(self) -> int | None:
         """Free bytes on the data_dir filesystem, or None when unknown."""
@@ -643,7 +704,11 @@ class BackupManager:
 
         result: list[dict] = []
         for backup_dir in sorted(backups_path.iterdir(), reverse=True):
-            if not backup_dir.is_dir():
+            if (
+                not backup_dir.name.startswith("v")
+                or not backup_dir.is_dir()
+                or not _is_inside(backup_dir.resolve(), backups_path.resolve())
+            ):
                 continue
             info_path = backup_dir / _BACKUP_INFO_FILE
             info: dict = {}

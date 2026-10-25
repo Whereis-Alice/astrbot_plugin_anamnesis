@@ -6,13 +6,12 @@ import inspect
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
+from astrbot.api import logger
 from quart import request
 
-from astrbot.api import logger
-
 from ..memory_source import restore_source_messages
-from .memory_handler_update import MemoryHandlerUpdateMixin
 from .memory_handler_io import MemoryHandlerIoMixin
+from .memory_handler_update import MemoryHandlerUpdateMixin
 
 if TYPE_CHECKING:
     from .utils import PageApiUtils
@@ -359,6 +358,8 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
                 content=content,
                 importance=importance,
                 metadata={**current_metadata, **metadata},
+                expected_memory=memory,
+                expected_source=source,
             )
         except Exception as exc:
             logger.error(f"[PageAPI] 重新总结记忆失败: {exc}", exc_info=True)

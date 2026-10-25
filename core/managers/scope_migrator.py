@@ -14,6 +14,7 @@ from typing import Any
 import aiosqlite
 
 from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
+from .memory_mutation import memory_mutation_guard, memory_mutation_task
 
 
 class ScopeMigrationError(RuntimeError):
@@ -286,7 +287,7 @@ class ScopeMigrator:
         if not isinstance(fingerprint, str) or not fingerprint:
             raise ValueError("preview fingerprint is required")
         backups = []
-        async with self._lock, self._graph_migration_guard(), self._connect() as db:
+        async with memory_mutation_guard(self.engine), self._lock, self._graph_migration_guard(), self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             try:
                 if self.graph_path is not None:
@@ -317,7 +318,7 @@ class ScopeMigrator:
                 raise
 
     async def _finish(self, operation):
-        task = asyncio.create_task(operation)
+        task = memory_mutation_task(self.engine, operation)
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:

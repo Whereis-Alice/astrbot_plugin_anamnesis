@@ -7,7 +7,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
+from contextlib import nullcontext
+from copy import deepcopy
 from typing import Any
 
 from astrbot.api import logger
@@ -31,6 +35,7 @@ class MemoryConsolidationManager:
         # reflection 触发模式下的最小运行间隔（秒），避免每条消息都触发
         self._last_run_at = 0.0
         self._min_run_interval = self._resolve_min_run_interval()
+        self._run_lock = asyncio.Lock()
 
     @property
     def config(self) -> dict[str, Any]:
@@ -97,6 +102,12 @@ class MemoryConsolidationManager:
         Args:
             force: 是否忽略最小运行间隔（每日定时触发时传入 True）。
         """
+        if self._run_lock.locked():
+            return {"skipped": True, "reason": "in_progress"}
+        async with self._run_lock:
+            return await self._run_consolidation_once(force)
+
+    async def _run_consolidation_once(self, force: bool) -> dict[str, Any]:
         cfg = self.config
         if not cfg.get("enabled", False):
             return {"skipped": True}
@@ -246,14 +257,29 @@ class MemoryConsolidationManager:
     def _group_by_session(
         self, candidates: list[dict[str, Any]]
     ) -> list[list[dict[str, Any]]]:
-        grouped: dict[tuple[str, Any], list[dict[str, Any]]] = {}
+        grouped: dict[tuple[str, Any, str], list[dict[str, Any]]] = {}
         for mem in candidates:
             session_id = mem["metadata"].get("session_id")
             if not session_id:
                 continue
-            key = (str(session_id), mem["metadata"].get("persona_id"))
+            key = (
+                str(session_id),
+                mem["metadata"].get("persona_id"),
+                self._source_session(mem["metadata"]),
+            )
             grouped.setdefault(key, []).append(mem)
         return list(grouped.values())
+
+    @staticmethod
+    def _source_session(metadata: dict[str, Any]) -> str:
+        window = metadata.get("source_window")
+        window_session = window.get("session_id") if isinstance(window, dict) else None
+        return str(
+            metadata.get("source_session_id")
+            or window_session
+            or metadata.get("session_id")
+            or ""
+        )
 
     async def _group_semantic(
         self, candidates: list[dict[str, Any]], cfg: dict[str, Any]
@@ -271,9 +297,7 @@ class MemoryConsolidationManager:
             vector_retriever = getattr(self.memory_engine, "vector_retriever", None)
             if vector_retriever is None:
                 return self._group_by_session(candidates)
-            pairs = await vector_retriever.find_similar_pairs(
-                candidate_ids, threshold
-            )
+            pairs = await vector_retriever.find_similar_pairs(candidate_ids, threshold)
         except Exception as e:
             logger.warning(f"[记忆整合] 语义聚类失败，回退到同会话聚合: {e}")
             return self._group_by_session(candidates)
@@ -308,11 +332,17 @@ class MemoryConsolidationManager:
     ) -> dict[str, Any]:
         scope_groups = self._group_by_session(group)
         if len(scope_groups) != 1 or len(scope_groups[0]) != len(group):
-            raise RuntimeError("整合组必须包含同一会话、同一人格的记忆")
+            raise RuntimeError("整合组必须包含同一会话、同一来源会话、同一人格的记忆")
 
+        # LLM 等待期间不持有变更锁；前后核验同一快照，避免清理被改写/迁移的来源。
+        async with self._mutation_guard():
+            snapshots = await self._capture_sources(group)
         merged = await self.memory_processor.merge_memories(group)
 
         summary = merged["summary"]
+        if not isinstance(summary, str) or not summary.strip():
+            raise RuntimeError("合并结果缺少有效 summary")
+        summary = summary.strip()
         key_facts = merged["key_facts"]
         rich_content = summary
         if key_facts:
@@ -322,13 +352,18 @@ class MemoryConsolidationManager:
         # 新摘要，绝不能跟着一起归档/删除，否则信息真的丢了。旧版返回值没有
         # skipped_ids 键时退化为「全部参与」，保持向后兼容。
         skipped_ids = set(merged.get("skipped_ids") or [])
-        kept = [mem for mem in group if mem["id"] not in skipped_ids]
+        truncated_ids = set(merged.get("truncated_ids") or [])
+        kept = [mem for mem in group if mem["id"] not in skipped_ids | truncated_ids]
         if not kept:
-            raise RuntimeError("本组没有实际参与合并的记忆，取消整合")
+            raise RuntimeError("本组没有实际参与合并且完整参与的记忆，取消整合")
         if skipped_ids:
             logger.warning(
                 f"[记忆整合] 本组有 {len(skipped_ids)} 条记忆因输入预算未参与合并，"
                 f"保持原状不做归档/删除: {sorted(skipped_ids, key=str)}"
+            )
+        if truncated_ids:
+            logger.warning(
+                f"[记忆整合] 输入被截断的来源保持活跃: {sorted(truncated_ids, key=str)}"
             )
 
         session_id = kept[0]["metadata"].get("session_id")
@@ -344,27 +379,193 @@ class MemoryConsolidationManager:
             "consolidated_from": old_ids,
             "consolidated_at": time.time(),
         }
+        source_messages = self._combine_sources(kept, snapshots, metadata)
 
-        new_id = await self.memory_engine.add_memory(
-            content=rich_content,
-            session_id=session_id,
-            persona_id=persona_id,
-            importance=merged["importance"],
-            metadata=metadata,
+        # 最终核验、新增和来源清理作为一个变更单元完成。调用方取消时等待该单元
+        # 收尾再传播取消，避免 add 已提交但尚未返回 ID 时留下无法补偿的结果。
+        write_task = asyncio.create_task(
+            self._finalize_group(
+                group=group,
+                snapshots=snapshots,
+                old_ids=old_ids,
+                cfg=cfg,
+                write_kwargs={
+                    "content": rich_content,
+                    "session_id": session_id,
+                    "persona_id": persona_id,
+                    "importance": merged["importance"],
+                    "metadata": metadata,
+                    "source_messages": source_messages or None,
+                },
+            )
+        )
+        try:
+            return await asyncio.shield(write_task)
+        except asyncio.CancelledError:
+            while not write_task.done():
+                try:
+                    await asyncio.shield(write_task)
+                except asyncio.CancelledError:
+                    continue
+                except Exception:
+                    break
+            if not write_task.cancelled():
+                try:
+                    write_task.result()
+                except Exception:
+                    logger.warning("[记忆整合] 取消时最终写入失败", exc_info=True)
+            raise
+
+    def _mutation_guard(self):
+        factory = getattr(self.memory_engine, "memory_mutation_guard", None)
+        return factory() if callable(factory) else nullcontext()
+
+    def _document_snapshot(self, memory: dict[str, Any]) -> dict[str, Any]:
+        metadata = self.memory_engine._safe_json_dict(memory.get("metadata"))
+        # 正常召回会更新这两个统计字段，不改变参与整合的事实和归属。
+        metadata = {
+            key: value
+            for key, value in metadata.items()
+            if key not in {"last_access_time", "access_count"}
+        }
+        return deepcopy(
+            {
+                "content": memory.get("text", memory.get("content", "")),
+                "metadata": metadata,
+            }
         )
 
+    async def _capture_sources(
+        self,
+        group: list[dict[str, Any]],
+    ) -> dict[int, dict[str, Any]]:
+        await self._assert_writes_finished([memory["id"] for memory in group])
+        snapshots = {}
+        for memory in group:
+            memory_id = memory["id"]
+            current = await self.memory_engine.get_memory(memory_id)
+            if not isinstance(current, dict) or not current:
+                raise RuntimeError(f"整合来源 {memory_id} 不存在或读取失败")
+            snapshot = self._document_snapshot(current)
+            if (
+                snapshot != self._document_snapshot(memory)
+                or str(snapshot["metadata"].get("status") or "active") != "active"
+            ):
+                raise RuntimeError(f"整合来源 {memory_id} 已发生变化，取消整合")
+            source = await self.memory_engine.get_memory_source(memory_id)
+            if not isinstance(source, list) or any(
+                not isinstance(row, dict) for row in source
+            ):
+                raise RuntimeError(f"整合来源 {memory_id} 原文读取失败")
+            if snapshot["metadata"].get("has_source") and not source:
+                raise RuntimeError(f"整合来源 {memory_id} 原文缺失，取消整合")
+            snapshots[memory_id] = {**snapshot, "source_messages": deepcopy(source)}
+        return snapshots
+
+    async def _assert_writes_finished(self, memory_ids: list[int]) -> None:
+        db = getattr(self.memory_engine, "db_connection", None)
+        if db is None or not memory_ids:
+            return
+        cursor = await db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_write_ops'"
+        )
         try:
-            if cfg.get("keep_original", "archive") == "archive":
-                removed = await self.memory_engine.archive_memories(old_ids)
-            else:
-                removed = await self.memory_engine.batch_delete_memories(old_ids)
-            if removed != len(old_ids):
-                raise RuntimeError(
-                    f"整合来源清理不完整: expected={len(old_ids)}, removed={removed}"
-                )
-        except Exception:
-            await self._rollback_if_sources_intact(new_id, old_ids)
-            raise
+            exists = await cursor.fetchone()
+        finally:
+            await cursor.close()
+        if exists is None:
+            return
+        for start in range(0, len(memory_ids), 500):
+            batch = memory_ids[start : start + 500]
+            cursor = await db.execute(
+                "SELECT 1 FROM memory_write_ops WHERE status IN ('pending','needs_repair') "
+                f"AND memory_id IN ({','.join('?' for _ in batch)}) LIMIT 1",
+                batch,
+            )
+            try:
+                pending = await cursor.fetchone()
+            finally:
+                await cursor.close()
+            if pending is not None:
+                raise RuntimeError("整合来源或新记忆的写入/修复未完成，稍后重试")
+
+    async def _validate_sources(
+        self,
+        group: list[dict[str, Any]],
+        snapshots: dict[int, dict[str, Any]],
+    ) -> None:
+        if await self._capture_sources(group) != snapshots:
+            raise RuntimeError("整合来源原文已发生变化，取消整合")
+
+    def _combine_sources(
+        self,
+        kept: list[dict[str, Any]],
+        snapshots: dict[int, dict[str, Any]],
+        metadata: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        combined = []
+        seen = set()
+        sessions = set()
+        message_ids = []
+        for memory in kept:
+            snapshot = snapshots[memory["id"]]
+            source_metadata = snapshot["metadata"]
+            source_session = self._source_session(source_metadata)
+            if source_session:
+                sessions.add(str(source_session))
+            source_ids = source_metadata.get("source_message_ids")
+            if isinstance(source_ids, list):
+                message_ids.extend(source_ids)
+            for row in snapshot["source_messages"]:
+                row = deepcopy(row)
+                if not row.get("session_id") and source_session:
+                    row["session_id"] = str(source_session)
+                if row.get("session_id"):
+                    sessions.add(str(row["session_id"]))
+                # 完全相同的消息去重，同 ID 的不同原文版本仍保留。
+                key = json.dumps(row, sort_keys=True, ensure_ascii=False)
+                if key not in seen:
+                    seen.add(key)
+                    combined.append(row)
+                    message_ids.append(row.get("id"))
+        if len(sessions) > 1:
+            raise RuntimeError("整合来源原文跨越多个会话，请分别整合")
+        if len(sessions) == 1:
+            metadata["source_session_id"] = next(iter(sessions))
+            if message_ids and all(
+                isinstance(value, int) and not isinstance(value, bool) and value > 0
+                for value in message_ids
+            ):
+                metadata["source_message_ids"] = list(dict.fromkeys(message_ids))
+        return combined
+
+    async def _finalize_group(
+        self,
+        *,
+        group: list[dict[str, Any]],
+        snapshots: dict[int, dict[str, Any]],
+        old_ids: list[int],
+        cfg: dict[str, Any],
+        write_kwargs: dict[str, Any],
+    ) -> dict[str, Any]:
+        async with self._mutation_guard():
+            await self._validate_sources(group, snapshots)
+            new_id = await self.memory_engine.add_memory(**write_kwargs)
+            if not isinstance(new_id, int) or isinstance(new_id, bool) or new_id <= 0:
+                raise RuntimeError("整合新记忆写入未返回有效 ID，保留来源")
+            try:
+                await self._assert_writes_finished([new_id])
+                if cfg.get("keep_original", "archive") == "archive":
+                    removed = await self.memory_engine.archive_memories(old_ids)
+                else:
+                    removed = await self.memory_engine.batch_delete_memories(old_ids)
+                if removed != len(old_ids):
+                    raise RuntimeError(
+                        f"整合来源清理不完整: expected={len(old_ids)}, removed={removed}"
+                    )
+            except (Exception, asyncio.CancelledError):
+                await self._rollback_if_sources_intact(new_id, old_ids)
+                raise
 
         logger.info(
             f"[记忆整合] 整合 {len(old_ids)} 条记忆 -> 新记忆 {new_id}，"
@@ -380,16 +581,22 @@ class MemoryConsolidationManager:
             for source_id in source_ids:
                 source = await self.memory_engine.get_memory(source_id)
                 if not source:
-                    logger.warning(f"[记忆整合] 来源 {source_id} 已移除，保留合并记忆 {new_id}")
+                    logger.warning(
+                        f"[记忆整合] 来源 {source_id} 已移除，保留合并记忆 {new_id}"
+                    )
                     return
                 metadata = self.memory_engine._safe_json_dict(source.get("metadata"))
                 if str(metadata.get("status") or "active") != "active":
-                    logger.warning(f"[记忆整合] 来源 {source_id} 已归档，保留合并记忆 {new_id}")
+                    logger.warning(
+                        f"[记忆整合] 来源 {source_id} 已归档，保留合并记忆 {new_id}"
+                    )
                     return
             if not await self.memory_engine.delete_memory(new_id):
                 logger.error(f"[记忆整合] 撤销合并记忆 {new_id} 失败")
         except Exception:
-            logger.error(f"[记忆整合] 无法确认来源完整性，保留合并记忆 {new_id}", exc_info=True)
+            logger.error(
+                f"[记忆整合] 无法确认来源完整性，保留合并记忆 {new_id}", exc_info=True
+            )
 
 
 __all__ = ["MemoryConsolidationManager"]

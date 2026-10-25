@@ -17,9 +17,15 @@ from ...storage.alias_store import AliasStore
 from ...storage.atom_store import AtomStore
 from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
 from ..memory_transfer import memory_import_key
+from ..models.memory_atom import AtomStatus, DecayType
 from ..processors.atom_classifier import classify_atoms
 from ..retrieval.hybrid_retriever import HybridResult
 from ..utils.number_utils import clamp_float, safe_float
+from .memory_mutation import (
+    memory_mutation_task,
+    serialize_memory_mutation,
+    settle_memory_mutation_task,
+)
 
 
 class MemoryEngineCrudMixin:
@@ -102,6 +108,7 @@ class MemoryEngineCrudMixin:
         atoms: list | None = None,
         preserve_create_time: bool = False,
         source_messages: list[dict[str, Any]] | None = None,
+        preserve_atom_lifecycle: bool = False,
     ) -> int:
         """
         添加新记忆
@@ -209,7 +216,10 @@ class MemoryEngineCrudMixin:
                 atom.parent_memory_id = doc_id
                 prepared_atoms.append(atom)
             try:
-                await self.atom_store.insert_many(prepared_atoms)
+                if preserve_atom_lifecycle:
+                    await self.atom_store.insert_many(prepared_atoms, preserve_lifecycle=True)
+                else:
+                    await self.atom_store.insert_many(prepared_atoms)
                 await self._advance_write_op(
                     op_id,
                     "atoms_indexed",
@@ -224,7 +234,10 @@ class MemoryEngineCrudMixin:
                     if getattr(atom, "atom_id", 0):
                         continue
                     try:
-                        await self.atom_store.insert(atom)
+                        if preserve_atom_lifecycle:
+                            await self.atom_store.insert(atom, preserve_lifecycle=True)
+                        else:
+                            await self.atom_store.insert(atom)
                     except asyncio.CancelledError:
                         raise
                     except Exception:
@@ -291,7 +304,7 @@ class MemoryEngineCrudMixin:
             try:
                 await self.save_memory_source(doc_id, source_messages)
             except asyncio.CancelledError:
-                await asyncio.shield(self.delete_memory(doc_id))
+                await asyncio.shield(memory_mutation_task(self, self.delete_memory(doc_id)))
                 await asyncio.shield(
                     self._advance_write_op(
                         op_id,
@@ -325,12 +338,16 @@ class MemoryEngineCrudMixin:
         self._invalidate_search_cache()
         return doc_id
 
+    @serialize_memory_mutation
     async def save_memory_source(
         self, memory_id: int, source_messages: list[dict[str, Any]]
     ) -> None:
         """Persist source messages outside retrieval metadata and indexes."""
         if self.db_connection is None:
             raise RuntimeError("数据库连接未初始化")
+        async with self.db_connection.execute("SELECT 1 FROM documents WHERE id=?", (int(memory_id),)) as cursor:
+            if await cursor.fetchone() is None:
+                raise RuntimeError("记忆已删除，无法保存原文")
         now = time.time()
         await self.db_connection.execute(
             """
@@ -379,14 +396,14 @@ class MemoryEngineCrudMixin:
             if not normalized_ids:
                 return []
 
-        async def _fetch_rows(batch: list[int] | None):
+        async def _fetch_rows(connection, batch: list[int] | None):
             params: list[Any] = []
             where_clause = ""
             if batch is not None:
                 placeholders = ",".join("?" * len(batch))
                 where_clause = f"WHERE d.id IN ({placeholders})"
                 params.extend(batch)
-            cursor = await self.db_connection.execute(
+            cursor = await connection.execute(
                 f"""
             SELECT d.id, d.text, d.metadata, d.created_at, d.updated_at,
                    s.source_json
@@ -399,15 +416,43 @@ class MemoryEngineCrudMixin:
             )
             return await cursor.fetchall()
 
-        if normalized_ids is None:
-            rows = await _fetch_rows(None)
-        else:
-            rows = []
-            for offset in range(0, len(normalized_ids), 500):
-                rows.extend(
-                    await _fetch_rows(normalized_ids[offset : offset + 500])
+        atoms_by_parent = {}
+        # Documents, retained source and lifecycle rows must come from one
+        # snapshot. A separate read connection also leaves the engine's shared
+        # write transaction untouched while export is running.
+        async with aiosqlite.connect(
+            self.db_path, **sqlite_connect_kwargs(self.config),
+        ) as connection:
+            await configure_sqlite_connection(connection, self.config)
+            connection.row_factory = aiosqlite.Row
+            await connection.execute("PRAGMA query_only=ON")
+            await connection.execute("BEGIN")
+            try:
+                if normalized_ids is None:
+                    rows = await _fetch_rows(connection, None)
+                else:
+                    rows = []
+                    for offset in range(0, len(normalized_ids), 500):
+                        rows.extend(await _fetch_rows(
+                            connection, normalized_ids[offset:offset+500],
+                        ))
+                    rows.sort(key=lambda row: int(row["id"]))
+                cursor = await connection.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_atoms'",
                 )
-            rows.sort(key=lambda row: int(row["id"]))
+                has_atoms = await cursor.fetchone() is not None
+                if has_atoms:
+                    ids = [int(row["id"]) for row in rows]
+                    for offset in range(0, len(ids), 500):
+                        batch = ids[offset:offset+500]
+                        cursor = await connection.execute(
+                            "SELECT * FROM memory_atoms WHERE parent_memory_id IN "
+                            f"({','.join('?' for _ in batch)}) ORDER BY id", batch,
+                        )
+                        for atom in await cursor.fetchall():
+                            atoms_by_parent.setdefault(int(atom["parent_memory_id"]), []).append(dict(atom))
+            finally:
+                await connection.rollback()
         records: list[dict[str, Any]] = []
 
         def _build_records() -> list[dict[str, Any]]:
@@ -422,21 +467,22 @@ class MemoryEngineCrudMixin:
                         parsed_source = []
                     if isinstance(parsed_source, list):
                         source_messages = parsed_source
-                records.append(
-                    {
-                        "original_id": int(row["id"]),
-                        "content": str(row["text"] or ""),
-                        "importance": clamp_float(
-                            metadata.get("importance"), default=0.5
-                        ),
-                        "session_id": metadata.get("session_id"),
-                        "persona_id": metadata.get("persona_id"),
-                        "metadata": metadata,
-                        "source_messages": source_messages,
-                        "storage_created_at": row["created_at"],
-                        "storage_updated_at": row["updated_at"],
-                    }
-                )
+                record = {
+                    "original_id": int(row["id"]),
+                    "content": str(row["text"] or ""),
+                    "importance": clamp_float(
+                        metadata.get("importance"), default=0.5
+                    ),
+                    "session_id": metadata.get("session_id"),
+                    "persona_id": metadata.get("persona_id"),
+                    "metadata": metadata,
+                    "source_messages": source_messages,
+                    "storage_created_at": row["created_at"],
+                    "storage_updated_at": row["updated_at"],
+                }
+                if has_atoms:
+                    record["atoms"] = atoms_by_parent.get(int(row["id"]), [])
+                records.append(record)
             return records
 
         await asyncio.to_thread(_build_records)
@@ -624,6 +670,7 @@ class MemoryEngineCrudMixin:
             logger.warning("[MemoryEngine] 获取记忆详情失败", exc_info=True)
             return None
 
+    @serialize_memory_mutation
     async def update_memory(
         self,
         memory_id: int,
@@ -784,6 +831,43 @@ class MemoryEngineCrudMixin:
 
         return True
 
+    async def _replacement_snapshot(self, memory_id: int) -> dict | None:
+        """Read the primary record and source together; database errors propagate."""
+        if self.db_connection is None:
+            raise RuntimeError("数据库连接未初始化")
+        async with self.db_connection.execute(
+            "SELECT d.text,d.metadata,s.source_json FROM documents d "
+            "LEFT JOIN memory_sources s ON s.memory_id=d.id WHERE d.id=?", (int(memory_id),),
+        ) as cursor:
+            row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {"text": row[0], "metadata": self._safe_json_dict(row[1]),
+                "source_messages": json.loads(row[2]) if row[2] else []}
+
+    def _replacement_snapshot_matches(self, current: dict | None, expected: dict) -> bool:
+        if current is None or current.get("text") != expected.get("text"):
+            return False
+        volatile = {"last_access_time", "access_count"}
+        current_metadata = self._safe_json_dict(current.get("metadata"))
+        expected_metadata = self._safe_json_dict(expected.get("metadata"))
+        if {k: v for k, v in current_metadata.items() if k not in volatile} != {
+            k: v for k, v in expected_metadata.items() if k not in volatile
+        }:
+            return False
+        return "source_messages" not in expected or current["source_messages"] == expected["source_messages"]
+
+    async def _rollback_replacement_if_original_exists(self, old_id: int, new_id: int) -> None:
+        try:
+            original = await self._replacement_snapshot(old_id)
+        except Exception:
+            logger.error("[更新] 无法核实旧记忆是否保留，保留新副本避免数据丢失", exc_info=True)
+            return
+        if original is not None:
+            if not await self.delete_memory(new_id):
+                logger.error(f"[更新] 回滚新记忆失败 (memory_id={new_id})")
+
+    @serialize_memory_mutation
     async def replace_memory(
         self,
         memory_id: int,
@@ -791,16 +875,46 @@ class MemoryEngineCrudMixin:
         content: str,
         metadata: dict[str, Any],
         importance: float,
+        expected_memory: dict[str, Any] | None = None,
+        expected_source: list[dict[str, Any]] | None = None,
     ) -> int:
         """Replace one memory and rebuild all derived data with a new ID."""
-        current = await self.get_memory(memory_id)
+        operation = memory_mutation_task(self, self._replace_memory_impl(
+            memory_id, content=content, metadata=metadata, importance=importance,
+            expected_memory=expected_memory, expected_source=expected_source,
+        ))
+        try:
+            return await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            # Cancel the mutation owner, then let it finish its compensation.
+            # Only that owner controls the shielded add child during shutdown.
+            if not operation.done():
+                operation.cancel()
+            try:
+                await settle_memory_mutation_task(operation)
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning("[更新] 取消时替换任务收尾失败", exc_info=True)
+            raise
+
+    async def _replace_memory_impl(
+        self, memory_id: int, *, content: str, metadata: dict[str, Any], importance: float,
+        expected_memory: dict[str, Any] | None = None,
+        expected_source: list[dict[str, Any]] | None = None,
+    ) -> int:
+        current = await self._replacement_snapshot(memory_id)
         if not current:
             raise ValueError(f"记忆不存在 (memory_id={memory_id})")
         if not content or not content.strip():
             raise ValueError("记忆内容不能为空")
+        if expected_memory is not None and not self._replacement_snapshot_matches(current, expected_memory):
+            raise RuntimeError("记忆在处理期间已修改，请刷新后重试")
+        if expected_source is not None and current["source_messages"] != expected_source:
+            raise RuntimeError("记忆原文在处理期间已修改，请刷新后重试")
 
         current_metadata = self._safe_json_dict(current.get("metadata"))
-        source_messages = await self.get_memory_source(memory_id)
+        source_messages = current["source_messages"]
         replacement_metadata = current_metadata.copy()
         replacement_metadata.update(metadata or {})
         replacement_metadata["previous_id"] = memory_id
@@ -829,9 +943,34 @@ class MemoryEngineCrudMixin:
                 session_id=session_id,
                 persona_id=persona_id,
             )
+            old_snapshots = current_metadata.get("archived_atom_lifecycle")
+            if current_metadata.get("status", "active") != "archived" or not isinstance(old_snapshots, list):
+                old_snapshots = await self.snapshot_archived_atom_lifecycle(memory_id)
+            lifecycle_by_key = {
+                (row.get("content"), row.get("atom_type")): row
+                for row in old_snapshots if isinstance(row, dict)
+            }
+            for atom in atoms:
+                previous = lifecycle_by_key.get((atom.content, atom.atom_type.value))
+                if previous is None:
+                    if current_metadata.get("atom_types") and atom.content in (current_metadata.get("key_facts") or []):
+                        # Maintenance may have purged its atom while the historical
+                        # summary remains. An unrelated edit cannot restate it.
+                        atom.status = AtomStatus.FORGOTTEN
+                        original_time = safe_float(current_metadata.get("create_time"), default=time.time())
+                        atom.expires_at = max(1.0, min(time.time(), original_time))
+                    continue
+                for field in ("created_at", "last_accessed_at", "last_reinforced_at", "event_time",
+                              "ttl_days", "expires_at", "reinforcement_count"):
+                    if field in previous:
+                        setattr(atom, field, previous[field])
+                atom.status = AtomStatus(previous.get("status", "active"))
+                atom.decay_type = DecayType(previous.get("decay_type", "exponential"))
+        # The old archive snapshot belongs to its old facts, not the replacement.
+        replacement_metadata.pop("archived_atom_lifecycle", None)
 
         new_memory_id: int | None = None
-        add_task = self._create_tracked_task(
+        add_task = memory_mutation_task(self,
             self.add_memory(
                 content=content,
                 session_id=session_id,
@@ -841,37 +980,62 @@ class MemoryEngineCrudMixin:
                 atoms=atoms,
                 preserve_create_time=True,
                 source_messages=source_messages or None,
-            )
+                preserve_atom_lifecycle=True,
+            ), track=False,
         )
         try:
             new_memory_id = await asyncio.shield(add_task)
-            if new_memory_id is None:
-                raise RuntimeError("新记忆创建失败")
-            if not await self.delete_memory(memory_id):
-                await self.delete_memory(new_memory_id)
+            if not isinstance(new_memory_id, int) or isinstance(new_memory_id, bool) or new_memory_id <= 0:
                 new_memory_id = None
-                raise RuntimeError("旧记忆删除失败，已回滚新记忆")
+                raise RuntimeError("新记忆创建失败")
+            async with self.db_connection.execute(
+                "SELECT 1 FROM memory_write_ops WHERE memory_id=? AND status IN ('pending','needs_repair') LIMIT 1",
+                (new_memory_id,),
+            ) as cursor:
+                if await cursor.fetchone() is not None:
+                    raise RuntimeError("新记忆尚未完整写入，保留旧记忆")
+            if replacement_metadata.get("status", "active") == "archived":
+                snapshot = await self.snapshot_archived_atom_lifecycle(new_memory_id)
+                if not await self.update_memory(new_memory_id, {"metadata": {"archived_atom_lifecycle": snapshot}}):
+                    raise RuntimeError("新记忆归档快照保存失败")
+                await self.db_connection.execute(
+                    "DELETE FROM livingmemory_memories_fts WHERE doc_id=?", (new_memory_id,),
+                )
+                await self.db_connection.commit()
+                embedding_delete = getattr(getattr(self.faiss_db, "embedding_storage", None), "delete", None)
+                if callable(embedding_delete):
+                    await embedding_delete([new_memory_id])
+                else:
+                    await self._set_index_rebuild_required(True)
+                await self._delete_graph_and_atoms_for_batch([new_memory_id])
+            if not self._replacement_snapshot_matches(await self._replacement_snapshot(memory_id), current):
+                raise RuntimeError("记忆在处理期间已修改，请刷新后重试")
+            if not await self.delete_memory(memory_id):
+                raise RuntimeError("旧记忆删除失败")
             self._invalidate_search_cache()
             return new_memory_id
         except asyncio.CancelledError:
             if new_memory_id is None:
                 try:
-                    new_memory_id = await asyncio.shield(add_task)
+                    new_memory_id = await settle_memory_mutation_task(add_task)
                 except Exception:
                     logger.debug(
                         "[更新] 取消路径下等待新记忆创建任务失败，按未创建处理",
                         exc_info=True,
                     )
                     new_memory_id = None
+            if not isinstance(new_memory_id, int) or isinstance(new_memory_id, bool) or new_memory_id <= 0:
+                new_memory_id = None
             if new_memory_id is not None:
-                await asyncio.shield(self.delete_memory(new_memory_id))
+                await settle_memory_mutation_task(memory_mutation_task(
+                    self, self._rollback_replacement_if_original_exists(memory_id, new_memory_id),
+                ))
             self._invalidate_search_cache()
             raise
         except Exception:
             if new_memory_id is not None:
                 try:
-                    if await self.get_memory(new_memory_id):
-                        await self.delete_memory(new_memory_id)
+                    await self._rollback_replacement_if_original_exists(memory_id, new_memory_id)
                 except Exception:
                     logger.error(
                         f"[更新] 回滚新记忆失败 (memory_id={new_memory_id})",
@@ -880,6 +1044,7 @@ class MemoryEngineCrudMixin:
             self._invalidate_search_cache()
             raise
 
+    @serialize_memory_mutation
     async def delete_memory(self, memory_id: int) -> bool:
         """
         删除记忆
@@ -1037,6 +1202,7 @@ class MemoryEngineCrudMixin:
         """
         return await self.update_memory(memory_id, {"importance": new_importance})
 
+    @serialize_memory_mutation
     async def apply_daily_decay(self, decay_rate: float, days: int = 1) -> int:
         """
         批量应用重要性衰减

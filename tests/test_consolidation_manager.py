@@ -1,9 +1,10 @@
 """Tests for memory consolidation manager and merge-memory processor."""
 
+from contextlib import nullcontext
+from copy import deepcopy
 from unittest.mock import AsyncMock, Mock
 
 import pytest
-
 from astrbot_plugin_anamnesis.core.base.config_manager import ConfigManager
 from astrbot_plugin_anamnesis.core.managers.consolidation_manager import (
     MemoryConsolidationManager,
@@ -33,6 +34,18 @@ def _make_manager(config_manager, engine=None, processor=None):
     return MemoryConsolidationManager(
         engine or Mock(), processor or Mock(), config_manager
     )
+
+
+def _prepare_sources(engine, group):
+    engine.db_connection = None
+    engine.memory_mutation_guard = nullcontext
+    engine._safe_json_dict = lambda value: value if isinstance(value, dict) else {}
+    engine.get_memory = AsyncMock(
+        side_effect=lambda memory_id: deepcopy(
+            next(memory for memory in group if memory["id"] == memory_id)
+        )
+    )
+    engine.get_memory_source = AsyncMock(return_value=[])
 
 
 class TestGroupBySession:
@@ -91,6 +104,7 @@ class TestRunConsolidation:
             {"id": 1, "content": "a", "metadata": {"session_id": "s1"}},
             {"id": 2, "content": "b", "metadata": {"session_id": "s1"}},
         ]
+        _prepare_sources(engine, group)
         mgr._query_candidates = AsyncMock(return_value=group)
         mgr._build_groups = AsyncMock(return_value=[group])
         processor.merge_memories = AsyncMock(
@@ -120,6 +134,7 @@ class TestRunConsolidation:
         mgr = _make_manager(config, engine=engine, processor=processor)
 
         group = [{"id": 5, "content": "x", "metadata": {"session_id": "s1"}}]
+        _prepare_sources(engine, group)
         mgr._query_candidates = AsyncMock(return_value=group)
         mgr._build_groups = AsyncMock(return_value=[group])
         processor.merge_memories = AsyncMock(
@@ -146,6 +161,7 @@ class TestRunConsolidation:
         mgr = _make_manager(config, engine=engine, processor=processor)
 
         group = [{"id": 1, "content": "x", "metadata": {"session_id": "s1"}}]
+        _prepare_sources(engine, group)
         mgr._query_candidates = AsyncMock(return_value=group)
         mgr._build_groups = AsyncMock(return_value=[group])
         processor.merge_memories = AsyncMock(side_effect=RuntimeError("boom"))
@@ -218,7 +234,6 @@ class TestVectorRetrieverSimilarPairs:
     @pytest.mark.asyncio
     async def test_find_similar_pairs_thresholds_and_dedupes(self):
         import numpy as np
-
         from astrbot_plugin_anamnesis.core.retrieval.vector_retriever import (
             VectorRetriever,
         )

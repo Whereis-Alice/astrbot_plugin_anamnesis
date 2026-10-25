@@ -1,5 +1,6 @@
 """Consolidation must preserve scope and a surviving copy of every source."""
 
+from contextlib import nullcontext
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -31,6 +32,10 @@ def _manager(granularity="session", skipped_ids=None):
     engine.archive_memories = AsyncMock(return_value=2)
     engine.batch_delete_memories = AsyncMock(return_value=2)
     engine._safe_json_dict = lambda value: value if isinstance(value, dict) else {}
+    engine.get_memory = AsyncMock(side_effect=lambda memory_id: _memory(memory_id))
+    engine.get_memory_source = AsyncMock(return_value=[])
+    engine.memory_mutation_guard = nullcontext
+    engine.db_connection = None
     processor = Mock()
     processor.merge_memories = AsyncMock(
         return_value={
@@ -64,7 +69,9 @@ async def test_both_granularities_separate_sessions_and_personas(granularity):
     groups = await mgr._build_groups(candidates, cfg)
 
     assert {tuple(mem["id"] for mem in group) for group in groups} == {
-        (1, 2), (3, 4), (5, 6)
+        (1, 2),
+        (3, 4),
+        (5, 6),
     }
 
 
@@ -108,7 +115,6 @@ async def test_mixed_scope_group_is_rejected_before_llm_or_write():
 async def test_archive_failure_rolls_back_only_when_all_sources_remain_active():
     mgr, cfg = _manager()
     mgr.memory_engine.archive_memories.side_effect = RuntimeError("archive failed")
-    mgr.memory_engine.get_memory = AsyncMock(side_effect=[_memory(1), _memory(2)])
 
     with pytest.raises(RuntimeError, match="archive failed"):
         await mgr._consolidate_group([_memory(1), _memory(2)], cfg)
@@ -120,15 +126,21 @@ async def test_archive_failure_rolls_back_only_when_all_sources_remain_active():
 @pytest.mark.parametrize("source_state", ["archived", "missing", "unknown"])
 async def test_partial_archive_failure_preserves_merged_copy(source_state):
     mgr, cfg = _manager()
-    mgr.memory_engine.archive_memories.side_effect = RuntimeError("archive failed")
-    if source_state == "unknown":
-        mgr.memory_engine.get_memory = AsyncMock(side_effect=RuntimeError("db failed"))
-    else:
-        source = _memory(1)
-        source["metadata"]["status"] = "archived"
-        mgr.memory_engine.get_memory = AsyncMock(
-            return_value=source if source_state == "archived" else None
-        )
+
+    async def archive_failure(_ids):
+        if source_state == "unknown":
+            mgr.memory_engine.get_memory = AsyncMock(
+                side_effect=RuntimeError("db failed")
+            )
+        else:
+            source = _memory(1)
+            source["metadata"]["status"] = "archived"
+            mgr.memory_engine.get_memory = AsyncMock(
+                return_value=source if source_state == "archived" else None
+            )
+        raise RuntimeError("archive failed")
+
+    mgr.memory_engine.archive_memories.side_effect = archive_failure
 
     with pytest.raises(RuntimeError, match="archive failed"):
         await mgr._consolidate_group([_memory(1), _memory(2)], cfg)
@@ -140,8 +152,12 @@ async def test_partial_archive_failure_preserves_merged_copy(source_state):
 async def test_partial_delete_count_does_not_discard_only_remaining_copy():
     mgr, cfg = _manager()
     cfg["keep_original"] = "delete"
-    mgr.memory_engine.batch_delete_memories.return_value = 1
-    mgr.memory_engine.get_memory = AsyncMock(return_value=None)
+
+    async def partial_delete(_ids):
+        mgr.memory_engine.get_memory = AsyncMock(return_value=None)
+        return 1
+
+    mgr.memory_engine.batch_delete_memories.side_effect = partial_delete
 
     with pytest.raises(RuntimeError, match="清理不完整"):
         await mgr._consolidate_group([_memory(1), _memory(2)], cfg)

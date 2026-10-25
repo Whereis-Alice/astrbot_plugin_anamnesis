@@ -194,6 +194,8 @@ With automatic archiving enabled, source documents remain visible and restorable
 
 With `migration_settings.create_backup` enabled, a backup failure aborts migration. Failed migrations attempt to restore the backup and stop initialization. Failed daily decay remains eligible for retry, with the whole write batch rolled back. Decay updates only importance and access count, preserving concurrent access times and other metadata.
 
+Version-change backups are published only after every file and SQLite snapshot succeeds. Insufficient space, copy errors, or validation failures retain the previous version marker for retry at the next startup; retries never overwrite an existing healthy backup. Explicitly disabled backups and the configured size limit retain their skip policy.
+
 `migration_settings` only covers in-place schema upgrades of this plugin's own database at startup. It is unrelated to `/anam migrate`, which copies data over from the old LivingMemory plugin; see [Commands](/en/commands) for that.
 
 ## Storage maintenance
@@ -237,6 +239,8 @@ Anamnesis memory-store connections now use WAL, a busy wait, and bounded retries
 | `memory_consolidation.merge_input_char_budget` | `12000` | Total character budget for the merge prompt; individual memories are truncated proportionally above it |
 
 Memory consolidation controls the memory-store size at the source: scattered low-value memories are aggregated, organized, and summarized into a single concise memory, avoiding information loss from hard truncation at injection time. The merged result is written as a new memory and the originals are archived or deleted according to `keep_original`. With `trigger=reflection`, a 6-hour cooldown prevents per-message triggering.
+
+Both granularities preserve stored scope, persona, and actual source-chat boundaries. Consolidation retains available source messages and verifies that sources are unchanged and their writes complete before committing. Sources truncated by the input budget remain active; a group with every source truncated is skipped.
 
 ## Index rebuild tuning
 

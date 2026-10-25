@@ -10,11 +10,12 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+from contextlib import nullcontext
+from copy import deepcopy
 from typing import Any
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
-
 from astrbot_plugin_anamnesis.core.managers.consolidation_manager import (
     MemoryConsolidationManager,
 )
@@ -123,9 +124,14 @@ class TestQueryCandidatesLimit:
         rows = _old_rows(25)
         old = time.time() - 40 * 86400
         # 干扰项：重要度过高 / 太新 / 已归档，必须仍被 WHERE 过滤
-        rows.append(("high", {"status": "active", "importance": 0.9, "create_time": old}))
         rows.append(
-            ("fresh", {"status": "active", "importance": 0.1, "create_time": time.time()})
+            ("high", {"status": "active", "importance": 0.9, "create_time": old})
+        )
+        rows.append(
+            (
+                "fresh",
+                {"status": "active", "importance": 0.1, "create_time": time.time()},
+            )
         )
         rows.append(
             ("archived", {"status": "archived", "importance": 0.1, "create_time": old})
@@ -394,6 +400,15 @@ class TestConsolidateGroupHonorsSkippedIds:
             {"id": i, "content": f"m{i}", "metadata": {"session_id": "s1"}}
             for i in (1, 2, 3)
         ]
+        engine.db_connection = None
+        engine.memory_mutation_guard = nullcontext
+        engine._safe_json_dict = lambda value: value if isinstance(value, dict) else {}
+        engine.get_memory = AsyncMock(
+            side_effect=lambda memory_id: deepcopy(
+                next(memory for memory in group if memory["id"] == memory_id)
+            )
+        )
+        engine.get_memory_source = AsyncMock(return_value=[])
 
         result = await mgr._consolidate_group(group, mgr.config)
 

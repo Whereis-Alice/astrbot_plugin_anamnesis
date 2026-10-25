@@ -17,6 +17,7 @@ from ...storage.atom_store import AtomStore
 from ..models.memory_atom import AtomStatus, AtomType, DecayType, MemoryAtom
 from ..retrieval.hybrid_retriever import HybridResult
 from ..utils.number_utils import clamp_float
+from .memory_mutation import serialize_memory_mutation
 
 
 class MemoryEngineWriteOpsMixin:
@@ -645,6 +646,7 @@ class MemoryEngineWriteOpsMixin:
             self._invalidate_search_cache()
         return repaired
 
+    @serialize_memory_mutation
     async def _repair_add_write_op(
         self,
         op_id: int,
@@ -765,6 +767,7 @@ class MemoryEngineWriteOpsMixin:
         )
         return True
 
+    @serialize_memory_mutation
     async def _repair_delete_write_op(
         self,
         op_id: int,
@@ -812,6 +815,7 @@ class MemoryEngineWriteOpsMixin:
         )
         return True
 
+    @serialize_memory_mutation
     async def _repair_batch_delete_write_op(
         self,
         op_id: int,

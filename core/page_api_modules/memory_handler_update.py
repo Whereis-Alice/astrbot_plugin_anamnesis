@@ -174,6 +174,7 @@ class MemoryHandlerUpdateMixin:
                     content=new_content,
                     importance=importance,
                     metadata=replacement_metadata,
+                    expected_memory=memory,
                 )
             except Exception as exc:
                 logger.error(f"[PageAPI] 重建记忆失败: {exc}", exc_info=True)

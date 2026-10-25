@@ -5,14 +5,16 @@ from __future__ import annotations
 import csv
 import io
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
 from .memory_source import serialize_source_messages
+from .models.memory_atom import AtomStatus, AtomType, DecayType
 from .utils.number_utils import clamp_float
 
 TRANSFER_FORMAT = "anamnesis"
-TRANSFER_SCHEMA_VERSION = 1
+TRANSFER_SCHEMA_VERSION = 2
 MAX_IMPORT_ENTRIES = 10_000
 
 _CONTENT_KEYS = ("content", "text", "summary", "memory", "value")
@@ -48,6 +50,7 @@ class ImportEntry:
     persona_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     source_messages: list[dict[str, Any]] = field(default_factory=list)
+    atoms: list[dict[str, Any]] | None = None
 
     @property
     def requires_summary(self) -> bool:
@@ -63,6 +66,25 @@ def memory_import_key(
         str(session_id or ""),
         str(persona_id or ""),
     )
+
+
+def isolate_import_provenance(metadata: dict[str, Any]) -> dict[str, Any]:
+    """Retain foreign history coordinates as audit data, never local rollback keys."""
+    metadata = dict(metadata)
+    previous = metadata.get("import_provenance")
+    provenance = dict(previous) if isinstance(previous, dict) else {}
+    for key in (
+        "source_message_ids",
+        "source_revision",
+        "source_window",
+        "source_windows",
+        "previous_id",
+    ):
+        if key in metadata:
+            provenance[key] = metadata.pop(key)
+    if provenance:
+        metadata["import_provenance"] = provenance
+    return metadata
 
 
 def parse_transfer_content(
@@ -128,6 +150,7 @@ def serialize_transfer_csv(records: list[dict[str, Any]]) -> str:
         "key_facts",
         "metadata",
         "source_messages",
+        "atoms",
     ]
     writer = csv.DictWriter(output, fieldnames=fields)
     writer.writeheader()
@@ -138,18 +161,12 @@ def serialize_transfer_csv(records: list[dict[str, Any]]) -> str:
                 "original_id": record.get("original_id", ""),
                 "content": _escape_csv_formula(record.get("content", "")),
                 "importance": record.get("importance", 0.5),
-                "session_id": _escape_csv_formula(
-                    record.get("session_id") or ""
-                ),
-                "persona_id": _escape_csv_formula(
-                    record.get("persona_id") or ""
-                ),
+                "session_id": _escape_csv_formula(record.get("session_id") or ""),
+                "persona_id": _escape_csv_formula(record.get("persona_id") or ""),
                 "memory_type": _escape_csv_formula(
                     metadata.get("memory_type", "GENERAL")
                 ),
-                "status": _escape_csv_formula(
-                    metadata.get("status", "active")
-                ),
+                "status": _escape_csv_formula(metadata.get("status", "active")),
                 "topics": json.dumps(metadata.get("topics", []), ensure_ascii=False),
                 "key_facts": json.dumps(
                     metadata.get("key_facts", []), ensure_ascii=False
@@ -160,6 +177,9 @@ def serialize_transfer_csv(records: list[dict[str, Any]]) -> str:
                     ensure_ascii=False,
                     default=str,
                 ),
+                "atoms": json.dumps(record["atoms"], ensure_ascii=False, default=str)
+                if "atoms" in record
+                else "",
             }
         )
     return output.getvalue()
@@ -172,6 +192,14 @@ def _extract_json_entries(payload: Any) -> list[Any]:
         return payload
     if not isinstance(payload, dict):
         raise ValueError("JSON 顶层必须是对象或数组")
+    if payload.get("format") == TRANSFER_FORMAT:
+        version = payload.get("schema_version", 1)
+        if (
+            not isinstance(version, int)
+            or isinstance(version, bool)
+            or not 1 <= version <= TRANSFER_SCHEMA_VERSION
+        ):
+            raise ValueError("不支持该记忆导入格式版本")
 
     entries: list[Any] = []
     found_collection = False
@@ -197,9 +225,7 @@ def _extract_json_entries(payload: Any) -> list[Any]:
                 entry.setdefault("original_id", original_id)
                 mapped_entries.append(entry)
             elif isinstance(item, str):
-                mapped_entries.append(
-                    {"original_id": original_id, "content": item}
-                )
+                mapped_entries.append({"original_id": original_id, "content": item})
             else:
                 mapped_entries = []
                 break
@@ -266,6 +292,10 @@ def _normalize_entry(raw: Any, index: int) -> ImportEntry:
         raise ValueError("记忆项必须是对象或文本")
 
     metadata = _parse_dict(raw.get("metadata"))
+    if raw.get("metadata") not in (None, "") and not isinstance(
+        _parse_json_value(raw["metadata"]), dict
+    ):
+        raise ValueError("metadata 必须是 JSON 对象")
     content = _first_text(raw, _CONTENT_KEYS)
     session_id = _optional_text(
         raw.get("session_id", raw.get("session", metadata.get("session_id")))
@@ -273,6 +303,14 @@ def _normalize_entry(raw: Any, index: int) -> ImportEntry:
     persona_id = _optional_text(
         raw.get("persona_id", raw.get("persona", metadata.get("persona_id")))
     )
+    for field_name, alias, value in (
+        ("session_id", "session", session_id),
+        ("persona_id", "persona", persona_id),
+    ):
+        if (field_name in raw or alias in raw) and field_name in metadata:
+            if _optional_text(metadata[field_name]) != value:
+                raise ValueError(f"{field_name} 与 metadata 中的作用域不一致")
+        metadata[field_name] = value
     source = _normalize_source(_first_value(raw, _SOURCE_KEYS), session_id)
     if not source:
         user_text = _first_text(raw, ("user", "human", "query", "input"))
@@ -293,11 +331,21 @@ def _normalize_entry(raw: Any, index: int) -> ImportEntry:
         if value:
             metadata[key] = value
     if raw.get("memory_type") or raw.get("type"):
-        metadata["memory_type"] = str(
-            raw.get("memory_type") or raw.get("type")
-        ).upper()
+        metadata["memory_type"] = str(raw.get("memory_type") or raw.get("type")).upper()
     if raw.get("status"):
         metadata["status"] = str(raw["status"]).lower()
+    status = str(metadata.get("status") or "active").strip().lower()
+    if status not in {
+        "active",
+        "archived",
+        "deleted",
+        "expired",
+        "dormant",
+        "superseded",
+        "forgotten",
+    }:
+        raise ValueError("不支持该记忆状态")
+    metadata["status"] = status
 
     importance_raw = raw.get("importance", metadata.get("importance", 0.5))
     try:
@@ -312,8 +360,23 @@ def _normalize_entry(raw: Any, index: int) -> ImportEntry:
         raise ValueError("缺少可导入的摘要文本或至少 2 条原始消息")
 
     metadata = dict(metadata)
-    for key in ("has_source", "source_message_count", "atom_types", "previous_id"):
+    raw_atoms = raw.get("atoms")
+    atoms = (
+        None
+        if raw_atoms in (None, "")
+        else _normalize_atoms(raw_atoms, session_id, persona_id)
+    )
+    if "archived_atom_lifecycle" in metadata:
+        metadata["archived_atom_lifecycle"] = _normalize_atoms(
+            metadata["archived_atom_lifecycle"],
+            session_id,
+            persona_id,
+        )
+    for key in ("has_source", "source_message_count"):
         metadata.pop(key, None)
+    if atoms is None:
+        metadata.pop("atom_types", None)
+    metadata = isolate_import_provenance(metadata)
     original_id = raw.get("original_id", raw.get("id"))
     if original_id is not None:
         metadata["imported_from_id"] = original_id
@@ -326,7 +389,84 @@ def _normalize_entry(raw: Any, index: int) -> ImportEntry:
         persona_id=persona_id,
         metadata=metadata,
         source_messages=source,
+        atoms=atoms,
     )
+
+
+def _normalize_atoms(value, session_id, persona_id):
+    atoms = _parse_json_value(value)
+    if not isinstance(atoms, list):
+        raise ValueError("atoms 必须是原子生命周期列表")
+    normalized = []
+    for raw in atoms:
+        if (
+            not isinstance(raw, dict)
+            or not isinstance(raw.get("content"), str)
+            or not raw["content"].strip()
+        ):
+            raise ValueError("原子生命周期缺少有效正文")
+        row = dict(raw)
+        for key, enum_type, default in (
+            ("atom_type", AtomType, "unknown"),
+            ("status", AtomStatus, "active"),
+            ("decay_type", DecayType, "exponential"),
+        ):
+            try:
+                row[key] = enum_type(str(row.get(key, default)).lower()).value
+            except ValueError as error:
+                raise ValueError(f"原子生命周期 {key} 无效") from error
+        for key, default in (
+            ("created_at", 0),
+            ("last_accessed_at", 0),
+            ("ttl_days", 0),
+            ("importance", 0.5),
+            ("confidence", 0.7),
+            ("expires_at", None),
+            ("last_reinforced_at", None),
+            ("event_time", None),
+        ):
+            value = row.get(key, default)
+            if value is None and key in ("last_reinforced_at", "event_time"):
+                row[key] = None
+                continue
+            try:
+                if isinstance(value, bool):
+                    raise ValueError()
+                number = float(value)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise ValueError(f"原子生命周期 {key} 必须是有效数字") from error
+            if (
+                not math.isfinite(number)
+                or number < 0
+                or key in ("importance", "confidence")
+                and number > 1
+            ):
+                raise ValueError(f"原子生命周期 {key} 超出范围")
+            row[key] = number
+        count = row.get("reinforcement_count", 0)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise ValueError("原子强化次数必须是非负整数")
+        row["reinforcement_count"] = count
+        entities = _parse_json_value(row.get("entities", []))
+        atom_metadata = _parse_json_value(row.get("metadata", {}))
+        if not isinstance(entities, list) or any(
+            not isinstance(item, str) for item in entities
+        ):
+            raise ValueError("原子 entities 必须是字符串列表")
+        if not isinstance(atom_metadata, dict):
+            raise ValueError("原子 metadata 必须是 JSON 对象")
+        row.update(
+            session_id=session_id,
+            persona_id=persona_id,
+            entities=entities,
+            metadata={
+                **atom_metadata,
+                "session_id": session_id,
+                "persona_id": persona_id,
+            },
+        )
+        normalized.append(row)
+    return normalized
 
 
 def _normalize_source(value: Any, session_id: str | None) -> list[dict[str, Any]]:
@@ -366,9 +506,8 @@ def _normalize_source(value: Any, session_id: str | None) -> list[dict[str, Any]
                 "group_id": raw_message.get("group_id"),
                 "platform": raw_message.get("platform") or "import",
                 "timestamp": raw_message.get("timestamp", 0.0),
-                "metadata": raw_message.get("metadata") or {
-                    "is_bot_message": role == "assistant"
-                },
+                "metadata": raw_message.get("metadata")
+                or {"is_bot_message": role == "assistant"},
             }
         )
     return serialize_source_messages(normalized)
@@ -452,6 +591,7 @@ __all__ = [
     "TRANSFER_FORMAT",
     "TRANSFER_SCHEMA_VERSION",
     "memory_import_key",
+    "isolate_import_provenance",
     "parse_transfer_content",
     "serialize_transfer_csv",
     "serialize_transfer_json",

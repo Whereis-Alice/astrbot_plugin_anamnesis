@@ -161,9 +161,10 @@ class AtomStore:
                 )
             await db.commit()
 
-    async def insert(self, atom: MemoryAtom) -> int:
+    async def insert(self, atom: MemoryAtom, *, preserve_lifecycle: bool = False) -> int:
         """Insert a new atom and return its id. Updates atom.atom_id in place."""
-        self._prepare_atom_for_insert(atom)
+        if not (preserve_lifecycle and math.isfinite(atom.expires_at) and atom.expires_at > 0):
+            self._prepare_atom_for_insert(atom)
 
         async with self._connect() as db:
             atom_id = await self._insert_atom(db, atom)

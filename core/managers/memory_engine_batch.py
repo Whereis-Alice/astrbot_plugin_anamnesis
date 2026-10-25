@@ -16,6 +16,7 @@ from ...storage.atom_store import AtomStore
 from ...storage.sqlite_utils import configure_sqlite_connection
 from ..processors.atom_classifier import classify_atoms
 from ..utils.number_utils import clamp_float, safe_float
+from .memory_mutation import serialize_memory_mutation
 
 
 class MemoryEngineBatchMixin:
@@ -33,6 +34,7 @@ class MemoryEngineBatchMixin:
     graph_store: Any | None
     index_maintenance_status: dict[str, Any]
 
+    @serialize_memory_mutation
     async def batch_delete_memories(self, memory_ids: list[int]) -> int:
         """Batch delete multiple memories using bulk SQL operations."""
         if not memory_ids:
@@ -248,6 +250,7 @@ class MemoryEngineBatchMixin:
             logger.error("[清理] 清理旧记忆失败", exc_info=True)
             return 0
 
+    @serialize_memory_mutation
     async def archive_memories(self, memory_ids: list[int]) -> int:
         """Remove memories from retrieval indexes while retaining their documents."""
         if not hasattr(self, "_archive_restore_lock"):
@@ -336,6 +339,7 @@ class MemoryEngineBatchMixin:
         logger.info(f"[归档] 已归档 {len(archived_ids)} 条记忆")
         return len(archived_ids)
 
+    @serialize_memory_mutation
     async def restore_memory(self, memory_id: int) -> bool:
         """Restore one archived document and rebuild every retrieval index."""
         if not hasattr(self, "_archive_restore_lock"):

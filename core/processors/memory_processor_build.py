@@ -3,13 +3,13 @@ MemoryProcessor 的 MemoryProcessorBuildMixin 拆分模块
 自动从 core/processors/memory_processor.py 拆分，保持行为不变
 """
 
-from typing import Any
-from .atom_classifier import classify_atoms
 import json
+from typing import Any
 
 from astrbot.api import logger
 
 from ..models.memory_atom import MemoryAtom
+from .atom_classifier import classify_atoms
 
 
 class MemoryProcessorBuildMixin:
@@ -124,7 +124,10 @@ class MemoryProcessorBuildMixin:
         Raises:
             RuntimeError: LLM 不可用或解析失败时抛出。
         """
-        items, merged_ids, skipped_ids = self._build_merge_items(memories)
+        truncated_ids: list[Any] = []
+        items, merged_ids, skipped_ids = self._build_merge_items(
+            memories, truncated_ids=truncated_ids
+        )
         if not items:
             raise RuntimeError("合并输入为空，无可合并的记忆")
 
@@ -144,9 +147,10 @@ class MemoryProcessorBuildMixin:
         text = await self._call_llm_with_retry(prompt, system_prompt)
         data = self._parse_merge_response(text)
 
-        summary = str(data.get("summary", "")).strip()
-        if not summary:
+        raw_summary = data.get("summary")
+        if not isinstance(raw_summary, str) or not raw_summary.strip():
             raise RuntimeError("合并结果缺少 summary")
+        summary = raw_summary.strip()
 
         return {
             "summary": summary,
@@ -157,15 +161,14 @@ class MemoryProcessorBuildMixin:
             # 避免因预算裁剪把没合并进去的记忆一起归档/删除。
             "merged_ids": merged_ids,
             "skipped_ids": skipped_ids,
+            "truncated_ids": truncated_ids,
         }
 
     def _resolve_merge_budget(self) -> int:
         """读取合并输入的字符预算，非法或缺失时回退默认值。"""
         try:
             budget = int(
-                self.config.get(
-                    "merge_input_char_budget", self.MERGE_INPUT_CHAR_BUDGET
-                )
+                self.config.get("merge_input_char_budget", self.MERGE_INPUT_CHAR_BUDGET)
             )
         except (TypeError, ValueError, AttributeError):
             return self.MERGE_INPUT_CHAR_BUDGET
@@ -222,7 +225,10 @@ class MemoryProcessorBuildMixin:
         )
 
     def _build_merge_items(
-        self, memories: list[dict]
+        self,
+        memories: list[dict],
+        *,
+        truncated_ids: list[Any] | None = None,
     ) -> tuple[list[dict[str, Any]], list[Any], list[Any]]:
         """构建送进 LLM 的合并条目，并按字符预算裁剪，防止一次请求塞入巨量文本。
 
@@ -246,8 +252,7 @@ class MemoryProcessorBuildMixin:
             metadata = mem.get("metadata") or {}
             real_id = mem.get("id", index)
             summary = str(
-                metadata.get("persona_summary")
-                or str(mem.get("content", "")).strip()
+                metadata.get("persona_summary") or str(mem.get("content", "")).strip()
             ).strip()
             item: dict[str, Any] = {
                 "id": index,
@@ -266,6 +271,8 @@ class MemoryProcessorBuildMixin:
                 continue
             items.append(item)
             included_ids.append(real_id)
+            if was_truncated and truncated_ids is not None:
+                truncated_ids.append(real_id)
             used += size
 
         if truncated:
@@ -293,16 +300,12 @@ class MemoryProcessorBuildMixin:
 
     def _parse_merge_response(self, text: str) -> dict[str, Any]:
         """解析合并 LLM 响应中的 JSON，失败时抛出异常。"""
-        candidates = [text]
-        fixed = self._try_fix_json(text)
-        if fixed != text.strip():
+        # 整合成功后会清理来源，不能用补引号/括号把被截断的响应变成成功结果。
+        candidate = self._complete_merge_object(text)
+        candidates = [candidate]
+        fixed = self._try_fix_json(candidate)
+        if fixed != candidate:
             candidates.append(fixed)
-
-        from ..utils import extract_json_from_response
-
-        extracted = extract_json_from_response(text)
-        if extracted != text.strip():
-            candidates.append(extracted)
 
         last_error: Exception | None = None
         for candidate in candidates:
@@ -316,3 +319,35 @@ class MemoryProcessorBuildMixin:
                     return data
 
         raise RuntimeError(f"合并结果 JSON 解析失败: {last_error}")
+
+    @staticmethod
+    def _complete_merge_object(text: str) -> str:
+        """Extract a complete outer JSON object without completing truncated data."""
+        if not isinstance(text, str):
+            raise RuntimeError("合并结果 JSON 不是文本")
+        start = text.find("{")
+        if start < 0:
+            raise RuntimeError("合并结果 JSON 缺少对象")
+        stack = []
+        quote = None
+        escaped = False
+        for index in range(start, len(text)):
+            char = text[index]
+            if quote is not None:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == quote:
+                    quote = None
+                continue
+            if char in {'"', "'"}:
+                quote = char
+            elif char in "{[":
+                stack.append(char)
+            elif char in "}]":
+                if not stack or stack.pop() != {"}": "{", "]": "["}[char]:
+                    raise RuntimeError("合并结果 JSON 括号不匹配")
+                if not stack:
+                    return text[start : index + 1]
+        raise RuntimeError("合并结果 JSON 响应不完整，取消整合")

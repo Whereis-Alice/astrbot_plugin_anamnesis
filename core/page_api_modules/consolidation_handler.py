@@ -1,8 +1,8 @@
 """记忆整合相关的 Page API 处理器。"""
 
-import aiosqlite
 from typing import TYPE_CHECKING, Any
 
+import aiosqlite
 from astrbot.api import logger
 
 if TYPE_CHECKING:
@@ -20,9 +20,7 @@ class ConsolidationHandler:
     ) -> dict[str, Any]:
         """返回整合配置与已整合/已归档统计。"""
         config = (
-            config_manager.get_section("memory_consolidation")
-            if config_manager
-            else {}
+            config_manager.get_section("memory_consolidation") if config_manager else {}
         )
         consolidated_count = 0
         archived_count = 0
@@ -66,6 +64,8 @@ class ConsolidationHandler:
             return self.utils.error("记忆整合组件未就绪")
         try:
             result = await consolidation_manager.run_consolidation(force=True)
+            if isinstance(result, dict) and result.get("error"):
+                return self.utils.error(str(result["error"]))
             return self.utils.ok(result)
         except Exception as e:
             logger.error(f"[PageAPI] 手动整合失败: {e}", exc_info=True)
