@@ -6,6 +6,7 @@ import csv
 import io
 import json
 import math
+import threading
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -16,8 +17,10 @@ from .utils.number_utils import clamp_float
 TRANSFER_FORMAT = "anamnesis"
 TRANSFER_SCHEMA_VERSION = 2
 MAX_IMPORT_ENTRIES = 10_000
+MAX_TRANSFER_CONTENT_BYTES = 50 * 1024 * 1024
 CSV_SCALAR_ENCODING_FIELD = "anamnesis_csv_encoding"
 CSV_SCALAR_ENCODING = "apostrophe-v1"
+_CSV_PARSE_LOCK = threading.Lock()
 
 _CONTENT_KEYS = ("content", "text", "summary", "memory", "value")
 _SOURCE_KEYS = (
@@ -97,10 +100,22 @@ def parse_transfer_content(
     """Parse native or common external JSON/CSV into normalized entries."""
     hint = str(format_hint or "json").strip().lower()
     if hint == "csv":
-        raw_entries = [
-            _unescape_csv_row(row)
-            for row in csv.DictReader(io.StringIO(content.lstrip("\ufeff")))
-        ]
+        # The csv limit is process-global. Keep the temporary budget change
+        # and the complete synchronous parse together, then restore it.
+        with _CSV_PARSE_LOCK:
+            previous_limit = csv.field_size_limit()
+            try:
+                csv.field_size_limit(MAX_TRANSFER_CONTENT_BYTES)
+                raw_entries = [
+                    _unescape_csv_row(row)
+                    for row in csv.DictReader(
+                        io.StringIO(content.lstrip("\ufeff")), strict=True
+                    )
+                ]
+            except csv.Error as exc:
+                raise ValueError(f"CSV 解析失败: {exc}") from exc
+            finally:
+                csv.field_size_limit(previous_limit)
     elif hint == "json":
         try:
             payload = json.loads(content)
@@ -302,6 +317,16 @@ def _normalize_entry(raw: Any, index: int) -> ImportEntry:
         _parse_json_value(raw["metadata"]), dict
     ):
         raise ValueError("metadata 必须是 JSON 对象")
+    _validate_finite_numbers(metadata, "metadata")
+    if "create_time" in metadata:
+        try:
+            create_time = float(metadata["create_time"])
+        except (TypeError, ValueError):
+            pass  # Preserve the existing fallback for ordinary non-numeric text.
+        except OverflowError as exc:
+            raise ValueError("metadata.create_time 数值溢出") from exc
+        else:
+            _validate_finite_numbers(create_time, "metadata.create_time")
     content = _first_text(raw, _CONTENT_KEYS)
     session_id = _optional_text(
         raw.get("session_id", raw.get("session", metadata.get("session_id")))
@@ -358,6 +383,9 @@ def _normalize_entry(raw: Any, index: int) -> ImportEntry:
         importance_number = float(importance_raw)
     except (TypeError, ValueError):
         importance_number = 0.5
+    except OverflowError as exc:
+        raise ValueError("importance 数值溢出") from exc
+    _validate_finite_numbers(importance_number, "importance")
     if 1.0 < importance_number <= 10.0:
         importance_number /= 10.0
     importance = clamp_float(importance_number, default=0.5)
@@ -403,6 +431,7 @@ def _normalize_atoms(value, session_id, persona_id):
     atoms = _parse_json_value(value)
     if not isinstance(atoms, list):
         raise ValueError("atoms 必须是原子生命周期列表")
+    _validate_finite_numbers(atoms, "atoms")
     normalized = []
     for raw in atoms:
         if (
@@ -475,16 +504,16 @@ def _normalize_atoms(value, session_id, persona_id):
     return normalized
 
 
-def _validate_source_numbers(value: Any, path: str) -> None:
-    """Reject non-finite source data before field normalization can discard it."""
+def _validate_finite_numbers(value: Any, path: str) -> None:
+    """Reject non-finite import data before field normalization can discard it."""
     if isinstance(value, float) and not math.isfinite(value):
         raise ValueError(f"{path} 包含非有限数值")
     if isinstance(value, dict):
         for key, item in value.items():
-            _validate_source_numbers(item, f"{path}.{key}")
+            _validate_finite_numbers(item, f"{path}.{key}")
     elif isinstance(value, list):
         for index, item in enumerate(value):
-            _validate_source_numbers(item, f"{path}[{index}]")
+            _validate_finite_numbers(item, f"{path}[{index}]")
 
 
 def _normalize_source(value: Any, session_id: str | None) -> list[dict[str, Any]]:
@@ -497,7 +526,7 @@ def _normalize_source(value: Any, session_id: str | None) -> list[dict[str, Any]
     normalized: list[dict[str, Any]] = []
     for index, raw_message in enumerate(parsed):
         path = f"source_messages[{index}]"
-        _validate_source_numbers(raw_message, path)
+        _validate_finite_numbers(raw_message, path)
         if isinstance(raw_message, str):
             raw_message = {"role": "user", "content": raw_message}
         if not isinstance(raw_message, dict):
@@ -521,7 +550,7 @@ def _normalize_source(value: Any, session_id: str | None) -> list[dict[str, Any]
             timestamp = 0.0
         except OverflowError as exc:
             raise ValueError(f"{path}.timestamp 数值溢出") from exc
-        _validate_source_numbers(timestamp, f"{path}.timestamp")
+        _validate_finite_numbers(timestamp, f"{path}.timestamp")
         normalized.append(
             {
                 "id": raw_message.get("id", index + 1),

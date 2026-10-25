@@ -258,6 +258,7 @@ class AdministrationJobsMixin:
                 if job["status"] != "queued":
                     return
                 self._assert_jobs_open()
+                self.require(job["kind"])
                 await self.store.update(operation_id, status="running")
                 if job["kind"] == "import":
                     result = await self._run_import_job(job)
@@ -322,6 +323,7 @@ class AdministrationJobsMixin:
         if not hasattr(self.engine, "_memory_import_lock"):
             self.engine._memory_import_lock = asyncio.Lock()
         async with self.engine._memory_import_lock:
+            self.require("import")
             for item in await self._check_import_manifest(job):
                 if item["status"] == "completed":
                     continue

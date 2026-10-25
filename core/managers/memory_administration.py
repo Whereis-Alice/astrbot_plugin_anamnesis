@@ -107,6 +107,7 @@ class MemoryAdministration(AdministrationJobsMixin):
         self.require("recovery")
         ids = self.ids(memory_ids)
         async with memory_mutation_guard(self.engine):
+            self.require("recovery")
             return await self._settled(self._delete(ids, actor, reason))
 
     async def _delete(self, ids, actor, reason):
@@ -170,6 +171,7 @@ class MemoryAdministration(AdministrationJobsMixin):
         self.require("recovery")
         await self._owned(operation_id, actor, "delete", allow_expired=purge)
         async with memory_mutation_guard(self.engine):
+            self.require("recovery")
             return await self._settled(self._restore(operation_id, actor, purge))
 
     async def _restore(self, operation_id, actor, purge):
@@ -284,6 +286,7 @@ class MemoryAdministration(AdministrationJobsMixin):
         if not isinstance(instruction, str) or not 1 <= len(instruction.strip()) <= 2000:
             raise ValueError("纠正说明必须为 1–2000 字")
         async with memory_mutation_guard(self.engine):
+            self.require("correction")
             original = await self.snapshot(memory_id)
             if expected_memory is not None and fingerprint(original) != fingerprint(expected_memory):
                 raise ValueError("memory_changed_before_preview")
@@ -377,6 +380,7 @@ class MemoryAdministration(AdministrationJobsMixin):
         if not isinstance(token, str) or len(token) > 200:
             raise ValueError("确认凭据无效")
         async with memory_mutation_guard(self.engine):
+            self.require("correction")
             return await self._settled(self._claim_and_execute(operation_id, token, actor))
 
     async def _claim_and_execute(self, operation_id, token, actor):
@@ -443,6 +447,7 @@ class MemoryAdministration(AdministrationJobsMixin):
         self.require("correction")
         await self._owned(operation_id, actor, "correction")
         async with memory_mutation_guard(self.engine):
+            self.require("correction")
             # Waiting for a writer may cross retention or let another request
             # clear/reconcile the journal. Authorize the current saved record.
             operation = await self._owned(operation_id, actor, "correction")

@@ -12,13 +12,15 @@ class UserProfileDirectoryMixin:
     def _profile_session_condition(session_id: str) -> tuple[str, list[str]]:
         """A scoped row keeps its chat; shared rows need current/pending evidence."""
         return (
-            "(p.profile_scope=p.identity || ':session:' || ? "
-            "OR p.profile_scope=p.identity || ':isolated:' || ? "
-            "OR (p.profile_scope=p.identity AND EXISTS(SELECT 1 FROM user_profile_claims c "
-            "JOIN user_profile_evidence e ON e.claim_id=c.claim_id "
-            "WHERE c.profile_scope=p.profile_scope AND c.profile_key=p.profile_key "
-            "AND (c.claim_id=p.current_claim_id OR c.state='pending') AND e.suppressed=0 "
-            "AND json_extract(e.source_context,'$.source_session_id')=?)))",
+            (
+                "(p.profile_scope=p.identity || ':session:' || ? "
+                "OR p.profile_scope=p.identity || ':isolated:' || ? "
+                "OR (p.profile_scope=p.identity AND EXISTS(SELECT 1 FROM user_profile_claims c "
+                "JOIN user_profile_evidence e ON e.claim_id=c.claim_id "
+                "WHERE c.profile_scope=p.profile_scope AND c.profile_key=p.profile_key "
+                "AND (c.claim_id=p.current_claim_id OR c.state='pending') AND e.suppressed=0 "
+                "AND json_extract(e.source_context,'$.source_session_id')=?)))"
+            ),
             [session_id, session_id, session_id],
         )
 
@@ -100,6 +102,26 @@ class UserProfileDirectoryMixin:
             [time.time(), time.time(), *params, limit, offset],
         ) as cursor:
             users = [dict(row) for row in await cursor.fetchall()]
+        if users:
+            identities = [user["identity"] for user in users]
+            async with connection.execute(
+                "SELECT * FROM user_profiles WHERE identity IN ("
+                + ",".join("?" for _ in identities) + ")",
+                identities,
+            ) as cursor:
+                rows = [dict(row) for row in await cursor.fetchall()]
+            facts = await self._enrich_profile_rows(rows, include_history=False)
+            counts = {identity: {"active_fact_count": 0, "expired_fact_count": 0,
+                                 "suppressed_fact_count": 0} for identity in identities}
+            now = time.time()
+            for fact in facts:
+                summary = counts[fact["identity"]]
+                expired = fact["expires_at"] is not None and fact["expires_at"] <= now
+                summary["active_fact_count"] += int(not fact["suppressed"] and not expired)
+                summary["expired_fact_count"] += int(expired)
+                summary["suppressed_fact_count"] += int(bool(fact["suppressed"]))
+            for user in users:
+                user.update(counts[user["identity"]])
         for user in users:
             async with connection.execute(
                 "SELECT COALESCE(context_sender_name, source_sender_name), "

@@ -302,8 +302,12 @@ class UserProfileLedgerMixin:
                 row.update(evidence=[], pending=[], history=[])
                 continue
             row["evidence"] = current_evidence.get(claim, [])
-            row["live_evidence_count"] = sum(item["active"] for item in row["evidence"])
-            row["suppressed"] = int(not row["live_evidence_count"])
+            live = [item for item in row["evidence"] if item["active"]]
+            # Source replacement/deletion can bypass the profile projection
+            # hook. Display only provenance that this read verified as live.
+            row.update(self._profile_source_projection(live))
+            row["live_evidence_count"] = len(live)
+            row["suppressed"] = int(not live)
             row["pending"], row["history"] = [], []
             if not include_history:
                 continue

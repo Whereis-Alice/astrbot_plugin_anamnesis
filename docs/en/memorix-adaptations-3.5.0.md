@@ -2,7 +2,7 @@
 
 This release adapts mechanisms from Memorix 1.4.0 within Anamnesis's existing identity, scope, persona and lifecycle boundaries.
 
-Use **3.5.13** for all earlier fixes plus consistent episode source reads, profile injection boundaries, reversible CSV text handling, source checks in correction tools with session filtering disabled, and rejection of nonfinite numbers in imported source messages. The features and defaults below still apply.
+Use **3.5.14** for all earlier fixes plus live profile directory states and provenance, feature checks for queued administration, large-field CSV round trips, and request, ID and numeric validation for transfers. The features and defaults below still apply.
 
 Profiles remain disabled by default. Enabled profiles retain explicit self-report and verbatim-evidence validation. Manual edits have independent priority; changed automatic values enter review by default. The directory shows current values, proposals, history and multiple original evidence sources. Version checks protect edits and review actions. Administrator display aliases never merge accounts.
 

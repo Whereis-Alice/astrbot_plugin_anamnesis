@@ -22,6 +22,7 @@ from ..managers.memory_mutation import (
 from ..memory_source import restore_source_messages
 from ..memory_transfer import (
     MAX_IMPORT_ENTRIES,
+    MAX_TRANSFER_CONTENT_BYTES,
     isolate_import_provenance,
     memory_import_key,
     parse_transfer_content,
@@ -35,7 +36,10 @@ class MemoryHandlerIoMixin:
 
     async def export_memories(self, memory_engine) -> dict[str, Any]:
         """Export all or selected memories as portable JSON/CSV content."""
-        payload = await request.get_json(silent=True) or {}
+        payload = await request.get_json(silent=True)
+        if payload is not None and not isinstance(payload, dict):
+            return self.utils.error("请求参数必须是 JSON 对象")
+        payload = payload or {}
         export_format = str(payload.get("format", "json")).strip().lower()
         if export_format not in {"json", "csv"}:
             return self.utils.error("导出格式仅支持 JSON 或 CSV")
@@ -45,12 +49,19 @@ class MemoryHandlerIoMixin:
         if raw_ids is not None:
             if not isinstance(raw_ids, list):
                 return self.utils.error("memory_ids 必须是整数列表")
-            try:
-                memory_ids = [int(item) for item in raw_ids]
-            except (TypeError, ValueError):
-                return self.utils.error("memory_ids 必须是整数列表")
-            if len(memory_ids) > MAX_IMPORT_ENTRIES:
+            if len(raw_ids) > MAX_IMPORT_ENTRIES:
                 return self.utils.error(f"单次最多导出 {MAX_IMPORT_ENTRIES} 条记忆")
+            try:
+                memory_ids = []
+                for item in raw_ids:
+                    if isinstance(item, bool) or not isinstance(item, (int, str)):
+                        raise TypeError("记忆 ID 必须是正整数")
+                    memory_id = int(item)
+                    if not 0 < memory_id <= 2**63 - 1:
+                        raise ValueError("记忆 ID 超出 SQLite 正整数范围")
+                    memory_ids.append(memory_id)
+            except (TypeError, ValueError):
+                return self.utils.error("memory_ids 必须是 SQLite 范围内的正整数列表")
 
         records = await memory_engine.get_memory_transfer_records(memory_ids)
         if len(records) > MAX_IMPORT_ENTRIES:
@@ -80,7 +91,10 @@ class MemoryHandlerIoMixin:
 
     async def import_memories(self, memory_engine, memory_processor) -> dict[str, Any]:
         """Preview or import native and common external JSON/CSV memories."""
-        payload = await request.get_json(silent=True) or {}
+        payload = await request.get_json(silent=True)
+        if payload is not None and not isinstance(payload, dict):
+            return self.utils.error("请求参数必须是 JSON 对象")
+        payload = payload or {}
         import_format = str(payload.get("format", "json")).strip().lower()
         content = payload.get("content")
         dry_run = bool(payload.get("dry_run", True))
@@ -91,7 +105,7 @@ class MemoryHandlerIoMixin:
             return self.utils.error("duplicate_strategy 仅支持 skip 或 allow")
         if not isinstance(content, str) or not content.strip():
             return self.utils.error("导入文件内容不能为空")
-        if len(content.encode("utf-8")) > 50 * 1024 * 1024:
+        if len(content.encode("utf-8")) > MAX_TRANSFER_CONTENT_BYTES:
             return self.utils.error("导入文件不能超过 50 MiB")
 
         try:
