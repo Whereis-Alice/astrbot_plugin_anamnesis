@@ -12,6 +12,7 @@ from typing import Any
 
 from ..memory_scope import parse_value_list, resolve_event_identity
 from ..utils import extract_json_from_response
+from ..utils.formatting import neutralize_memory_markers
 from .memory_mutation import settle_memory_mutation_task
 from .user_profile_directory import UserProfileDirectoryMixin
 from .user_profile_ledger import UserProfileLedgerMixin
@@ -644,7 +645,11 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
         for fact in facts:
             authority = "管理员确认" if fact.get("authority") == "manual" else "用户明确自述" if fact.get("authority") == "direct_user" else "既有档案"
             label = fact.get("display_label") or fact["profile_key"]
-            line = f"- [{fact['category']}；{authority}] {label}: {fact['value']}"
+            # Keep saved facts readable in the WebUI, but never let a title or
+            # legacy value close the temporary memory wrapper during injection.
+            line = neutralize_memory_markers(
+                f"- [{fact['category']}；{authority}] {label}: {fact['value']}"
+            )
             if (
                 sum(len(part) + 1 for part in lines) + len(line) + len(footer) + 2
                 > max_chars

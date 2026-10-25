@@ -686,6 +686,16 @@ class AdministrationJobsMixin:
         await self.initialize()
         if not self.option("episodic_memory.enabled", False):
             return []
+        async with memory_mutation_guard(self.engine):
+            return await self._list_episodes_locked(
+                session_id=session_id, persona_id=persona_id, limit=limit,
+                include_stale=include_stale, persona_filtered=persona_filtered,
+            )
+
+    async def _list_episodes_locked(
+        self, *, session_id, persona_id, limit, include_stale, persona_filtered,
+    ):
+        """Validate all member snapshots against one ordered source state."""
         conditions, args = [], []
         if session_id is not None:
             conditions.append("session_id=?")

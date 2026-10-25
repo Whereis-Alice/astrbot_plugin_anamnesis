@@ -19,6 +19,14 @@ from .agentic_recall import request_state
 from .tool_access import ensure_tool_access
 
 
+async def _is_administrator(event: Any) -> bool:
+    check = getattr(event, "is_admin", None)
+    admin = check() if callable(check) else getattr(event, "role", None) == "admin"
+    if inspect.isawaitable(admin):
+        admin = await admin
+    return admin is True
+
+
 @dataclass
 class MemoryCorrectionPlanTool(FunctionTool):
     __pydantic_config__ = {"arbitrary_types_allowed": True}  # noqa: RUF012 -- Pydantic dataclass configuration
@@ -39,11 +47,7 @@ class MemoryCorrectionPlanTool(FunctionTool):
 
     async def call(self, context, memory_id: int, instruction: str) -> str:
         event = context.context.event
-        check = getattr(event, "is_admin", None)
-        admin = check() if callable(check) else getattr(event, "role", None) == "admin"
-        if inspect.isawaitable(admin):
-            admin = await admin
-        if admin is not True or not is_event_memory_allowed(self.config_manager, event):
+        if not await _is_administrator(event) or not is_event_memory_allowed(self.config_manager, event):
             return json.dumps({"error": "administrator_required"})
         try:
             await ensure_tool_access(self, event, "enable_correction_plan_tool")
@@ -52,11 +56,15 @@ class MemoryCorrectionPlanTool(FunctionTool):
                 service = MemoryAdministration(self.memory_engine, self.config_manager, self.memory_processor)
                 self.memory_engine.memory_administration = service
             async with memory_mutation_guard(self.memory_engine):
+                await ensure_tool_access(self, event, "enable_correction_plan_tool")
+                if not await _is_administrator(event):
+                    return json.dumps({"error": "administrator_required"})
                 memory = await self.memory_engine._replacement_snapshot(memory_id)
                 metadata = memory.get("metadata", {}) if memory else {}
                 origin = str(event.unified_msg_origin)
                 scope = resolve_memory_scope(self.config_manager, event)
-                if metadata.get("session_id") != scope or metadata.get("source_session_id") != origin:
+                if (metadata.get("source_session_id") != origin or
+                        scope is not None and metadata.get("session_id") != scope):
                     return json.dumps({"error": "memory_not_in_current_scope"})
                 if self.config_manager.filtering_settings.get("use_persona_filtering", True) and not persona_matches(
                     metadata.get("persona_id"), await get_persona_id(self.context, event)
@@ -66,6 +74,8 @@ class MemoryCorrectionPlanTool(FunctionTool):
             async with state["lock"]:
                 if state.get("correction_plan_count", 0) >= 1:
                     return json.dumps({"error": "one_plan_per_request"})
+                if not await _is_administrator(event):
+                    return json.dumps({"error": "administrator_required"})
                 await ensure_tool_access(self, event, "enable_correction_plan_tool")
                 state["correction_plan_count"] = state.get("correction_plan_count", 0)+1
             result = await service.preview_correction(memory_id, instruction,

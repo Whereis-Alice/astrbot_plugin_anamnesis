@@ -16,6 +16,8 @@ from .utils.number_utils import clamp_float
 TRANSFER_FORMAT = "anamnesis"
 TRANSFER_SCHEMA_VERSION = 2
 MAX_IMPORT_ENTRIES = 10_000
+CSV_SCALAR_ENCODING_FIELD = "anamnesis_csv_encoding"
+CSV_SCALAR_ENCODING = "apostrophe-v1"
 
 _CONTENT_KEYS = ("content", "text", "summary", "memory", "value")
 _SOURCE_KEYS = (
@@ -141,6 +143,7 @@ def serialize_transfer_csv(records: list[dict[str, Any]]) -> str:
     """Serialize records to a portable CSV with JSON-encoded structured fields."""
     output = io.StringIO(newline="")
     fields = [
+        CSV_SCALAR_ENCODING_FIELD,
         "original_id",
         "content",
         "importance",
@@ -160,6 +163,7 @@ def serialize_transfer_csv(records: list[dict[str, Any]]) -> str:
         metadata = record.get("metadata") or {}
         writer.writerow(
             {
+                CSV_SCALAR_ENCODING_FIELD: CSV_SCALAR_ENCODING,
                 "original_id": record.get("original_id", ""),
                 "content": _escape_csv_formula(record.get("content", "")),
                 "importance": record.get("importance", 0.5),
@@ -471,6 +475,18 @@ def _normalize_atoms(value, session_id, persona_id):
     return normalized
 
 
+def _validate_source_numbers(value: Any, path: str) -> None:
+    """Reject non-finite source data before field normalization can discard it."""
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError(f"{path} 包含非有限数值")
+    if isinstance(value, dict):
+        for key, item in value.items():
+            _validate_source_numbers(item, f"{path}.{key}")
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_source_numbers(item, f"{path}[{index}]")
+
+
 def _normalize_source(value: Any, session_id: str | None) -> list[dict[str, Any]]:
     parsed = _parse_json_value(value)
     if isinstance(parsed, dict):
@@ -480,6 +496,8 @@ def _normalize_source(value: Any, session_id: str | None) -> list[dict[str, Any]
 
     normalized: list[dict[str, Any]] = []
     for index, raw_message in enumerate(parsed):
+        path = f"source_messages[{index}]"
+        _validate_source_numbers(raw_message, path)
         if isinstance(raw_message, str):
             raw_message = {"role": "user", "content": raw_message}
         if not isinstance(raw_message, dict):
@@ -497,6 +515,13 @@ def _normalize_source(value: Any, session_id: str | None) -> list[dict[str, Any]
         content = _first_text(raw_message, ("content", "text", "message", "value"))
         if not content:
             continue
+        try:
+            timestamp = float(raw_message.get("timestamp") or 0.0)
+        except (TypeError, ValueError):
+            timestamp = 0.0
+        except OverflowError as exc:
+            raise ValueError(f"{path}.timestamp 数值溢出") from exc
+        _validate_source_numbers(timestamp, f"{path}.timestamp")
         normalized.append(
             {
                 "id": raw_message.get("id", index + 1),
@@ -507,7 +532,7 @@ def _normalize_source(value: Any, session_id: str | None) -> list[dict[str, Any]
                 "sender_name": raw_message.get("sender_name"),
                 "group_id": raw_message.get("group_id"),
                 "platform": raw_message.get("platform") or "import",
-                "timestamp": raw_message.get("timestamp", 0.0),
+                "timestamp": timestamp,
                 "metadata": raw_message.get("metadata")
                 or {"is_bot_message": role == "assistant"},
             }
@@ -524,7 +549,7 @@ def _first_text(data: dict[str, Any], keys: tuple[str, ...]) -> str:
 
 def _escape_csv_formula(value: Any) -> str:
     text = str(value or "")
-    if text.startswith(("=", "+", "-", "@", "\t", "\r")):
+    if text.startswith(("'", "=", "+", "-", "@", "\t", "\r")):
         return "'" + text
     return text
 
@@ -536,6 +561,9 @@ def _unescape_csv_formula(value: str) -> str:
 
 
 def _unescape_csv_row(row: dict[str, Any]) -> dict[str, Any]:
+    encoding = row.get(CSV_SCALAR_ENCODING_FIELD)
+    if encoding not in (None, "", CSV_SCALAR_ENCODING):
+        raise ValueError("不支持该 CSV 文本编码版本")
     scalar_fields = {
         "content",
         "session_id",
@@ -543,8 +571,17 @@ def _unescape_csv_row(row: dict[str, Any]) -> dict[str, Any]:
         "memory_type",
         "status",
     }
+
+    def decode(value):
+        if encoding == CSV_SCALAR_ENCODING:
+            # Native v1 prefixes formulas and existing leading apostrophes.
+            # Remove exactly that one declared layer; legacy decoding below
+            # retains its existing behavior without new guessing rules.
+            return value.removeprefix("'")
+        return _unescape_csv_formula(value)
+
     return {
-        key: _unescape_csv_formula(value)
+        key: decode(value)
         if key in scalar_fields and isinstance(value, str)
         else value
         for key, value in row.items()
