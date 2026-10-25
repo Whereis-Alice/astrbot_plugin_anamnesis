@@ -112,7 +112,9 @@ class _FakeFaissDB:
             self.docs.pop(target, None)
             if self._sqlite_path is not None:
                 async with aiosqlite.connect(self._sqlite_path) as connection:
-                    await connection.execute("DELETE FROM documents WHERE id=?", (target,))
+                    await connection.execute(
+                        "DELETE FROM documents WHERE id=?", (target,)
+                    )
                     await connection.commit()
 
     async def close(self) -> None:
@@ -1469,30 +1471,90 @@ async def test_batch_delete_memories_nonexistent_ids_are_noop(tmp_path: Path):
         faiss_db=faiss,
         config={},
     )
-    await engine.initialize()
+    try:
+        await engine.initialize()
+        # Use the fake's committed parent-document write, matching FAISS's
+        # separate connection instead of writing through the engine directly.
+        mid = await faiss.insert("存在的记忆", {"importance": 0.5})
+        deleted = await engine.batch_delete_memories([mid, 99999, 99998])
+        assert deleted == 1
+        assert mid not in faiss.docs
+    finally:
+        # An assertion/storage failure must still stop maintenance and close
+        # aiosqlite's worker threads, otherwise pytest cannot exit on Linux.
+        await engine.close()
 
-    mid = 1
-    faiss._next_id = 2
-    faiss.docs[mid] = {
-        "id": mid,
-        "doc_id": f"uuid-{mid}",
-        "text": "存在的记忆",
-        "metadata": {"importance": 0.5},
-    }
 
-    if engine.db_connection is not None:
-        await engine.db_connection.execute(
-            "INSERT INTO documents (id, doc_id, text, metadata, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
-            (mid, f"uuid-{mid}", "存在的记忆", json.dumps({"importance": 0.5})),
+@pytest.mark.asyncio
+async def test_alias_backfill_reader_does_not_share_main_connection(tmp_path: Path):
+    faiss = _FakeFaissDB()
+    engine = MemoryEngine(
+        db_path=str(tmp_path / "backfill_reader.db"),
+        faiss_db=faiss,
+        config={"atom_enabled": False, "alias_backfill_on_start": False},
+    )
+    readers = []
+    try:
+        await engine.initialize()
+        first = await faiss.insert("first", {"importance": 0.5})
+        await faiss.insert("second", {"importance": 0.5})
+        engine.alias_store.count = AsyncMock(return_value=0)
+
+        async def backfill(reader):
+            readers.append(reader)
+            # Keep a real read cursor open while the main connection and fake
+            # FAISS commit batch deletion on the same WAL database.
+            async with reader.execute(
+                "SELECT metadata FROM documents ORDER BY id"
+            ) as cursor:
+                assert await cursor.fetchone() is not None
+                # A separate maintenance writer advances the WAL snapshot.
+                # If this cursor uses the main connection, its later write
+                # upgrade fails immediately with SQLITE_BUSY_SNAPSHOT.
+                async with aiosqlite.connect(engine.db_path) as maintenance:
+                    await maintenance.execute(
+                        "UPDATE documents SET updated_at='maintenance' WHERE id<>?",
+                        (first,),
+                    )
+                    await maintenance.commit()
+                deleted = await asyncio.wait_for(
+                    engine.batch_delete_memories([first, 99999]), timeout=10
+                )
+                assert deleted == 1
+                await cursor.fetchall()
+            assert reader is not engine.db_connection
+            return 0
+
+        engine.alias_store.backfill_from_documents = AsyncMock(side_effect=backfill)
+        await engine._backfill_aliases_if_empty()
+        engine.alias_store.backfill_from_documents.assert_awaited_once()
+        assert first not in faiss.docs
+        # The short-lived reader is closed after backfill; the writer remains.
+        with pytest.raises(ValueError):
+            await readers[0].execute("SELECT 1")
+        async with engine.db_connection.execute("SELECT 1") as cursor:
+            assert await cursor.fetchone() is not None
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
+async def test_alias_backfill_memory_database_keeps_main_connection():
+    engine = MemoryEngine(
+        db_path=":memory:",
+        faiss_db=_FakeFaissDB(),
+        config={"atom_enabled": False, "alias_backfill_on_start": False},
+    )
+    try:
+        await engine.initialize()
+        engine.alias_store.count = AsyncMock(return_value=0)
+        engine.alias_store.backfill_from_documents = AsyncMock(return_value=0)
+        await engine._backfill_aliases_if_empty()
+        engine.alias_store.backfill_from_documents.assert_awaited_once_with(
+            engine.db_connection
         )
-        await engine.db_connection.commit()
-
-    deleted = await engine.batch_delete_memories([mid, 99999, 99998])
-    assert deleted == 1
-    assert mid not in faiss.docs
-
-    await engine.close()
+    finally:
+        await engine.close()
 
 
 @pytest.mark.asyncio
@@ -1702,8 +1764,7 @@ async def test_replace_memory_rebuilds_atoms_and_preserves_create_time(tmp_path:
     new_graph = await engine.graph_store.get_subgraph_for_memories([new_id])
     assert old_graph["entries"] == []
     assert any(
-        "Release is Friday" in entry["content"]
-        for entry in new_graph["entries"]
+        "Release is Friday" in entry["content"] for entry in new_graph["entries"]
     )
 
     await engine.close()
@@ -2039,6 +2100,7 @@ async def test_update_memory_status_only_skips_graph_reindex(tmp_path: Path):
     engine.graph_memory_manager = Mock()
     engine.graph_memory_manager.index_memory = AsyncMock()
     engine.hybrid_retriever = Mock()
+
     async def persist_metadata(doc_id: int, updates: dict) -> bool:
         metadata = engine.faiss_db.docs[doc_id]["metadata"]
         metadata.update(updates)
@@ -2048,6 +2110,7 @@ async def test_update_memory_status_only_skips_graph_reindex(tmp_path: Path):
         )
         await engine.db_connection.commit()
         return True
+
     engine.hybrid_retriever.update_metadata = AsyncMock(side_effect=persist_metadata)
 
     assert await engine.update_memory(mid, {"metadata": {"status": "archived"}})
@@ -2064,6 +2127,6 @@ async def test_update_memory_status_only_skips_graph_reindex(tmp_path: Path):
     engine.graph_memory_manager.index_memory.assert_awaited_once()
     indexed_metadata = engine.graph_memory_manager.index_memory.await_args.args[2]
     assert indexed_metadata["status"] == "active"
-    assert indexed_metadata["importance"] == .8
+    assert indexed_metadata["importance"] == 0.8
 
     await engine.close()

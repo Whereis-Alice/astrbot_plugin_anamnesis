@@ -25,7 +25,6 @@ import aiosqlite
 
 from .sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
 
-
 #: Aliases shorter than this are not used for free-text matching. Single
 #: characters match almost any Chinese sentence and would create noise.
 MIN_MATCHABLE_ALIAS_LENGTH = 2
@@ -564,12 +563,12 @@ class AliasStore:
         recorded = 0
         while True:
             try:
-                cursor = await db_connection.execute(
+                async with db_connection.execute(
                     "SELECT metadata FROM documents WHERE metadata IS NOT NULL "
                     "ORDER BY id LIMIT ? OFFSET ?",
                     (self._BACKFILL_BATCH_SIZE, offset),
-                )
-                rows = await cursor.fetchall()
+                ) as cursor:
+                    rows = await cursor.fetchall()
             except aiosqlite.Error:
                 break
             if not rows:

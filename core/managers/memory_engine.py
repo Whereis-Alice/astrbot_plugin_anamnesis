@@ -339,7 +339,18 @@ class MemoryEngine(MemoryEngineOperationsMixin, MemoryEngineEvidenceMixin, Memor
         try:
             if await self.alias_store.count() > 0:
                 return
-            recorded = await self.alias_store.backfill_from_documents(self.db_connection)
+            if str(self.db_path) == ":memory:":
+                recorded = await self.alias_store.backfill_from_documents(self.db_connection)
+            else:
+                # A SELECT cursor briefly pins its connection's WAL snapshot.
+                # Background reads must not share the mutation connection:
+                # another store's commit can make its next write fail with
+                # SQLITE_BUSY_SNAPSHOT even when busy_timeout is configured.
+                async with aiosqlite.connect(
+                    self.db_path, **sqlite_connect_kwargs(self.config),
+                ) as reader:
+                    await configure_sqlite_connection(reader, self.config)
+                    recorded = await self.alias_store.backfill_from_documents(reader)
             if recorded:
                 logger.info(f"[MemoryEngine] 已从历史记忆回填 {recorded} 条昵称别名")
         except asyncio.CancelledError:

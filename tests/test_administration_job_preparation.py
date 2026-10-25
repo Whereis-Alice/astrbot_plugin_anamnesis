@@ -33,7 +33,7 @@ async def test_close_cancels_import_preparation_before_it_creates_a_job(
     creation = asyncio.create_task(
         administration.create_job("import", {"content": "text"})
     )
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 10)
     await administration.close_job_tasks()
     with pytest.raises(asyncio.CancelledError):
         await creation
@@ -62,7 +62,7 @@ async def test_close_after_queue_commit_keeps_interrupted_job_without_launch(
     launch = Mock()
     monkeypatch.setattr(administration, "_launch_job", launch)
     creation = asyncio.create_task(administration.create_job("projection", {}))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 10)
     await administration.close_job_tasks()
     with pytest.raises(asyncio.CancelledError):
         await creation
@@ -89,7 +89,7 @@ async def test_close_during_partial_import_preparation_removes_incomplete_manife
             "import", {"content": "a" * 3000, "format": "txt", "session_id": "scope"}
         )
     )
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 10)
     await administration.close_job_tasks()
     with pytest.raises(asyncio.CancelledError):
         await creation
@@ -115,7 +115,7 @@ async def test_retry_preparation_is_cancelled_and_settled_before_close(
     launch = Mock()
     monkeypatch.setattr(administration, "_launch_job", launch)
     retry = asyncio.create_task(administration.job_action(operation_id, "retry"))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 10)
     await administration.close_job_tasks()
     with pytest.raises(asyncio.CancelledError):
         await retry
@@ -197,7 +197,7 @@ async def test_close_waits_for_manifest_commit_then_cleans_up(
         else {}
     )
     creation = asyncio.create_task(administration.create_job(kind, payload))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 10)
     closing = asyncio.create_task(administration.close_job_tasks())
     await asyncio.sleep(0)
     await asyncio.sleep(0)
@@ -239,10 +239,10 @@ async def test_repeated_worker_cancel_finishes_status_commit(
     result = await administration.create_job("projection", {})
     operation_id = result["operation_id"]
     worker = administration._jobs[operation_id]
-    await running.wait()
+    await asyncio.wait_for(running.wait(), 10)
     administration._closing = closing
     worker.cancel()
-    await committing.wait()
+    await asyncio.wait_for(committing.wait(), 10)
     worker.cancel()
     await asyncio.sleep(0)
     worker.cancel()
@@ -284,7 +284,7 @@ async def test_concurrent_retries_launch_a_job_once(administration, monkeypatch)
     launch = Mock()
     monkeypatch.setattr(administration, "_launch_job", launch)
     first = asyncio.create_task(administration.job_action(operation_id, "retry"))
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 10)
     second = asyncio.create_task(administration.job_action(operation_id, "retry"))
     await asyncio.sleep(0)
     release.set()

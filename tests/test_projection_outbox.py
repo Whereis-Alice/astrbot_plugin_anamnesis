@@ -156,7 +156,7 @@ async def test_real_full_rebuild_entrypoint_excludes_projection_worker(projectio
         return {"success": True}
     validator._rebuild_indexes_locked = rebuild
     full = asyncio.create_task(validator.rebuild_indexes(projection.engine, force_full_vector=True))
-    await started.wait()
+    await asyncio.wait_for(started.wait(), 10)
     replay = asyncio.create_task(projection.repair())
     await asyncio.sleep(.01)
     projection.engine.faiss_db.embedding_provider.get_embedding_with_retry.assert_not_awaited()
@@ -173,7 +173,7 @@ async def test_projection_guard_is_reentrant_and_released_after_cancellation(pro
             entered.set()
             await asyncio.Future()
     task = asyncio.create_task(owner())
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(), 10)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
