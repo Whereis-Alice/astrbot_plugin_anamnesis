@@ -10,6 +10,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from ..recall_persona import is_null_persona_filter, persona_filter_requested
 from .vector_search import retrieve_vectors
 
 if TYPE_CHECKING:
@@ -217,8 +218,10 @@ class VectorRetriever:
         metadata_filters = {}
         if session_id is not None:
             metadata_filters["session_id"] = session_id
-        if persona_id is not None:
-            metadata_filters["persona_id"] = persona_id
+        if persona_filter_requested(persona_id):
+            metadata_filters["persona_id"] = (
+                None if is_null_persona_filter(persona_id) else persona_id
+            )
 
         faiss_results = await retrieve_vectors(
             self.faiss_db, processed_query, k, metadata_filters,

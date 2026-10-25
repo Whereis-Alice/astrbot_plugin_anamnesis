@@ -68,3 +68,40 @@ test("interrupted uncertain correction offers evidence review and recheck", () =
   assert.match(elements["admin-records"].innerHTML, /data-admin-action="rollback"/);
   assert.doesNotMatch(elements["admin-records"].innerHTML, /data-admin-action="remove"/);
 });
+
+test("cancelling event source review leaves the original event and sends no job", async () => {
+  const posts = []; const { page } = setup({ async post(path, body) { posts.push({ path, body }); } });
+  const original = { id: "event", memory_ids: [7, 8], revision: 3, title: "original", stale: true };
+  page.episodes = [original];
+  page.editEpisodeMembers = async episode => { assert.equal(episode, original); return null; };
+  page.fetch = async () => { throw Error("cancellation should not refresh"); };
+  await page.action("rebuild", "event");
+  assert.deepEqual(posts, []);
+  assert.deepEqual(page.episodes, [original]);
+});
+
+test("event rebuild uses reviewed members and the revision from when review opened", async () => {
+  const posts = []; const { page } = setup({ async post(path, body) { posts.push({ path, body }); } });
+  page.episodes = [{ id: "event", memory_ids: [7, 8], revision: 3 }];
+  page.editEpisodeMembers = async episode => {
+    // A concurrent refresh must not silently authorize overwriting a newer event.
+    episode.revision = 4;
+    return { memory_ids: [9, 8], use_llm: false, title: "reviewed event" };
+  };
+  page.fetch = async () => {};
+  await page.action("rebuild", "event");
+  assert.deepEqual(posts, [{ path: "jobs/create", body: { kind: "episode", payload: {
+    memory_ids: [9, 8], use_llm: false, title: "reviewed event", episode_id: "event", expected_revision: 3,
+  } } }]);
+});
+
+test("a rejected event rebuild reports the error without changing the original record", async () => {
+  const { page, elements } = setup({ async post() { throw Error("event version changed"); } });
+  const original = { id: "event", memory_ids: [7], revision: 3, title: "original", summary: "original summary" };
+  page.episodes = [original];
+  page.editEpisodeMembers = async () => ({ memory_ids: [9], use_llm: true, title: "" });
+  await page.run(() => page.action("rebuild", "event"));
+  assert.equal(elements["admin-feedback"].textContent, "event version changed");
+  assert.deepEqual(page.episodes, [original]);
+  assert.equal(page.busy, false);
+});

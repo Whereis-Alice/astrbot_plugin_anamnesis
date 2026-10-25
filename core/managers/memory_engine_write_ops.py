@@ -15,6 +15,11 @@ from astrbot.api import logger
 
 from ...storage.atom_store import AtomStore
 from ..models.memory_atom import AtomStatus, AtomType, DecayType, MemoryAtom
+from ..recall_persona import (
+    is_null_persona_filter,
+    persona_filter_requested,
+    persona_sql_filter,
+)
 from ..retrieval.hybrid_retriever import HybridResult
 from ..utils.number_utils import clamp_float
 from .memory_mutation import serialize_memory_mutation
@@ -305,6 +310,7 @@ class MemoryEngineWriteOpsMixin:
             int(k),
             session_id or "",
             persona_id or "",
+            is_null_persona_filter(persona_id),
             bool(self.dual_route_retriever is not None),
             round(float(self.config.get("document_route_weight", 0.65)), 4),
             round(float(self.config.get("graph_route_weight", 0.35)), 4),
@@ -380,9 +386,12 @@ class MemoryEngineWriteOpsMixin:
         if session_id is not None:
             conditions.append("json_extract(metadata, '$.session_id') = ?")
             params.append(session_id)
-        if persona_id is not None:
-            conditions.append("json_extract(metadata, '$.persona_id') = ?")
-            params.append(persona_id)
+        if persona_filter_requested(persona_id):
+            condition, values = persona_sql_filter(
+                "json_extract(metadata, '$.persona_id')", persona_id
+            )
+            conditions.append(condition)
+            params.extend(values)
         max_age_hours = max(
             0, int(self.config.get("recent_memory_max_age_hours", 72))
         )

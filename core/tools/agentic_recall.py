@@ -14,6 +14,7 @@ from ..memory_scope import (
     GLOBAL_MEMORY_SCOPE,
     resolve_memory_scope,
 )
+from ..recall_persona import persona_matches
 from ..retrieval.temporal_query import (
     TimeRange,
     parse_timestamp,
@@ -69,7 +70,7 @@ def evidence_allowed(metadata, scope, persona, event, config):
     else:
         matches = metadata.get("session_id") == scope
     if config.filtering_settings.get("use_persona_filtering", True):
-        matches = matches and metadata.get("persona_id") == persona
+        matches = matches and persona_matches(metadata.get("persona_id"), persona)
     return matches and metadata.get("status", "active") == "active"
 
 

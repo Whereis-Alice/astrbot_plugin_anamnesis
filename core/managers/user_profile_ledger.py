@@ -106,14 +106,18 @@ class UserProfileLedgerMixin:
         limit = self._ledger_limit("history_max_versions", 20, 100)
         async with connection.execute(
             "SELECT claim_id FROM user_profile_claims WHERE profile_scope=? AND profile_key=? "
-            "AND state NOT IN ('current','pending') ORDER BY claim_id DESC LIMIT -1 OFFSET ?",
+            "AND state NOT IN ('current','pending') "
+            "AND claim_id NOT IN (SELECT current_claim_id FROM user_profiles WHERE current_claim_id IS NOT NULL) "
+            "ORDER BY claim_id DESC LIMIT -1 OFFSET ?",
             (scope, key, limit)) as cursor:
             expired = [row[0] for row in await cursor.fetchall()]
         # Keep at most three alternatives per attribute; repeated extraction
         # of one proposal adds evidence rather than a new alternative.
         async with connection.execute(
             "SELECT claim_id FROM user_profile_claims WHERE profile_scope=? AND profile_key=? "
-            "AND state='pending' ORDER BY claim_id DESC LIMIT -1 OFFSET 3", (scope, key)) as cursor:
+            "AND state='pending' "
+            "AND claim_id NOT IN (SELECT current_claim_id FROM user_profiles WHERE current_claim_id IS NOT NULL) "
+            "ORDER BY claim_id DESC LIMIT -1 OFFSET 3", (scope, key)) as cursor:
             expired += [row[0] for row in await cursor.fetchall()]
         for claim_id in expired:
             await connection.execute("DELETE FROM user_profile_evidence WHERE claim_id=?", (claim_id,))
@@ -363,6 +367,9 @@ class UserProfileLedgerMixin:
                         await self._manual_ledger_update(connection, current, after, evidence)
                         await connection.execute("UPDATE user_profile_claims SET state='accepted',updated_at=? WHERE claim_id=?", (time.time(), claim_id))
                     await self._transition(connection, profile_scope, profile_key, action, current["current_claim_id"], claim_id, "administrator")
+                    # Accepted/rejected proposals enter history only after
+                    # their final state is saved; enforce its budget here.
+                    await self._prune_ledger(connection, profile_scope, profile_key)
                 await connection.commit()
             except BaseException:
                 await connection.rollback()

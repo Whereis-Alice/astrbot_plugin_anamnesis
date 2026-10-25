@@ -33,6 +33,15 @@ const labels = {
   llm: ["使用模型总结（关闭则保留证据摘录）", "Summarize with model (off: evidence excerpts)", "Сводка моделью (выкл.: выдержки)"],
   eventTitle: ["事件标题（规则模式可选）", "Event title (optional for excerpts)", "Название события (необязательно)"],
   rebuild: ["重新生成", "Rebuild", "Пересоздать"],
+  rebuildMembers: ["核对事件来源", "Review event sources", "Проверить источники события"],
+  sourceIds: ["原事件使用的记忆 ID", "Original memory IDs", "Исходные ID памяти"],
+  selectedMembers: ["本次使用的记忆 ID（逗号分隔）", "Memory IDs to use (comma separated)", "ID памяти для использования (через запятую)"],
+  rebuildNote: ["请使用同一会话、人格和来源会话中的有效记忆。修改、删除或过期的记忆需要替换或移除。新摘要生成成功前保留原事件。", "Use active memories from the same scope, persona and source session. Replace or remove changed, deleted or expired memories. The original event remains until the new summary is ready.", "Используйте действующие воспоминания из той же области, персоны и исходной сессии. Замените или уберите изменённые, удалённые или истёкшие записи. Исходное событие сохранится до готовности новой сводки."],
+  rebuildStale: ["部分来源已变化，请先调整记忆 ID，再重新生成。", "Some sources have changed. Update the memory IDs before rebuilding.", "Некоторые источники изменились. Обновите ID памяти перед пересозданием."],
+  sourceSession: ["来源会话", "Source session", "Исходная сессия"],
+  eventPersona: ["人格", "Persona", "Персона"],
+  notSet: ["未指定", "Not specified", "Не указано"],
+  eventMissing: ["事件已变化，请刷新后重试。", "The event has changed. Refresh and try again.", "Событие изменилось. Обновите страницу и повторите."],
   detail: ["查看详情", "Details", "Подробности"],
   cancel: ["取消任务", "Cancel job", "Отменить задачу"],
   retry: ["重试未完成部分", "Retry unfinished work", "Повторить незавершённое"],
@@ -124,6 +133,37 @@ export class AdministrationPage {
       dialog.showModal(); dialog.querySelector("#admin-confirm-cancel-btn").focus();
     });
   }
+  async editEpisodeMembers(episode) {
+    return new Promise(resolve => {
+      const dialog = document.createElement("dialog"); dialog.className = "admin-confirm-dialog admin-card";
+      dialog.innerHTML = `<form>
+        <h2>${esc(adminText("rebuildMembers"))}</h2>
+        ${episode.stale ? `<p class="admin-prose">${esc(adminText("rebuildStale"))}</p>` : ""}
+        <p class="admin-prose">${esc(adminText("rebuildNote"))}</p>
+        <p class="admin-prose">${esc(adminText("scope"))}: ${esc(episode.session_id || adminText("notSet"))}<br>${esc(adminText("eventPersona"))}: ${esc(episode.persona_id || adminText("notSet"))}<br>${esc(adminText("sourceSession"))}: ${esc(episode.source_session_id || adminText("notSet"))}</p>
+        <p class="admin-prose">${esc(adminText("sourceIds"))}: ${esc(episode.memory_ids.join(", "))}</p>
+        <label>${esc(adminText("selectedMembers"))}<input class="input" id="admin-rebuild-ids" value="${esc(episode.memory_ids.join(", "))}" /></label>
+        <label>${esc(adminText("eventTitle"))}<input class="input" id="admin-rebuild-title" value="${esc(episode.stale ? "" : episode.title)}" /></label>
+        <label><input type="checkbox" id="admin-rebuild-llm" checked /> ${esc(adminText("llm"))}</label>
+        <p id="admin-rebuild-error" role="alert" class="admin-prose"></p>
+        <div class="admin-actions"><button id="admin-rebuild-cancel-btn" class="btn btn-secondary" type="button">${esc(adminText("cancelConfirm"))}</button><button id="admin-rebuild-submit-btn" class="btn btn-primary" type="submit">${esc(adminText("rebuild"))}</button></div>
+      </form>`;
+      document.body.appendChild(dialog);
+      let finished = false;
+      const finish = result => { if (finished) return; finished = true; dialog.close(); dialog.remove(); resolve(result); };
+      const ids = dialog.querySelector("#admin-rebuild-ids");
+      dialog.querySelector("#admin-rebuild-cancel-btn").addEventListener("click", () => finish(null));
+      dialog.querySelector("form").addEventListener("submit", event => {
+        event.preventDefault();
+        try {
+          finish({ memory_ids: parseMemoryIds(ids.value), title: dialog.querySelector("#admin-rebuild-title").value.trim(), use_llm: dialog.querySelector("#admin-rebuild-llm").checked });
+        } catch (error) { dialog.querySelector("#admin-rebuild-error").textContent = error.message; ids.focus(); }
+      });
+      dialog.addEventListener("cancel", event => { event.preventDefault(); finish(null); });
+      dialog.addEventListener("close", () => finish(null));
+      dialog.showModal(); ids.focus();
+    });
+  }
   async run(fn) {
     if (this.busy) return; this.busy = true;
     try { await fn(); document.getElementById("admin-feedback").textContent = ""; }
@@ -200,7 +240,11 @@ export class AdministrationPage {
     }
     if (action === "rebuild") {
       const episode = this.episodes.find(item => item.id === id);
-      await this.api.post("jobs/create", { kind: "episode", payload: { episode_id: id, expected_revision: episode.revision, memory_ids: episode.memory_ids, use_llm: true } });
+      if (!episode) throw new Error(adminText("eventMissing"));
+      const expectedRevision = episode.revision;
+      const draft = await this.editEpisodeMembers(episode);
+      if (!draft) return;
+      await this.api.post("jobs/create", { kind: "episode", payload: { ...draft, episode_id: id, expected_revision: expectedRevision } });
     } else if (["cancel", "retry"].includes(action) || action === "remove" && ["import", "evaluation", "episode", "projection"].includes(this.records.find(item => item.id === id)?.kind)) {
       await this.api.post("jobs/action", { operation_id: id, action });
     } else {

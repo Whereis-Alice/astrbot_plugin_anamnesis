@@ -2,7 +2,7 @@
 
 This release adapts mechanisms from Memorix 1.4.0 within Anamnesis's existing identity, scope, persona and lifecycle boundaries.
 
-Use **3.5.7** for the earlier lock, permission, shutdown, import and correction fixes plus evidence merging and proposal review after repeated profile scope changes, repair of earlier chat assignments, and cleanup of expired deletion snapshots whose original documents no longer exist. The features and defaults below still apply.
+Use **3.5.8** for the earlier lock, permission, shutdown, import and correction fixes plus no-persona isolation across recall routes, persona validation between memories and their facts, profile migration with small history budgets, preservation of manual profile fields, and source review before rebuilding events. The features and defaults below still apply.
 
 Profiles remain disabled by default. Enabled profiles retain explicit self-report and verbatim-evidence validation. Manual edits have independent priority; changed automatic values enter review by default. The directory shows current values, proposals, history and multiple original evidence sources. Version checks protect edits and review actions. Administrator display aliases never merge accounts.
 
@@ -16,6 +16,8 @@ The new Administration page provides:
 - Fixed-query evaluation with correctly named Hit@K, Precision@K, Recall@K, MRR, expected-empty accuracy, errors and latency. Reports include query/configuration fingerprints. Evaluation does not reinforce memories or apply configuration automatically.
 - Optional on-demand events, disabled by default. Events retain member evidence, withdraw stale summaries and rebuild with version checks. Retrieval uses lexical matching and document-hit projection without an independent event embedding pool.
 - Versioned index synchronization intents committed with document changes. Conditional completion protects newer revisions; synchronization uses current primary data and retains existing repair/compensation mechanisms.
+
+Rebuilding an event first opens a source review dialog showing its original memory IDs, scope, persona and source session. Find current active IDs in Memories and replace or remove changed, deleted or expired sources. Replacement IDs are selected by the administrator. The dialog supports model summaries or evidence excerpts. Cancelling submits no job, and a failed rebuild preserves the original event. Refresh and review again if another rebuild has updated the event.
 
 `user_profile`, `recall_engine`, `episodic_memory` and `memory_administration` expose bounded switches and budgets. Native JSON/CSV imports preserve validated scope/lifecycle data; foreign history and operation identifiers remain import provenance only. `/new` continues to preserve long-term memory.
 

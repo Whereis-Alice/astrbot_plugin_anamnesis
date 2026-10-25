@@ -141,6 +141,8 @@ async def get_persona_id(context: Context, event: AstrMessageEvent) -> str | Non
         ).get("persona_id")
 
         if session_persona_id:
+            if session_persona_id == "[%None]":
+                return None
             logger.debug(
                 f"[get_persona_id] [{umo}] 使用 session_service_config 人格: {session_persona_id}"
             )
@@ -173,6 +175,8 @@ async def get_persona_id(context: Context, event: AstrMessageEvent) -> str | Non
         # 优先级 3：全局默认人格
         default_persona = await context.persona_manager.get_default_persona_v3(umo=umo)
         persona_id = default_persona["name"] if default_persona else None
+        if persona_id == "[%None]":
+            persona_id = None
         logger.debug(f"[get_persona_id] [{umo}] 使用默认人格: {persona_id or '未设置'}")
         logger.info(f"[get_persona_id] [{umo}] 最终使用人格: {persona_id or '无'}")
         return persona_id

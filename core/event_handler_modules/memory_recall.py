@@ -350,7 +350,8 @@ class MemoryRecall:
                     episodes = []
                     if administration is not None and self.config_manager.get("episodic_memory.enabled", False):
                         episodes = await administration.episode_candidates(actual_query, results,
-                            session_id=recall_session_id, persona_id=recall_persona_id, k=2)
+                            session_id=recall_session_id, persona_id=recall_persona_id, k=2,
+                            persona_filtered=use_persona_filtering)
                     return results, episodes
                 try:
                     if search_timeout is None:

@@ -199,6 +199,16 @@ class UserProfileMigrationMixin:
         observed = max(
             before.get("updated_at", claim["updated_at"]), incoming.get("updated_at", 0)
         )
+        selected_fact = (
+            {
+                field: incoming[field]
+                for field in ("value", "category", "display_label", "confidence")
+                if field in incoming
+            }
+            if manual_grant or manual_proposal
+            else {}
+        )
+        snapshot.update(selected_fact)
         snapshot.update(expires_at=expiry, updated_at=observed)
         authority = claim["authority"]
         if manual_grant or manual_proposal:
@@ -214,9 +224,15 @@ class UserProfileMigrationMixin:
             (json.dumps(snapshot, ensure_ascii=False), observed, authority, claim_id),
         )
         if target is not None:
+            projected = {**dict(target), **selected_fact}
             await connection.execute(
-                "UPDATE user_profiles SET expires_at=?,updated_at=?,authority=?,manual_override=? WHERE profile_scope=? AND profile_key=?",
+                "UPDATE user_profiles SET value=?,category=?,display_label=?,confidence=?,expires_at=?,updated_at=?,"
+                "authority=?,manual_override=? WHERE profile_scope=? AND profile_key=?",
                 (
+                    projected["value"],
+                    projected["category"],
+                    projected["display_label"],
+                    projected["confidence"],
                     expiry,
                     observed,
                     authority,
@@ -367,12 +383,18 @@ class UserProfileMigrationMixin:
                 # Expose this chat's pending/history without injecting a
                 # current value whose evidence belongs to another chat.
                 base = next(
-                    claim for claim in claims if claim["claim_id"] == old_current
+                    (claim for claim in claims if claim["claim_id"] == old_current),
+                    {"snapshot": "{}"},
                 )
                 snapshot = await self._session_claim_snapshot(
                     row, base, scope, [], context
                 )
-                snapshot.update(value="[来源已删除]", expires_at=None)
+                snapshot.update(
+                    value="[来源已删除]",
+                    expires_at=None,
+                    authority="legacy",
+                    manual_override=0,
+                )
                 current = await self._insert_claim(
                     connection, snapshot, "legacy", "withdrawn"
                 )

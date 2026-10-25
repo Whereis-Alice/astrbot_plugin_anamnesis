@@ -9,6 +9,8 @@ from typing import Any
 import aiosqlite
 from astrbot.api import logger
 
+from ..core.recall_persona import persona_filter_requested, persona_sql_filter
+
 
 class GraphStoreReadMixin:
     """图读取；连接工厂与批量常量由 GraphStore 提供。"""
@@ -103,9 +105,10 @@ class GraphStoreReadMixin:
         if session_id is not None:
             filters.append("ge.session_id = ?")
             params.append(session_id)
-        if persona_id is not None:
-            filters.append("ge.persona_id = ?")
-            params.append(persona_id)
+        if persona_filter_requested(persona_id):
+            condition, values = persona_sql_filter("ge.persona_id", persona_id)
+            filters.append(condition)
+            params.extend(values)
 
         where_clause = f"AND {' AND '.join(filters)}" if filters else ""
 
@@ -227,9 +230,10 @@ class GraphStoreReadMixin:
         if session_id is not None:
             filters.append("ge.session_id = ?")
             params.append(session_id)
-        if persona_id is not None:
-            filters.append("ge.persona_id = ?")
-            params.append(persona_id)
+        if persona_filter_requested(persona_id):
+            condition, values = persona_sql_filter("ge.persona_id", persona_id)
+            filters.append(condition)
+            params.extend(values)
         where_clause = f"AND {' AND '.join(filters)}" if filters else ""
 
         async with self._read_connect() as db:

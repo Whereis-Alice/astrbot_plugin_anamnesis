@@ -29,10 +29,11 @@ try {
       { id: "import-operation", kind: "import", status: "completed", created_at: 1792890000 },
       { id: "expired-correction", kind: "correction", status: "completed", expired: true, created_at: 1792890000 },
     ];
+    window.adminEpisodes = [{ id: "episode", title: "周末讨论合作游戏", summary: "测试用户讨论了合作游戏与下次活动。".repeat(10), session_id: "qq:GroupMessage:1091576468", persona_id: "测试人格", source_session_id: "qq:GroupMessage:1091576468", memory_ids: [7, 8], revision: 1 }];
     window.AstrBotPluginPage.apiGet = async (path, params) => {
       if (path === "page/operations") return records;
       if (path === "page/projection") return [];
-      if (path === "page/episodes") return [{ id: "episode", title: "周末讨论合作游戏", summary: "测试用户讨论了合作游戏与下次活动。".repeat(10), source_session_id: "qq:GroupMessage:1091576468", memory_ids: [7, 8], revision: 1 }];
+      if (path === "page/episodes") return window.adminEpisodes;
       return original(path, params);
     };
     window.AstrBotPluginPage.apiPost = async (path, body) => {
@@ -85,6 +86,48 @@ try {
   assert.equal(await frame.locator('[data-operation-id="expired-correction"]').count(), 0);
   assert.equal(await frame.locator('[data-operation-id="correction-operation"][data-admin-action="remove"]').count(), 0);
   checks.push("PASS expired correction cleanup uses the log endpoint while retained corrections stay protected");
+
+  await frame.evaluate(() => Object.assign(window.adminEpisodes[0], { title: "来源已变化，需重新生成", summary: "", stale: true }));
+  await frame.locator("#administration-refresh").click();
+  await frame.locator("#admin-episodes summary").click();
+  await frame.locator('[data-admin-action="rebuild"]').click();
+  const dialog = frame.locator("dialog.admin-confirm-dialog");
+  assert.match(await dialog.innerText(), /部分来源已变化/);
+  assert.match(await dialog.innerText(), /原事件使用的记忆 ID: 7, 8/);
+  assert.match(await dialog.innerText(), /1091576468/);
+  assert.match(await dialog.innerText(), /测试人格/);
+  assert.equal(await frame.locator("#admin-rebuild-ids").inputValue(), "7, 8");
+  await frame.locator("#admin-rebuild-cancel-btn").click();
+  assert.equal(await frame.evaluate(() => window.adminPosts.filter(post => post.path === "page/jobs/create").length), 0);
+  checks.push("PASS stale event review shows the original IDs and session context; cancellation sends no job");
+
+  await frame.locator('[data-admin-action="rebuild"]').click();
+  await frame.locator("#admin-rebuild-ids").fill("-1");
+  await frame.locator("#admin-rebuild-submit-btn").click();
+  assert.match(await frame.locator("#admin-rebuild-error").innerText(), /记忆 ID/);
+  assert.equal(await dialog.count(), 1);
+  assert.equal(await frame.evaluate(() => window.adminPosts.filter(post => post.path === "page/jobs/create").length), 0);
+  await frame.locator("#admin-rebuild-ids").press("Escape");
+  assert.equal(await dialog.count(), 0);
+  checks.push("PASS invalid replacement IDs stay in the review dialog; Escape cancels without submission");
+
+  await frame.locator('[data-admin-action="rebuild"]').click();
+  await frame.locator("#admin-rebuild-ids").fill("9, 8");
+  await frame.locator("#admin-rebuild-title").fill("更新后的合作游戏事件");
+  await frame.locator("#admin-rebuild-llm").uncheck();
+  await page.locator("#preview").evaluate(element => element.style.width = "390px");
+  assert.equal(await frame.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1), false);
+  await page.locator("#preview").screenshot({ path: join(output, "administration-rebuild-390.png") });
+  await frame.locator("#admin-rebuild-submit-btn").click();
+  await frame.waitForFunction(() => window.adminPosts.some(post => post.path === "page/jobs/create"));
+  assert.deepEqual(await frame.evaluate(() => window.adminPosts.filter(post => post.path === "page/jobs/create").map(post => post.body)), [{ kind: "episode", payload: {
+    memory_ids: [9, 8], title: "更新后的合作游戏事件", use_llm: false, episode_id: "episode", expected_revision: 1,
+  } }]);
+  assert.equal(await dialog.count(), 0);
+  assert.match(await frame.locator("#admin-episodes summary").innerText(), /来源已变化/);
+  assert.deepEqual(await frame.evaluate(() => window.adminEpisodes[0].memory_ids), [7, 8]);
+  assert.equal(await frame.evaluate(() => window.adminEpisodes[0].revision), 1);
+  checks.push("PASS reviewed replacement IDs and the original revision are submitted; the original event stays until completion");
   assert.deepEqual(errors, []);
   writeFileSync(join(output, "administration-checks.txt"), checks.join("\n") + "\n");
   console.log(checks.join("\n"));

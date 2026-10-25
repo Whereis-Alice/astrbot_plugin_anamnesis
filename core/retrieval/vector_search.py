@@ -9,6 +9,7 @@ from contextvars import ContextVar
 from types import SimpleNamespace
 
 from ..faiss_async_persist import get_async_persister
+from ..recall_persona import NO_PERSONA, persona_matches
 
 query_embeddings = ContextVar("anamnesis_query_embeddings", default=None)
 
@@ -96,6 +97,14 @@ async def retrieve_vectors(
         return []
     query = query[:2000]
     filters = filters or {}
+    # Some host document stores implement equality with '= ?', which cannot
+    # match SQL NULL. Load that persona selection without a host predicate,
+    # then enforce it here while widening kNN before choosing Top-K.
+    storage_filters = {
+        key: value
+        for key, value in filters.items()
+        if not (key == "persona_id" and value in (None, NO_PERSONA))
+    }
     try:
         cap = max(1, min(32768, int(max_candidates)))
     except (TypeError, ValueError, OverflowError):
@@ -138,7 +147,7 @@ async def retrieve_vectors(
             new_ids = [doc_id for doc_id in ids if doc_id not in checked_ids]
             if new_ids:
                 documents = await db.document_storage.get_documents(
-                    metadata_filters=filters, ids=new_ids, limit=len(new_ids)
+                    metadata_filters=storage_filters, ids=new_ids, limit=len(new_ids)
                 )
                 checked_ids.update(new_ids)
                 documents_by_id.update({int(doc["id"]): doc for doc in documents})
@@ -150,7 +159,7 @@ async def retrieve_vectors(
         else:
             raw = await db.retrieve(
                 query=query, k=fetch_k, fetch_k=fetch_k, rerank=False,
-                metadata_filters=filters or None,
+                metadata_filters=storage_filters or None,
             )
             # Scoped adapters may return few hits even with more kNN candidates
             # available, so only an unfiltered short result proves exhaustion.
@@ -161,7 +170,12 @@ async def retrieve_vectors(
             metadata = _metadata(hit.data.get("metadata"))
             if str(metadata.get("status") or "active") != "active":
                 continue
-            if any(metadata.get(key) != value for key, value in filters.items()):
+            if any(
+                not persona_matches(metadata.get(key), value)
+                if key == "persona_id"
+                else metadata.get(key) != value
+                for key, value in filters.items()
+            ):
                 continue
             identity = hit.data.get("id") if source_key == "id" else metadata.get(source_key)
             if identity is None or identity in seen:

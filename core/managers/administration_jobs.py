@@ -12,6 +12,11 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 
 from ..memory_transfer import ImportEntry, memory_import_key, parse_transfer_content
+from ..recall_persona import (
+    exact_null_persona_scope,
+    persona_filter_requested,
+    persona_sql_filter,
+)
 from .memory_mutation import memory_import_guard, memory_mutation_guard, settle_memory_mutation_task
 
 
@@ -637,16 +642,26 @@ class AdministrationJobsMixin:
             return published
 
     async def list_episodes(
-        self, *, session_id=None, persona_id=None, limit=100, include_stale=True
+        self,
+        *,
+        session_id=None,
+        persona_id=None,
+        limit=100,
+        include_stale=True,
+        persona_filtered=False,
     ):
         await self.initialize()
         if not self.option("episodic_memory.enabled", False):
             return []
         conditions, args = [], []
-        for key, value in (("session_id", session_id), ("persona_id", persona_id)):
-            if value is not None:
-                conditions.append(key + "=?")
-                args.append(value)
+        if session_id is not None:
+            conditions.append("session_id=?")
+            args.append(session_id)
+        if persona_filtered or persona_filter_requested(persona_id):
+            with exact_null_persona_scope(persona_id is None):
+                condition, values = persona_sql_filter("persona_id", persona_id)
+            conditions.append(condition)
+            args.extend(values)
         where = "WHERE " + " AND ".join(conditions) if conditions else ""
         async with self.store.connection() as db:
             rows = await (
@@ -680,11 +695,19 @@ class AdministrationJobsMixin:
         return episodes
 
     async def episode_candidates(
-        self, query, results, *, session_id=None, persona_id=None, k=5
+        self,
+        query,
+        results,
+        *,
+        session_id=None,
+        persona_id=None,
+        k=5,
+        persona_filtered=False,
     ):
         episodes = await self.list_episodes(
             session_id=session_id,
             persona_id=persona_id,
+            persona_filtered=persona_filtered,
             include_stale=False,
             limit=self.option("episodic_memory.recall_scan_limit", 30),
         )

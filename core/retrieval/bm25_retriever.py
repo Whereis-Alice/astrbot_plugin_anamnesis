@@ -14,6 +14,12 @@ from astrbot.api import logger
 from ...storage.alias_store import expand_query_tokens
 from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
 from ..processors.text_processor import TextProcessor, with_cjk_bigrams
+from ..recall_persona import (
+    is_null_persona_filter,
+    persona_filter_requested,
+    persona_matches,
+    persona_sql_filter,
+)
 
 
 @dataclass
@@ -200,8 +206,17 @@ class BM25Retriever:
 
         # 有过滤条件时大幅增加预取量，避免过滤后结果不足
         # Python 层过滤（BM25）比 FAISS 内部过滤损耗更大，需要更多候选
-        has_filters = session_id is not None or persona_id is not None
+        has_filters = session_id is not None or persona_filter_requested(persona_id)
         fetch_limit = limit * 10 if has_filters else limit * 2
+        null_condition, null_params = "", []
+        if is_null_persona_filter(persona_id):
+            condition, null_params = persona_sql_filter(
+                "json_extract(d.metadata,'$.persona_id')", persona_id
+            )
+            null_condition = (
+                f"AND EXISTS(SELECT 1 FROM {self.doc_table} d WHERE d.id={self.fts_table}.doc_id "
+                f"AND json_valid(d.metadata) AND {condition})"
+            )
 
         async with self._connect() as db:
             # 执行FTS5 BM25搜索
@@ -210,11 +225,11 @@ class BM25Retriever:
                 f"""
                 SELECT doc_id, bm25({self.fts_table}) as score
                 FROM {self.fts_table}
-                WHERE {self.fts_table} MATCH ?
+                WHERE {self.fts_table} MATCH ? {null_condition}
                 ORDER BY score ASC
                 LIMIT ?
             """,
-                (fts_query, fetch_limit),
+                (fts_query, *null_params, fetch_limit),
             )  # 多取一些以备过滤后不足
 
             fts_results = await cursor.fetchall()
@@ -257,9 +272,9 @@ class BM25Retriever:
                     stored_session_id = metadata.get("session_id")
                     if stored_session_id != session_id:
                         continue
-                if persona_id is not None:
+                if persona_filter_requested(persona_id):
                     stored_persona_id = metadata.get("persona_id")
-                    if stored_persona_id != persona_id:
+                    if not persona_matches(stored_persona_id, persona_id):
                         continue
 
                 results.append(

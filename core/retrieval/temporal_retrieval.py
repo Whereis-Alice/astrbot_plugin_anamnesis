@@ -20,6 +20,13 @@ import aiosqlite
 from astrbot.api import logger
 
 from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
+from ..recall_persona import (
+    NO_PERSONA,
+    atom_persona_sql_match,
+    exact_null_persona_scope,
+    persona_matches,
+    persona_sql_filter,
+)
 from .hybrid_retriever import HybridResult
 from .temporal_query import (
     TimeRange,
@@ -166,10 +173,11 @@ async def temporal_atom_evidence(
         "event_time<1e11",
     ]
     values = [int(memory_id), time.time()]
-    for key in ("session_id", "persona_id"):
-        if metadata.get(key) is not None:
-            clauses.append(f"({key} IS NULL OR {key}=?)")
-            values.append(metadata[key])
+    if metadata.get("session_id") is not None:
+        clauses.append("(session_id IS NULL OR session_id=?)")
+        values.append(metadata["session_id"])
+    clauses.append(atom_persona_sql_match("persona_id", "?"))
+    values.extend([metadata.get("persona_id"), metadata.get("persona_id")])
     if time_range.start is not None:
         clauses.append("event_time>=?")
         values.append(time_range.start)
@@ -243,9 +251,13 @@ async def direct_time_candidates(
     if session_id is not None:
         conditions.append("json_extract(m,'$.session_id')=?")
         values.append(session_id)
-    if persona_filtered:
-        conditions.append("json_extract(m,'$.persona_id') IS ?")
-        values.append(persona_id)
+    if persona_filtered or persona_id == NO_PERSONA:
+        with exact_null_persona_scope(persona_id in (None, NO_PERSONA)):
+            condition, args = persona_sql_filter(
+                "json_extract(m,'$.persona_id')", persona_id
+            )
+        conditions.append(condition)
+        values.extend(args)
     elif persona_id is not None:
         conditions.append("json_extract(m,'$.persona_id')=?")
         values.append(persona_id)
@@ -291,13 +303,12 @@ async def direct_time_candidates(
         ) as cursor:
             has_atoms = await cursor.fetchone() is not None
         if has_atoms and getattr(engine, "atom_enabled", True):
-            live_clause = """(
+            live_clause = f"""(
               EXISTS (SELECT 1 FROM memory_atoms a WHERE a.parent_memory_id=timed.id
                 AND a.status='active' AND CAST(a.expires_at AS REAL)>? AND CAST(a.expires_at AS REAL)<1e308
                 AND (a.session_id IS NULL OR json_extract(m,'$.session_id') IS NULL
                      OR a.session_id=json_extract(m,'$.session_id'))
-                AND (a.persona_id IS NULL OR json_extract(m,'$.persona_id') IS NULL
-                     OR a.persona_id=json_extract(m,'$.persona_id')))
+                AND {atom_persona_sql_match("a.persona_id", "json_extract(m,'$.persona_id')")})
               OR (NOT EXISTS (SELECT 1 FROM memory_atoms a WHERE a.parent_memory_id=timed.id)
                   AND COALESCE(json_extract(m,'$.atom_types'),'') IN ('','[]'))
             )"""
@@ -334,7 +345,7 @@ async def direct_time_candidates(
                     "a.event_time>=0",
                     "a.event_time<1e11",
                     "(a.session_id IS NULL OR json_extract(m,'$.session_id') IS NULL OR a.session_id=json_extract(m,'$.session_id'))",
-                    "(a.persona_id IS NULL OR json_extract(m,'$.persona_id') IS NULL OR a.persona_id=json_extract(m,'$.persona_id'))",
+                    atom_persona_sql_match("a.persona_id", "json_extract(m,'$.persona_id')"),
                 ]
             )
             atom_values.append(time.time())
@@ -425,9 +436,9 @@ def _matches(metadata, time_range, session_id, persona_id, persona_filtered, spe
         return False
     if session_id is not None and metadata.get("session_id") != session_id:
         return False
-    if (persona_filtered or persona_id is not None) and metadata.get(
-        "persona_id"
-    ) != persona_id:
+    if (persona_filtered or persona_id is not None) and not persona_matches(
+        metadata.get("persona_id"), persona_id
+    ):
         return False
     if not speaker_matches(metadata, speaker):
         return False
@@ -642,7 +653,13 @@ async def search_with_time(
             semantic_results = gathered[0]
             if len(gathered) > 1:
                 temporal_results = gathered[1]
-        needs_recheck = bool(time_range or speaker or excluded or not record_access)
+        needs_recheck = bool(
+            time_range
+            or speaker
+            or excluded
+            or not record_access
+            or persona_filtered and persona_id in (None, NO_PERSONA)
+        )
         semantic_results = [
             item
             for item in semantic_results
@@ -748,8 +765,14 @@ async def search_with_time(
             details["degraded_channels"] = failed_channels
         return memories, details
 
+    async def run_scoped():
+        with exact_null_persona_scope(
+            persona_filtered and persona_id in (None, NO_PERSONA)
+        ):
+            return await run()
+
     if timeout is not None and float(timeout) > 0:
         if not math.isfinite(float(timeout)):
             raise ValueError("timeout must be finite")
-        return await asyncio.wait_for(run(), timeout=float(timeout))
-    return await run()
+        return await asyncio.wait_for(run_scoped(), timeout=float(timeout))
+    return await run_scoped()

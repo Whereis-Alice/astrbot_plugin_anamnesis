@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
+from ..recall_persona import is_null_persona_filter, persona_filter_requested
 from .vector_retriever import delete_faiss_documents_by_ids
 from .vector_search import retrieve_vectors
 
@@ -137,8 +138,10 @@ class GraphVectorRetriever:
         metadata_filters: dict[str, Any] = {}
         if session_id is not None:
             metadata_filters["session_id"] = session_id
-        if persona_id is not None:
-            metadata_filters["persona_id"] = persona_id
+        if persona_filter_requested(persona_id):
+            metadata_filters["persona_id"] = (
+                None if is_null_persona_filter(persona_id) else persona_id
+            )
 
         raw_results = await retrieve_vectors(
             self.faiss_db, query, k, metadata_filters,

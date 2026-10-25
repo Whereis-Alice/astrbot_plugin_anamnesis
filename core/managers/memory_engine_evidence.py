@@ -12,6 +12,11 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..recall_persona import (
+    is_null_persona_filter,
+    persona_filter_requested,
+    persona_matches,
+)
 from ..retrieval.hybrid_retriever import HybridResult
 
 
@@ -47,17 +52,29 @@ class MemoryEngineEvidenceMixin:
             filters = {}
             if session_id is not None:
                 filters["session_id"] = session_id
-            if persona_id is not None:
-                filters["persona_id"] = persona_id
+            if persona_filter_requested(persona_id):
+                filters["persona_id"] = (
+                    None if is_null_persona_filter(persona_id) else persona_id
+                )
+            storage_filters = {
+                key: value
+                for key, value in filters.items()
+                if not (key == "persona_id" and value is None)
+            }
             documents = await self.faiss_db.document_storage.get_documents(
-                metadata_filters=filters, ids=list(scores), limit=len(scores)
+                metadata_filters=storage_filters, ids=list(scores), limit=len(scores)
             )
             merged = list(results)
             for document in documents:
                 metadata = safe_json_dict(document.get("metadata"))
                 if str(metadata.get("status") or "active") != "active":
                     continue
-                if any(metadata.get(key) != value for key, value in filters.items()):
+                if any(
+                    not persona_matches(metadata.get(key), value)
+                    if key == "persona_id"
+                    else metadata.get(key) != value
+                    for key, value in filters.items()
+                ):
                     continue
                 doc_id = int(document["id"])
                 if doc_id not in scores:
@@ -147,11 +164,13 @@ class MemoryEngineEvidenceMixin:
                 continue
             # Legacy atoms may omit scope; a populated scope must agree with
             # the parent already authorized by the recall/read entry point.
-            if any(
-                row[index] is not None
-                and metadata.get(key) is not None
-                and row[index] != metadata[key]
-                for index, key in ((5, "session_id"), (6, "persona_id"))
+            if (
+                row[5] is not None
+                and metadata.get("session_id") is not None
+                and row[5] != metadata["session_id"]
+            ) or (
+                row[6] is not None
+                and not persona_matches(row[6], metadata.get("persona_id"))
             ):
                 continue
             live.append(row)
@@ -248,7 +267,11 @@ class MemoryEngineEvidenceMixin:
         rows = (await self._recall_atom_rows([int(memory_id)])).get(int(memory_id))
         if not rows:
             return None
-        active = len(self._recall_live_rows(rows, {}))
+        document = (await self._recall_document_rows([int(memory_id)])).get(
+            int(memory_id)
+        )
+        metadata = document[1] if document else {}
+        active = len(self._recall_live_rows(rows, metadata)) if document else 0
         return {"total": len(rows), "active": active, "hidden": len(rows) - active}
 
     async def snapshot_archived_atom_lifecycle(self, memory_id: int) -> list[dict]:

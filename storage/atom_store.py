@@ -19,6 +19,7 @@ from ..core.models.memory_atom import (
     MemoryAtom,
     compute_ttl,
 )
+from ..core.recall_persona import persona_filter_requested, persona_sql_filter
 from .sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
 
 
@@ -312,9 +313,10 @@ class AtomStore:
         if session_id is not None:
             filters.append("ma.session_id = ?")
             params.append(session_id)
-        if persona_id is not None:
-            filters.append("ma.persona_id = ?")
-            params.append(persona_id)
+        if persona_filter_requested(persona_id):
+            condition, values = persona_sql_filter("ma.persona_id", persona_id)
+            filters.append(condition)
+            params.extend(values)
 
         where_clause = f"AND {' AND '.join(filters)}" if filters else ""
 
@@ -348,15 +350,20 @@ class AtomStore:
                 session_filter = (
                     "AND ma.session_id = ?" if session_id is not None else ""
                 )
+                persona_condition, persona_values = persona_sql_filter(
+                    "ma.persona_id", persona_id
+                )
                 persona_filter = (
-                    "AND ma.persona_id = ?" if persona_id is not None else ""
+                    "AND " + persona_condition
+                    if persona_filter_requested(persona_id)
+                    else ""
                 )
                 if not include_expired:
                     like_params_full.append(cutoff)
                 if session_id is not None:
                     like_params_full.append(session_id)
-                if persona_id is not None:
-                    like_params_full.append(persona_id)
+                if persona_filter_requested(persona_id):
+                    like_params_full.extend(persona_values)
                 cursor = await db.execute(
                     f"""
                     SELECT ma.*, 0.5 AS bm25_score
