@@ -12,7 +12,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 
 from ..memory_transfer import ImportEntry, memory_import_key, parse_transfer_content
-from .memory_mutation import memory_mutation_guard, settle_memory_mutation_task
+from .memory_mutation import memory_import_guard, memory_mutation_guard, settle_memory_mutation_task
 
 
 def chunk_text(text: str, size: int = 2000) -> list[str]:
@@ -317,7 +317,6 @@ class AdministrationJobsMixin:
         if not hasattr(self.engine, "_memory_import_lock"):
             self.engine._memory_import_lock = asyncio.Lock()
         async with self.engine._memory_import_lock:
-            existing_keys = await self.engine.get_memory_import_keys()
             for item in await self._check_import_manifest(job):
                 if item["status"] == "completed":
                     continue
@@ -327,9 +326,9 @@ class AdministrationJobsMixin:
                     # Persist before any document write. A retry must use the
                     # same summary even if progress commit fails or is cancelled.
                     await self.store.put_item(job["id"], item["item_key"], asdict(entry), status="prepared")
-                data = None
-                if memory_import_key(entry.content, entry.session_id, entry.persona_id) in existing_keys:
-                    data = await self._recover_import_receipt(job["id"], item["item_key"], entry)
+                # Receipt ownership survives edits to the duplicate key. Never
+                # create another copy just because an owned stage moved scope.
+                data = await self._recover_import_receipt(job["id"], item["item_key"], entry)
                 if data is None:
                     response = await handler._import_entries(
                         self.engine,
@@ -340,8 +339,6 @@ class AdministrationJobsMixin:
                         operation_receipt={"operation_id": job["id"], "item_key": item["item_key"]},
                     )
                     data = response["data"]
-                    if data["imported_count"]:
-                        existing_keys.add(memory_import_key(entry.content, entry.session_id, entry.persona_id))
                 await self.store.put_item(
                     job["id"],
                     item["item_key"],
@@ -367,7 +364,10 @@ class AdministrationJobsMixin:
 
     async def _recover_import_receipt(self, operation_id, item_key, entry):
         """Recover only the original committed ID belonging to this item."""
-        async with memory_mutation_guard(self.engine):
+        from ..page_api_modules.memory_handler import MemoryHandler
+        from ..page_api_modules.utils import PageApiUtils
+
+        async with memory_import_guard(self.engine), memory_mutation_guard(self.engine):
             connection = getattr(self.engine, "db_connection", None)
             if connection is None:
                 return None
@@ -379,8 +379,10 @@ class AdministrationJobsMixin:
                 (operation_id, item_key),
             ) as cursor:
                 rows = await cursor.fetchall()
-            if len(rows) != 1:
+            if not rows:
                 return None
+            if len(rows) != 1:
+                raise ValueError("导入项存在多个归属副本，保留记录等待人工核验")
             memory_id = rows[0][0]
             current = await self.engine.get_memory(memory_id)
             metadata = current.get("metadata", {}) if current else {}
@@ -388,12 +390,24 @@ class AdministrationJobsMixin:
             if (
                 current is None
                 or metadata.get("memory_origin") != "memory_import"
-                or metadata.get("status", "active") != entry.metadata.get("status", "active")
+                or metadata.get("status", "active") not in ("importing", entry.metadata.get("status", "active"))
                 or metadata.get("import_operation_id") != operation_id
                 or metadata.get("import_item_key") != item_key
                 or memory_import_key(current["text"], metadata.get("session_id"), metadata.get("persona_id")) != key
             ):
-                return None
+                raise ValueError(f"导入记忆 {memory_id} 的内容、范围或状态已变化，保留记录等待人工核验")
+            if metadata.get("status") == "importing":
+                snapshot = await self.engine._replacement_snapshot(memory_id)
+                if snapshot is None:
+                    raise ValueError(f"导入暂存记忆 {memory_id} 无法读取，请人工核验")
+                handler = MemoryHandler(PageApiUtils())
+                await handler._finish_import_write(
+                    self.engine,
+                    handler._resume_import_entry_locked(
+                        self.engine, self.processor, entry, {**snapshot, "id": memory_id},
+                        {"operation_id": operation_id, "item_key": item_key},
+                    ),
+                )
             return {
                 "dry_run": False, "total": 1, "imported_count": 1,
                 "skipped_duplicate_count": 0, "failed_count": 0,

@@ -15,6 +15,7 @@ from ..utils import extract_json_from_response
 from .memory_mutation import settle_memory_mutation_task
 from .user_profile_directory import UserProfileDirectoryMixin
 from .user_profile_ledger import UserProfileLedgerMixin
+from .user_profile_migration import UserProfileMigrationMixin
 
 _CATEGORIES = {"identity", "preference", "status", "task_preference", "constraint"}
 _CATEGORY_ORDER = ("identity", "preference", "status", "task_preference", "constraint")
@@ -22,7 +23,7 @@ _KEY_PATTERN = re.compile(r"^[\w.-]{1,64}$", re.UNICODE)
 _CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f]+")
 
 
-class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
+class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, UserProfileMigrationMixin):
     """Maintain explicit user facts in the existing conversation SQLite connection.
 
     The store's write lock is shared with normal message writes, so profile updates
@@ -218,73 +219,6 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
         # Check every supporting source before allocating the injection budget.
         return [fact for fact in facts if fact["live_evidence_count"] > 0][:limit]
 
-    async def _migrate_legacy_scope_for_event(self, event: Any, scope: str) -> None:
-        """Move 3.2.0 user-scoped rows only into their original chat scope.
-
-        Earlier profiles defaulted to a cross-chat user scope. The stored
-        source_session_id lets us migrate without copying one chat's facts into
-        another. Existing rows in the new scope take precedence.
-        """
-        session_id = str(getattr(event, "unified_msg_origin", "") or "")
-        suffix = f":session:{session_id}"
-        if not session_id or not scope.endswith(suffix):
-            return
-        legacy_scope = scope[: -len(suffix)]
-        legacy_isolated = f"{legacy_scope}:isolated:{session_id}"
-        connection = self.store.connection
-        if connection is None:
-            return
-        async with connection.execute(
-            """SELECT 1 FROM user_profiles
-               WHERE profile_scope IN (?, ?) AND source_session_id = ? LIMIT 1""",
-            (legacy_scope, legacy_isolated, session_id),
-        ) as cursor:
-            if await cursor.fetchone() is None:
-                return
-        async with self.store._write_lock:
-            try:
-                await connection.execute(
-                    """INSERT INTO user_profiles
-                       (profile_scope, profile_key, category, value, confidence,
-                       source_memory_id, source_session_id, source_group_id,
-                       source_group_name, source_sender_name, updated_at, expires_at,
-                       identity, platform, sender_id, display_label, suppressed, context_updated_at,
-                       context_group_id, context_group_name, context_sender_name, context_session_id,
-                       context_group_updated_at, current_claim_id, manual_override, revision, authority)
-                       SELECT ?, profile_key, category, value, confidence,
-                              source_memory_id, source_session_id, source_group_id,
-                              source_group_name, source_sender_name, updated_at, expires_at,
-                              identity, platform, sender_id, display_label, suppressed, context_updated_at,
-                              context_group_id, context_group_name, context_sender_name, context_session_id,
-                              context_group_updated_at, current_claim_id, manual_override, revision, authority
-                       FROM user_profiles
-                       WHERE profile_scope IN (?, ?) AND source_session_id = ?
-                       ON CONFLICT(profile_scope, profile_key) DO NOTHING""",
-                    (scope, legacy_scope, legacy_isolated, session_id),
-                )
-                for previous in (legacy_scope, legacy_isolated):
-                    async with connection.execute(
-                        "SELECT profile_key,current_claim_id FROM user_profiles WHERE profile_scope=? AND source_session_id=?", (previous, session_id)
-                    ) as migration_cursor:
-                        migrating = await migration_cursor.fetchall()
-                    for item in migrating:
-                        async with connection.execute("SELECT current_claim_id FROM user_profiles WHERE profile_scope=? AND profile_key=?", (scope, item["profile_key"])) as selected:
-                            target = await selected.fetchone()
-                        if target and target[0] == item["current_claim_id"]:
-                            await connection.execute("UPDATE user_profile_claims SET profile_scope=?,snapshot=json_set(snapshot,'$.profile_scope',?) WHERE profile_scope=? AND profile_key=?", (scope, scope, previous, item["profile_key"]))
-                            await connection.execute("UPDATE user_profile_transitions SET profile_scope=? WHERE profile_scope=? AND profile_key=?", (scope, previous, item["profile_key"]))
-                        else:
-                            await self._delete_ledger_keys(connection, previous, item["profile_key"])
-                await connection.execute(
-                    """DELETE FROM user_profiles
-                       WHERE profile_scope IN (?, ?) AND source_session_id = ?""",
-                    (legacy_scope, legacy_isolated, session_id),
-                )
-                await connection.commit()
-            except BaseException:
-                await connection.rollback()
-                raise
-
     async def list_for_web(
         self,
         *,
@@ -325,8 +259,9 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
             clauses.append("identity = ?")
             params.append(identity)
         if source_session_id:
-            clauses.append("source_session_id = ?")
-            params.append(source_session_id)
+            condition, session_params = self._profile_session_condition(source_session_id)
+            clauses.append(condition)
+            params.extend(session_params)
         if key_query:
             clauses.append("profile_key LIKE ? ESCAPE '\\'")
             escaped = (
@@ -337,14 +272,14 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
             params.append(f"%{escaped}%")
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         async with connection.execute(
-            f"SELECT COUNT(*) AS count FROM user_profiles {where}", params
+            f"SELECT COUNT(*) AS count FROM user_profiles p {where}", params
         ) as cursor:
             count_row = await cursor.fetchone()
         total = int(count_row["count"] if count_row else 0)
 
         row_params = [*params, limit, offset]
         async with connection.execute(
-            f"""SELECT * FROM user_profiles {where}
+            f"""SELECT p.* FROM user_profiles p {where}
                 ORDER BY updated_at DESC, profile_scope, profile_key
                 LIMIT ? OFFSET ?""",
             row_params,
@@ -360,6 +295,16 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin):
         async with connection.execute(
             """SELECT DISTINCT source_session_id FROM user_profiles
                WHERE source_session_id IS NOT NULL AND source_session_id <> ''
+               UNION SELECT context_session_id FROM user_profiles
+               WHERE context_session_id IS NOT NULL AND context_session_id <> ''
+                 AND (profile_scope=identity || ':session:' || context_session_id
+                      OR profile_scope=identity || ':isolated:' || context_session_id)
+               UNION SELECT json_extract(e.source_context,'$.source_session_id') FROM user_profiles p
+               JOIN user_profile_claims c ON c.profile_scope=p.profile_scope AND c.profile_key=p.profile_key
+               JOIN user_profile_evidence e ON e.claim_id=c.claim_id
+               WHERE (c.claim_id=p.current_claim_id OR c.state='pending') AND e.suppressed=0
+                 AND json_extract(e.source_context,'$.source_session_id') IS NOT NULL
+                 AND json_extract(e.source_context,'$.source_session_id') <> ''
                ORDER BY source_session_id"""
         ) as cursor:
             session_rows = await cursor.fetchall()

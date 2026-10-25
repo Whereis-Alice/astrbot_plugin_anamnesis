@@ -547,6 +547,12 @@ class MemoryEngine(MemoryEngineOperationsMixin, MemoryEngineEvidenceMixin, Memor
             ON documents(json_extract(metadata, '$.session_id'), json_extract(metadata, '$.persona_id'))
         """)
             await self.db_connection.execute("""
+            CREATE INDEX IF NOT EXISTS idx_doc_import_receipt
+            ON documents(
+                CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.import_operation_id') END,
+                CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.import_item_key') END)
+        """)
+            await self.db_connection.execute("""
             CREATE INDEX IF NOT EXISTS idx_doc_importance_metadata
             ON documents(json_extract(metadata, '$.importance'))
         """)

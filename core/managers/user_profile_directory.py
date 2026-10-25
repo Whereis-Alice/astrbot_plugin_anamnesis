@@ -9,6 +9,20 @@ from typing import Any
 
 class UserProfileDirectoryMixin:
     @staticmethod
+    def _profile_session_condition(session_id: str) -> tuple[str, list[str]]:
+        """A scoped row keeps its chat; shared rows need current/pending evidence."""
+        return (
+            "(p.profile_scope=p.identity || ':session:' || ? "
+            "OR p.profile_scope=p.identity || ':isolated:' || ? "
+            "OR (p.profile_scope=p.identity AND EXISTS(SELECT 1 FROM user_profile_claims c "
+            "JOIN user_profile_evidence e ON e.claim_id=c.claim_id "
+            "WHERE c.profile_scope=p.profile_scope AND c.profile_key=p.profile_key "
+            "AND (c.claim_id=p.current_claim_id OR c.state='pending') AND e.suppressed=0 "
+            "AND json_extract(e.source_context,'$.source_session_id')=?)))",
+            [session_id, session_id, session_id],
+        )
+
+    @staticmethod
     def _directory_owner(scope: str, session_id: str | None) -> dict[str, str]:
         identity = scope
         if session_id:
@@ -64,11 +78,12 @@ class UserProfileDirectoryMixin:
                            "OR identity IN (SELECT identity FROM user_profile_aliases WHERE alias LIKE ? ESCAPE '\\'))")
             params.extend([f"%{escaped}%"] * 7)
         if source_session_id:
-            clauses.append("source_session_id = ?")
-            params.append(source_session_id)
+            condition, session_params = self._profile_session_condition(source_session_id)
+            clauses.append(condition)
+            params.extend(session_params)
         where = " WHERE " + " AND ".join(clauses) if clauses else ""
         async with connection.execute(
-            f"SELECT COUNT(DISTINCT identity) FROM user_profiles{where}", params
+            f"SELECT COUNT(DISTINCT identity) FROM user_profiles p{where}", params
         ) as cursor:
             result["total"] = (await cursor.fetchone())[0]
         # Filter identifies users; their counts and details cover all of their scopes.
@@ -80,7 +95,7 @@ class UserProfileDirectoryMixin:
                 SUM(suppressed<>0) AS suppressed_fact_count,
                 COUNT(DISTINCT profile_scope) AS scope_count
                 FROM user_profiles WHERE identity IN
-                    (SELECT DISTINCT identity FROM user_profiles{where})
+                    (SELECT DISTINCT identity FROM user_profiles p{where})
                 GROUP BY identity ORDER BY updated_at DESC, identity LIMIT ? OFFSET ?""",
             [time.time(), time.time(), *params, limit, offset],
         ) as cursor:

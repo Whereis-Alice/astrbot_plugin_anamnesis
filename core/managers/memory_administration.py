@@ -521,6 +521,9 @@ class MemoryAdministration(AdministrationJobsMixin):
         metadata["canonical_summary"] = metadata.get("canonical_summary", before["text"])
         metadata["persona_summary"] = metadata.get("persona_summary", before["text"])
         metadata["key_facts"] = metadata.get("key_facts", [])
+        # An absent original marker is meaningful: this was legacy text,
+        # rather than an atom-backed memory whose atoms were later cleaned.
+        metadata["atom_types"] = metadata.get("atom_types", [])
         metadata["correction_rollback_of"] = operation["id"]
         rollback_result = None
 

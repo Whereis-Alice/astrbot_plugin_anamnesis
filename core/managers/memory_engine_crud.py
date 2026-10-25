@@ -520,7 +520,9 @@ class MemoryEngineCrudMixin:
 
         return await asyncio.to_thread(_compute_keys)
 
-    async def has_memory_import_key(self, key: tuple[str, str, str]) -> bool:
+    async def has_memory_import_key(
+        self, key: tuple[str, str, str], *, exclude_memory_id: int | None = None
+    ) -> bool:
         """Check current scoped documents; callers guard the check and write together."""
         if self.db_connection is None:
             return False
@@ -557,10 +559,13 @@ class MemoryEngineCrudMixin:
                 for expr, values in zip(expressions, scopes)
             ]
             async with self.db_connection.execute(
-                f"SELECT text, {expressions[0]} AS session_id, "
-                f"{expressions[1]} AS persona_id FROM documents WHERE "
-                + " AND ".join(conditions),
-                [value for values in scopes for value in values],
+                f"SELECT id,text, {expressions[0]} AS session_id, "
+                f"{expressions[1]} AS persona_id, "
+                "CASE WHEN json_valid(metadata) THEN json_extract(metadata,'$.status') END AS status "
+                "FROM documents WHERE " + " AND ".join(conditions)
+                + (" AND id != ?" if exclude_memory_id is not None else ""),
+                [value for values in scopes for value in values]
+                + ([exclude_memory_id] if exclude_memory_id is not None else []),
             ) as cursor:
                 return await cursor.fetchall()
 
@@ -570,12 +575,16 @@ class MemoryEngineCrudMixin:
             if "malformed json" not in str(exc).lower():
                 raise
             rows = await query(safe_json=True)
-        return await asyncio.to_thread(
-            lambda: any(
-                memory_import_key(row["text"], row["session_id"], row["persona_id"]) == key
-                for row in rows
-            )
+        matches = await asyncio.to_thread(
+            lambda: [row for row in rows if
+                memory_import_key(row["text"], row["session_id"], row["persona_id"]) == key]
         )
+        if any(row["status"] != "importing" for row in matches):
+            return True
+        if matches:
+            ids = [row["id"] for row in matches]
+            raise ValueError(f"同范围内存在未完成的导入暂存记忆 {ids}，请重试原任务或核验后清理")
+        return False
 
     async def search_memories(
         self,
@@ -1002,7 +1011,13 @@ class MemoryEngineCrudMixin:
             raw_participants if isinstance(raw_participants, list) else []
         )
         atoms = []
-        if self.atom_enabled:
+        # An explicit empty lifecycle plus no historical atom marker restores
+        # unatomized text as text. Reclassifying its old facts would mark them
+        # forgotten and make a successful rollback invisible to recall.
+        # Empty lifecycle with a marker still means cleaned atoms and must
+        # retain the existing forgotten-atom behavior below.
+        restoring_unatomized = preserved_atom_lifecycle == [] and not replacement_metadata.get("atom_types")
+        if self.atom_enabled and not restoring_unatomized:
             atoms = classify_atoms(
                 key_facts=key_facts,
                 topics=topics,

@@ -44,6 +44,7 @@ class UserProfileLedgerMixin:
                 actor TEXT NOT NULL, created_at REAL NOT NULL)""",
             "CREATE INDEX IF NOT EXISTS idx_profile_claim_owner ON user_profile_claims(profile_scope,profile_key,state)",
             "CREATE INDEX IF NOT EXISTS idx_profile_evidence_source ON user_profile_evidence(source_memory_id,claim_id)",
+            "CREATE INDEX IF NOT EXISTS idx_profile_evidence_claim ON user_profile_evidence(claim_id,evidence_id)",
             """CREATE TABLE IF NOT EXISTS user_profile_aliases (
                 identity TEXT PRIMARY KEY, alias TEXT NOT NULL, updated_at REAL NOT NULL)""",
         ):
@@ -201,10 +202,11 @@ class UserProfileLedgerMixin:
             live = await self._live_evidence(supporting_evidence)
             after.update(self._profile_source_projection(live))
             after["suppressed"] = int(not live)
-        elif supporting_evidence:
+        elif supporting_evidence is not None:
             # Account/context columns stay current, but provenance follows the
             # accepted statement rather than the statement it replaces.
-            after.update({key: supporting_evidence[0].get(key) for key in _PROFILE_SOURCE_KEYS})
+            after.update(self._profile_source_projection(supporting_evidence))
+            after["suppressed"] = int(not supporting_evidence)
         claim = await self._insert_claim(connection, after, "manual", "current")
         # Administrator confirmation is independent support. Historical chat
         # evidence remains with the previous claim, rather than being relabelled.
@@ -221,9 +223,14 @@ class UserProfileLedgerMixin:
                 "FROM user_profile_evidence WHERE claim_id=? ORDER BY evidence_id",
                 (claim, before["current_claim_id"]))
         elif supporting_evidence is not None:
-            for evidence in supporting_evidence:
-                source = {**after, **{key: evidence.get(key) for key in _PROFILE_SOURCE_KEYS}, "suppressed": evidence["suppressed"]}
-                await self._add_evidence(connection, claim, source, evidence["quote"])
+            # These are existing, verified sources of the accepted proposal,
+            # not new observations subject to a newly lowered source budget.
+            await connection.executemany(
+                "INSERT INTO user_profile_evidence(claim_id,source_memory_id,quote,source_context,suppressed,created_at) "
+                "VALUES(?,?,?,?,?,?)",
+                [(claim, evidence["source_memory_id"], evidence["quote"],
+                  json.dumps({key: evidence.get(key) for key in _PROFILE_SOURCE_KEYS if key != "source_memory_id"}, ensure_ascii=False),
+                  evidence["suppressed"], evidence["created_at"]) for evidence in reversed(supporting_evidence)])
         else:
             await self._add_evidence(connection, claim, after, "")
         await connection.execute("UPDATE user_profile_claims SET state='superseded',updated_at=? WHERE claim_id=?",

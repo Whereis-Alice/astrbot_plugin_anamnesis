@@ -174,23 +174,8 @@ class MemoryHandlerIoMixin:
             try:
                 entry = await self._prepare_import_entry(memory_processor, entry)
                 content_text = entry.content
-                metadata = dict(entry.metadata)
-                original_status = metadata.get("status", "active")
-                importance = entry.importance
-                metadata["memory_origin"] = "memory_import"
-                metadata["imported_at"] = time.time()
-                metadata["import_source_index"] = entry.source_index
-                importance = self._normalize_importance_update(importance, "stored")
-                metadata["importance"] = importance
-                metadata["session_id"] = entry.session_id
-                metadata["persona_id"] = entry.persona_id
-                metadata["status"] = original_status
-                metadata = isolate_import_provenance(metadata)
-                if operation_receipt is not None:
-                    # Only the administration worker may bind a local receipt;
-                    # imported fields with these names are provenance above.
-                    metadata["import_operation_id"] = operation_receipt["operation_id"]
-                    metadata["import_item_key"] = operation_receipt["item_key"]
+                metadata = self._import_metadata(entry, operation_receipt)
+                importance = metadata["importance"]
                 atoms = None
                 classify_atoms = getattr(
                     memory_processor, "classify_atoms_from_metadata", None
@@ -231,6 +216,65 @@ class MemoryHandlerIoMixin:
                 "errors": import_errors[:50],
             }
         )
+
+    def _import_metadata(self, entry, operation_receipt=None, *, imported_at=None):
+        metadata = isolate_import_provenance(dict(entry.metadata))
+        metadata.update(
+            memory_origin="memory_import", imported_at=time.time() if imported_at is None else imported_at,
+            import_source_index=entry.source_index,
+            importance=self._normalize_importance_update(entry.importance, "stored"),
+            session_id=entry.session_id, persona_id=entry.persona_id,
+            status=entry.metadata.get("status", "active"),
+        )
+        if operation_receipt is not None:
+            # Only the local job worker may bind a receipt; foreign fields
+            # have already been moved into import provenance.
+            metadata["import_operation_id"] = operation_receipt["operation_id"]
+            metadata["import_item_key"] = operation_receipt["item_key"]
+        return metadata
+
+    async def _resume_import_entry_locked(self, engine, processor, entry, current, receipt):
+        """Resume an unchanged stage owned by the persisted local item."""
+        memory_id, actual = current["id"], dict(current["metadata"])
+        expected = self._import_metadata(entry, receipt, imported_at=actual.get("imported_at"))
+        expected["status"] = "importing"
+        for field in ("create_time", "last_access_time", "imported_at"):
+            value = actual.get(field)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError(f"导入暂存记忆 {memory_id} 的时间字段不符，请人工核验")
+            expected[field] = value
+        if "create_time" in entry.metadata:
+            try:
+                expected["create_time"] = float(entry.metadata["create_time"])
+            except (TypeError, ValueError):
+                pass
+        if entry.source_messages:
+            expected.update(has_source=True, source_message_count=len(entry.source_messages))
+        if entry.atoms:
+            expected["atom_types"] = sorted({atom["atom_type"] for atom in entry.atoms})
+        elif entry.atoms is None:
+            classify = getattr(processor, "classify_atoms_from_metadata", None)
+            atoms = classify(metadata=expected, parent_importance=expected["importance"],
+                             session_id=entry.session_id, persona_id=entry.persona_id) if callable(classify) else []
+            if atoms:
+                expected["atom_types"] = sorted({atom.atom_type.value for atom in atoms})
+        # Access accounting may legitimately change without editing a stage.
+        actual.pop("access_count", None)
+        expected.pop("access_count", None)
+        if (
+            actual != expected or current["text"] != entry.content
+            or current["source_messages"] != entry.source_messages
+        ):
+            raise ValueError(f"导入暂存记忆 {memory_id} 已变化，保留记录等待人工核验")
+        if await engine.has_memory_import_key(
+            memory_import_key(entry.content, entry.session_id, entry.persona_id),
+            exclude_memory_id=memory_id,
+        ):
+            raise ValueError(f"导入暂存记忆 {memory_id} 已有其他已完成副本，请核验后清理")
+        # A retry never deletes an uncertain copy. Commit from the same saved
+        # entry and retain its ID if storage fails again or its caller cancels.
+        expected["status"] = entry.metadata.get("status", "active")
+        return await self._commit_import_entry_locked(engine, memory_id, entry, entry.content, expected)
 
     async def _write_import_entry(
         self, engine, entry, content, importance, metadata, atoms, *, skip_duplicates=False
@@ -282,34 +326,9 @@ class MemoryHandlerIoMixin:
             ):
                 memory_id = None
                 raise RuntimeError("导入写入未返回有效记忆 ID")
-            connection = getattr(engine, "db_connection", None)
-            if connection is not None:
-                async with connection.execute(
-                    "SELECT 1 FROM memory_write_ops WHERE memory_id=? "
-                    "AND status IN ('pending','needs_repair') LIMIT 1",
-                    (memory_id,),
-                ) as cursor:
-                    if await cursor.fetchone() is not None:
-                        raise RuntimeError("导入记忆尚未完整写入，请修复索引后重试")
-            if entry.atoms is not None:
-                restored = await engine.restore_archived_atom_lifecycle(
-                    memory_id,
-                    entry.atoms,
-                    session_id=entry.session_id,
-                    persona_id=entry.persona_id,
-                )
-                if restored != len(entry.atoms):
-                    raise RuntimeError("导入原子生命周期未完整保存")
-            commit_metadata = await self._prepare_import_commit(
-                engine,
-                memory_id,
-                content,
-                metadata,
-                original_status,
+            return await self._commit_import_entry_locked(
+                engine, memory_id, entry, content, {**metadata, "status": original_status}
             )
-            if not await engine.update_memory(memory_id, {"metadata": commit_metadata}):
-                raise RuntimeError("导入记忆状态未完成提交")
-            return memory_id
         except BaseException:
             if memory_id is None:
                 try:
@@ -333,6 +352,28 @@ class MemoryHandlerIoMixin:
                         "导入回滚失败，暂存记忆 ID=%s", memory_id, exc_info=True
                     )
             raise
+
+    async def _commit_import_entry_locked(self, engine, memory_id, entry, content, metadata):
+        connection = getattr(engine, "db_connection", None)
+        if connection is not None:
+            async with connection.execute(
+                "SELECT 1 FROM memory_write_ops WHERE memory_id=? "
+                "AND status IN ('pending','needs_repair') LIMIT 1", (memory_id,),
+            ) as cursor:
+                if await cursor.fetchone() is not None:
+                    raise RuntimeError("导入记忆尚未完整写入，请修复索引后重试")
+        if entry.atoms is not None:
+            restored = await engine.restore_archived_atom_lifecycle(
+                memory_id, entry.atoms, session_id=entry.session_id, persona_id=entry.persona_id,
+            )
+            if restored != len(entry.atoms):
+                raise RuntimeError("导入原子生命周期未完整保存")
+        commit_metadata = await self._prepare_import_commit(
+            engine, memory_id, content, metadata, metadata.get("status", "active"),
+        )
+        if not await engine.update_memory(memory_id, {"metadata": commit_metadata}):
+            raise RuntimeError("导入记忆状态未完成提交")
+        return memory_id
 
     async def _prepare_import_commit(
         self, engine, memory_id, content, metadata, status
