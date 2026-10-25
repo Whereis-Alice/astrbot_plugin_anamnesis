@@ -18,6 +18,7 @@ from ..memory_scope import (
     GLOBAL_MEMORY_SCOPE,
     resolve_memory_scope,
 )
+from ..recall_persona import persona_matches
 from ..utils import get_persona_id
 from .agentic_recall import request_state
 from .tool_access import ensure_tool_access
@@ -39,7 +40,9 @@ async def _owned_metadata(tool, event, memory_id: int, scope, origin: str):
     else:
         matches = metadata.get("session_id") == scope
     if tool.config_manager.filtering_settings.get("use_persona_filtering", True):
-        matches = matches and metadata.get("persona_id") == await get_persona_id(tool.context, event)
+        matches = matches and persona_matches(
+            metadata.get("persona_id"), await get_persona_id(tool.context, event)
+        )
     return metadata if matches else None
 
 

@@ -432,8 +432,11 @@ class MemoryAdministration(AdministrationJobsMixin):
     async def rollback_correction(self, operation_id, *, actor="webui"):
         self._assert_jobs_open()
         self.require("correction")
-        operation = await self._owned(operation_id, actor, "correction")
+        await self._owned(operation_id, actor, "correction")
         async with memory_mutation_guard(self.engine):
+            # Waiting for a writer may cross retention or let another request
+            # clear/reconcile the journal. Authorize the current saved record.
+            operation = await self._owned(operation_id, actor, "correction")
             return await self._settled(self._reconcile_and_rollback(operation))
 
     async def _reconcile_and_rollback(self, operation):

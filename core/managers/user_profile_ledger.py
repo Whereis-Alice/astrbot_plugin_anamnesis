@@ -171,14 +171,16 @@ class UserProfileLedgerMixin:
                 if await cursor.fetchone():
                     return  # Do not repeatedly ask about the exact rejected evidence.
             async with connection.execute(
-                "SELECT claim_id FROM user_profile_claims WHERE profile_scope=? AND profile_key=? AND value=? AND state='pending' ORDER BY claim_id DESC LIMIT 1",
+                "SELECT claim_id,authority FROM user_profile_claims WHERE profile_scope=? AND profile_key=? AND value=? AND state='pending' ORDER BY claim_id DESC LIMIT 1",
                 (scope, key, snapshot["value"])) as cursor:
                 candidate = await cursor.fetchone()
             claim = candidate[0] if candidate else await self._insert_claim(connection, snapshot, "direct_user", "pending")
             changed = await self._add_evidence(connection, claim, snapshot, quote)
-            if candidate and changed:
+            if candidate and changed and candidate["authority"] != "manual":
                 # A new observation may renew a volatile proposal. Replaying
                 # the same source/quote leaves both expiry and revision intact.
+                # Independent administrator choices keep their saved facts
+                # and expiry; new automatic support only joins their evidence.
                 await connection.execute("UPDATE user_profile_claims SET snapshot=?,updated_at=? WHERE claim_id=?",
                                          (json.dumps(snapshot, ensure_ascii=False), time.time(), claim))
             if not candidate or changed:

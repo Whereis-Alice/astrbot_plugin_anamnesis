@@ -269,9 +269,40 @@ class ScopeMigrator:
                 if cursor.rowcount != 1:
                     raise ScopeMigrationError("scope migration row changed after preview")
 
-    async def _ensure_writes_finished(self, db, rows):
+    async def _ensure_writes_finished(self, db, rows, source_scope, persona_id):
         if not await self._table_exists(db, "memory_write_ops"):
             return
+        # The host can commit a document before add_memory receives its ID.
+        # Its journal still has memory_id=NULL during that interval, so the
+        # parent-ID check alone would move the document while its atoms/graph
+        # continue to be written into the original scope.
+        unlinked = await self._rows(
+            db,
+            "SELECT id,payload FROM memory_write_ops "
+            "WHERE status IN ('pending','needs_repair') "
+            "AND op_type='add' AND memory_id IS NULL",
+        )
+        for operation in unlinked:
+            payload = self._metadata(
+                {"id": operation["id"], "metadata": operation["payload"]}
+            )
+            supplied = payload.get("metadata")
+            metadata = {
+                "session_id": payload.get("session_id"),
+                "persona_id": payload.get("persona_id"),
+                **(supplied if isinstance(supplied, dict) else {}),
+            }
+            if metadata.get("session_id") != source_scope:
+                continue
+            if persona_id is not None and metadata.get("persona_id") != persona_id:
+                continue
+            if self.source_anchor is not None and not self._anchored_to(
+                metadata, self.source_anchor
+            ):
+                continue
+            raise ValueError(
+                "memory write or repair is in progress; retry migration after it finishes"
+            )
         ids = [int(row["id"]) for row in rows["documents"]]
         for start in range(0, len(ids), 500):
             batch = ids[start:start+500]
@@ -300,7 +331,7 @@ class ScopeMigrator:
                     raise ValueError("preview is stale; run preview again")
                 if not rows["documents"]:
                     raise ValueError("source scope has no matching memories")
-                await self._ensure_writes_finished(db, rows)
+                await self._ensure_writes_finished(db, rows, source_scope, persona_id)
                 backups = await self._backups()
                 if apply:
                     await self._update_rows(db, rows, source_scope, target_scope)

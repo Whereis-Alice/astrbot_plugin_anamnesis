@@ -498,6 +498,8 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
                 if _extraction is not None:
                     if _extraction["cancelled"] or _extraction["scope"] != scope or not self.enabled:
                         return 0
+                    if not await self._extraction_source_is_live(source_memory_id):
+                        return 0
                     normalized = [fact for fact in normalized if fact["key"] not in _extraction["deleted_keys"]]
                     if not normalized:
                         return 0
@@ -694,7 +696,7 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
     async def update_from_messages(
         self, event: Any, messages: list[Any], memory_processor: Any, *, source_memory_id: int,
     ) -> int:
-        """An explicit deletion fences only extractions already in flight."""
+        """Check the saved source at admission and again before writing extracted facts."""
         if not self.enabled:
             return 0
         scope = self.scope_for_event(event)
@@ -704,6 +706,8 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
         extraction = {"scope": scope, "source_memory_id": source_memory_id,
                       "deleted_keys": set(), "cancelled": False}
         async with self.store._write_lock:
+            if not await self._extraction_source_is_live(source_memory_id):
+                return 0
             self._profile_extractions()[ticket] = extraction
         try:
             return await self._extract_from_messages(
@@ -714,6 +718,22 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
             # No await: repeated cancellation cannot orphan this ticket. Ticket
             # mutation is synchronous on the same event loop as deletion checks.
             self._profile_extractions().pop(ticket, None)
+
+    async def _extraction_source_is_live(self, source_memory_id: int | None) -> bool:
+        """Admit saved sources while keeping unbound legacy hosts compatible."""
+        engine = getattr(self, "memory_engine", None)
+        if engine is None:
+            return True
+        if (
+            getattr(engine, "db_connection", None) is None
+            or not isinstance(source_memory_id, int)
+            or isinstance(source_memory_id, bool)
+            or source_memory_id <= 0
+        ):
+            return False
+        return bool(await self._live_evidence([
+            {"source_memory_id": source_memory_id, "suppressed": 0}
+        ]))
 
     async def _extract_from_messages(
         self,

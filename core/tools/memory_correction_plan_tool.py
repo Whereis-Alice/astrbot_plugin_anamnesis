@@ -13,6 +13,7 @@ from pydantic.dataclasses import dataclass
 from ..managers.memory_administration import MemoryAdministration
 from ..managers.memory_mutation import memory_mutation_guard
 from ..memory_scope import is_event_memory_allowed, resolve_memory_scope
+from ..recall_persona import persona_matches
 from ..utils import get_persona_id
 from .agentic_recall import request_state
 from .tool_access import ensure_tool_access
@@ -57,7 +58,9 @@ class MemoryCorrectionPlanTool(FunctionTool):
                 scope = resolve_memory_scope(self.config_manager, event)
                 if metadata.get("session_id") != scope or metadata.get("source_session_id") != origin:
                     return json.dumps({"error": "memory_not_in_current_scope"})
-                if self.config_manager.filtering_settings.get("use_persona_filtering", True) and metadata.get("persona_id") != await get_persona_id(self.context, event):
+                if self.config_manager.filtering_settings.get("use_persona_filtering", True) and not persona_matches(
+                    metadata.get("persona_id"), await get_persona_id(self.context, event)
+                ):
                     return json.dumps({"error": "memory_not_in_current_persona"})
             state = request_state(event)
             async with state["lock"]:

@@ -2,7 +2,7 @@
 
 This release adapts mechanisms from Memorix 1.4.0 within Anamnesis's existing identity, scope, persona and lifecycle boundaries.
 
-Use **3.5.8** for the earlier lock, permission, shutdown, import and correction fixes plus no-persona isolation across recall routes, persona validation between memories and their facts, profile migration with small history budgets, preservation of manual profile fields, and source review before rebuilding events. The features and defaults below still apply.
+Use **3.5.9** for the earlier lock, permission, shutdown, import and correction fixes plus legacy no-persona compatibility in agentic recall and mutation tools, retention and journal checks after queued correction rollback, preservation of manual profile proposals during later observations, live-source checks for profile extraction, and migration protection before an add receives its document ID. The features and defaults below still apply.
 
 Profiles remain disabled by default. Enabled profiles retain explicit self-report and verbatim-evidence validation. Manual edits have independent priority; changed automatic values enter review by default. The directory shows current values, proposals, history and multiple original evidence sources. Version checks protect edits and review actions. Administrator display aliases never merge accounts.
 

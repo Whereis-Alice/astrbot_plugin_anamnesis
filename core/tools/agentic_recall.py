@@ -207,7 +207,9 @@ async def agentic_search(tool, event, query, k, include_source=False, *, speaker
                     continue
                 if scope is not None and metadata.get("session_id") != scope:
                     continue
-                if tool.config_manager.filtering_settings.get("use_persona_filtering", True) and metadata.get("persona_id") != persona:
+                if tool.config_manager.filtering_settings.get("use_persona_filtering", True) and not persona_matches(
+                    metadata.get("persona_id"), persona
+                ):
                     continue
                 atom_evidence = None
                 if memory.metadata.get("temporal_time_basis") == "atom_event_time":
