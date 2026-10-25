@@ -599,10 +599,12 @@ class MemoryEngineWriteOpsMixin:
                 FROM memory_write_ops
                 WHERE status IN ('pending', 'needs_repair')
                   AND retry_count < ?
+                  AND (? OR step NOT IN ('atoms_deferred','atoms_deferred_no_graph')
+                       OR (? AND step='atoms_deferred_no_graph'))
                 ORDER BY id ASC
                 LIMIT 25
                 """,
-                (self._write_op_max_retries,),
+                (self._write_op_max_retries, self.atom_enabled, self.graph_memory_manager is not None),
             )
             rows = await cursor.fetchall()
         except asyncio.CancelledError:
@@ -730,6 +732,30 @@ class MemoryEngineWriteOpsMixin:
                 if atom is not None:
                     atoms.append(atom)
 
+        defer_atoms = False
+        if atoms and not self.atom_enabled:
+            # A disabled feature is not a failed retry. Keep the captured
+            # intent until it is enabled again, after syncing the coarse graph.
+            async with self.db_connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_atoms'"
+            ) as cursor:
+                has_atoms = await cursor.fetchone() is not None
+            stored = []
+            if has_atoms:
+                async with self.db_connection.execute(
+                    "SELECT content,atom_type,session_id,persona_id FROM memory_atoms WHERE parent_memory_id=?",
+                    (int(memory_id),),
+                ) as cursor:
+                    stored = await cursor.fetchall()
+            if payload.get("failed_atoms"):
+                keys = {tuple(row) for row in stored}
+                defer_atoms = any(
+                    (atom.content, atom.atom_type.value, atom.session_id, atom.persona_id) not in keys
+                    for atom in atoms
+                )
+            else:
+                defer_atoms = not stored
+
         if self.atom_store is not None and atoms and self.atom_enabled:
             existing_atoms = await self.atom_store.get_by_parent(int(memory_id))
             if payload.get("failed_atoms"):
@@ -774,6 +800,13 @@ class MemoryEngineWriteOpsMixin:
                 graph_atoms,
             )
             await self._advance_write_op(op_id, "graph_repaired", memory_id=memory_id)
+
+        if defer_atoms:
+            await self._advance_write_op(
+                op_id, "atoms_deferred" if self.graph_memory_manager is not None else "atoms_deferred_no_graph",
+                status="needs_repair", memory_id=int(memory_id),
+            )
+            return False
 
         await self._advance_write_op(
             op_id,

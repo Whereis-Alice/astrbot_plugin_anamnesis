@@ -2,7 +2,7 @@
 
 This release adapts mechanisms from Memorix 1.4.0 within Anamnesis's existing identity, scope, persona and lifecycle boundaries.
 
-Use **3.5.10** for all earlier fixes plus invalidation of old profile extractions after scope migration, consistent live-atom and parent-scope checks across graph writes, complete graph facts after partial-write repair, concurrent correction confirmation checks, and complete compensation when archive restoration is cancelled during shutdown. The features and defaults below still apply.
+Use **3.5.11** for all earlier fixes plus complete summary fallback and retained pending facts while atomization is disabled, derived-evidence and recovery-journal checks before scope migration, and exact field restoration when legacy archive recovery is cancelled. The features and defaults below still apply.
 
 Profiles remain disabled by default. Enabled profiles retain explicit self-report and verbatim-evidence validation. Manual edits have independent priority; changed automatic values enter review by default. The directory shows current values, proposals, history and multiple original evidence sources. Version checks protect edits and review actions. Administrator display aliases never merge accounts.
 

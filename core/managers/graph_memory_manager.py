@@ -29,12 +29,14 @@ class GraphMemoryManager:
         alias_store: Any = None,
         *,
         atom_store: Any = None,
+        atom_enabled: bool = True,
     ):
         self.graph_store = graph_store
         self.graph_vector_retriever = graph_vector_retriever
         self.graph_extractor = graph_extractor
         self.alias_store = alias_store
         self.atom_store = atom_store
+        self.atom_enabled = atom_enabled
         self._rebuild_gate = asyncio.Lock()
         self._rebuild_active = False
         self._rebuild_delta: dict[
@@ -98,7 +100,9 @@ class GraphMemoryManager:
         """Persist graph structure without touching the vector index."""
         if metadata and str(metadata.get("status") or "active") != "active":
             return [], []
-        if atoms is None:
+        if not self.atom_enabled:
+            atoms = None
+        elif atoms is None:
             if self.atom_store is not None:
                 stored = await self.atom_store.get_by_parent(source_memory_id)
                 if stored or (metadata or {}).get("atom_types"):
@@ -290,6 +294,7 @@ class GraphMemoryManager:
             self.graph_vector_retriever,
             self.graph_extractor,
             atom_store=self.atom_store,
+            atom_enabled=self.atom_enabled,
         )
         new_vector_doc_ids: dict[int, set[int]] = {}
         old_vector_doc_ids = await self.graph_store.list_vector_doc_ids_by_source()

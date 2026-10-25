@@ -320,6 +320,7 @@ class MemoryEngine(MemoryEngineOperationsMixin, MemoryEngineEvidenceMixin, Memor
                 self.graph_extractor,
                 alias_store=self.alias_store,
                 atom_store=self.atom_store,
+                atom_enabled=self.atom_enabled,
             )
             self.dual_route_retriever = DualRouteRetriever(
                 self.hybrid_retriever,

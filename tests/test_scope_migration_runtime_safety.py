@@ -40,6 +40,10 @@ async def _legacy_setup(tmp_path, source_anchor=PRIVATE, window_anchor=None):
     for memory_id in (1, 2):
         metadata = await _metadata(migrator.main_path, memory_id)
         metadata["session_id"] = "123"
+        # This fixture models a coherent old bare-ID scope, including the
+        # lifecycle snapshots that a real archive saved in that same scope.
+        for snapshot in metadata.get("archived_atom_lifecycle", []):
+            snapshot["session_id"] = "123"
         if memory_id == 1:
             if source_anchor is not None:
                 metadata["source_session_id"] = source_anchor

@@ -457,8 +457,13 @@ class MemoryEngineBatchMixin:
                 # back any unfinished transaction, then reverse only our marker
                 # and scope without overwriting notes or access statistics.
                 await self.db_connection.rollback()
-                expression = "json_set(metadata, '$.status','archived', '$.archived_at', json(?))"
-                parameters = [json.dumps(original_metadata.get("archived_at"), allow_nan=False)]
+                expression = "json_set(metadata, '$.status','archived')"
+                parameters = []
+                if "archived_at" in original_metadata:
+                    expression = f"json_set({expression}, '$.archived_at', json(?))"
+                    parameters.append(json.dumps(original_metadata["archived_at"], allow_nan=False))
+                else:
+                    expression = f"json_remove({expression}, '$.archived_at')"
                 if "restored_at" in original_metadata:
                     expression = f"json_set({expression}, '$.restored_at', json(?))"
                     parameters.append(json.dumps(original_metadata["restored_at"], allow_nan=False))

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from typing import Any
 import aiosqlite
 
 from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
+from ..atom_evidence import atom_scope_matches_parent
 from .memory_mutation import memory_mutation_guard, memory_mutation_task
 
 
@@ -313,6 +315,96 @@ class ScopeMigrator:
             if await cursor.fetchone() is not None:
                 raise ValueError("memory write or repair is in progress; retry migration after it finishes")
 
+    def _ensure_derived_scopes_match(self, rows):
+        """Reject inconsistent provenance before a move can make it authoritative."""
+        parents = {int(row["id"]): self._metadata(row) for row in rows["documents"]}
+        for key, parent_field in (
+            ("atoms", "parent_memory_id"),
+            ("graph_entries", "source_memory_id"),
+            ("graph_vectors", None),
+        ):
+            for row in rows[key]:
+                metadata = self._metadata(row)
+                parent_id = (
+                    row[parent_field] if parent_field else metadata.get("source_memory_id")
+                )
+                parent = parents[int(parent_id)]
+                if not atom_scope_matches_parent(
+                    row.get("session_id", metadata.get("session_id")),
+                    row.get("persona_id", metadata.get("persona_id")),
+                    parent,
+                ) or not atom_scope_matches_parent(
+                    metadata.get("session_id"), metadata.get("persona_id"), parent
+                ):
+                    raise ValueError(
+                        f"{key} row {row['id']} has a different parent scope; "
+                        "repair its provenance before migration"
+                    )
+        for document in rows["documents"]:
+            parent = parents[int(document["id"])]
+            snapshots = parent.get("archived_atom_lifecycle")
+            if not isinstance(snapshots, list):
+                continue
+            for snapshot in snapshots:
+                if not isinstance(snapshot, dict):
+                    raise ValueError("invalid archived atom lifecycle snapshot")
+                if not atom_scope_matches_parent(
+                    snapshot.get("session_id"), snapshot.get("persona_id"), parent
+                ):
+                    raise ValueError(
+                        "archived atom snapshot has a different parent scope; "
+                        "repair its provenance before migration"
+                    )
+
+    async def _ensure_recovery_records_finished(self, db, rows):
+        """Preserve journal snapshots that restore or rollback still needs."""
+        if not await self._table_exists(db, "memory_admin_operations"):
+            return
+        ids = [int(row["id"]) for row in rows["documents"]]
+        if await self._table_exists(db, "memory_admin_items"):
+            for start in range(0, len(ids), 500):
+                batch = ids[start:start + 500]
+                cursor = await db.execute(
+                    "SELECT 1 FROM memory_admin_items i "
+                    "JOIN memory_admin_operations o ON o.id=i.operation_id "
+                    "WHERE o.kind='delete' AND i.status NOT IN ('restored','purged') "
+                    f"AND CAST(i.item_key AS INTEGER) IN ({','.join('?' for _ in batch)}) LIMIT 1",
+                    batch,
+                )
+                if await cursor.fetchone() is not None:
+                    raise ValueError(
+                        "recoverable deletion is unresolved; restore or purge it before migration"
+                    )
+        selected = set(ids)
+        operations = await self._rows(
+            db,
+            "SELECT id,status,payload,result FROM memory_admin_operations "
+            "WHERE kind='correction' AND ((status='completed' AND expires_at>?) "
+            "OR status IN ('executing','needs_review','prepared_commit','rollback_prepared'))",
+            (time.time(),),
+        )
+        for operation in operations:
+            result = self._metadata({"id": operation["id"], "metadata": operation["result"]})
+            referenced = [result.get("new_memory_id")]
+            if operation["status"] != "completed":
+                payload = self._metadata({"id": operation["id"], "metadata": operation["payload"]})
+                referenced.extend((
+                    payload.get("memory_id"), result.get("old_memory_id"),
+                    result.get("rollback_memory_id"),
+                ))
+                candidates = result.get("candidate_ids")
+                if isinstance(candidates, list):
+                    referenced.extend(candidates)
+            protected = {
+                value for value in referenced
+                if isinstance(value, int) and not isinstance(value, bool)
+            }
+            if selected & protected:
+                raise ValueError(
+                    "correction recovery is pending or still retained; finish rollback "
+                    "or wait for its retention deadline before migration"
+                )
+
     async def _run(self, source_scope, target_scope, fingerprint, persona_id, apply):
         self._validate_scopes(source_scope, target_scope)
         if not isinstance(fingerprint, str) or not fingerprint:
@@ -332,6 +424,8 @@ class ScopeMigrator:
                 if not rows["documents"]:
                     raise ValueError("source scope has no matching memories")
                 await self._ensure_writes_finished(db, rows, source_scope, persona_id)
+                self._ensure_derived_scopes_match(rows)
+                await self._ensure_recovery_records_finished(db, rows)
                 backups = await self._backups()
                 if apply:
                     await self._update_rows(db, rows, source_scope, target_scope)

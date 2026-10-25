@@ -121,7 +121,10 @@ class ProjectionOutbox:
                         await embedding.insert(vector, memory_id)
                         await engine.bm25_retriever.add_document(memory_id, snapshot["text"], snapshot["metadata"])
                         if engine.graph_memory_manager:
-                            atoms = await engine.atom_store.get_by_parent(memory_id) if engine.atom_store else []
+                            atoms = (
+                                await engine.atom_store.get_by_parent(memory_id)
+                                if engine.atom_enabled and engine.atom_store else []
+                            )
                             live_atoms = self._live_atoms(atoms, snapshot["metadata"])
                             atom_backed = engine.atom_enabled and (atoms or snapshot["metadata"].get("atom_types"))
                             if atom_backed and not live_atoms:
