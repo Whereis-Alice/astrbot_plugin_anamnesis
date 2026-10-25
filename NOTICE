@@ -15,6 +15,10 @@ Copyright (c) 2026 Whereis-Alice
     原作者：lxfight
     原许可证：GNU Affero General Public License v3.0 (AGPL-3.0)
 
+3.3.0 / 3.4.0 的后续适配参考上游 v2.7.1，提交
+b8aaaec2c1232ec2c86fce22cec066a0069018e0。历史对账、检索扩窗、融合、
+生命周期、分步回忆、去重、作用域迁移与页面交互按本分支结构重新适配。
+
 原项目以 AGPL-3.0 授权发布，其版权归原作者所有。本项目在 AGPL-3.0 允许的范围内
 对其进行了重命名、重构与继续开发，并**继续以 AGPL-3.0 发布**。完整许可证文本见
 同目录下的 LICENSE 文件。

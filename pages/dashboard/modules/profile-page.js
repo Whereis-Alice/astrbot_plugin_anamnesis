@@ -1,474 +1,191 @@
-/**
- * User Profile Page - 长期用户档案管理
- *
- * Profiles are deliberately kept separate from the memory table.  A profile
- * row is scoped by the exact profile_scope returned by the server; deleting a
- * row therefore cannot accidentally clear another user's facts.
- */
-
+/** Identity groups presentation only; every mutation uses persisted scope/key. */
 import { debounce, esc } from "./utils.js";
+const CATEGORIES = ["identity", "preference", "status", "task_preference", "constraint"];
+const KEY_LABELS = { preferred_nickname: "nickname", nickname: "nickname", preferred_name: "nickname", name: "name", real_name: "name", occupation: "occupation", profession: "occupation", age: "age", birthday: "birthday", location: "location", city: "location", favorite_food: "food", food_preference: "food", dietary_preference: "food", favorite_game: "game", favorite_games: "game", hobby: "hobby", hobbies: "hobby", language: "language", preferred_language: "language", communication_style: "style", response_style: "style", timezone: "timezone", current_status: "status" };
 
 export class ProfilePage {
   constructor(state, apiClient, peekPanel) {
-    this.state = state;
-    this.api = apiClient;
-    this.peek = peekPanel;
-    if (!this.state.profile) {
-      this.state.profile = {
-        items: [],
-        total: 0,
-        limit: 50,
-        offset: 0,
-        scope: "",
-        sessionId: "",
-        key: "",
-        scopes: [],
-        sessionIds: [],
-        profileEnabled: null,
-        scopeMode: "",
-        hasMore: false,
-      };
-    }
-    this._fetchGeneration = 0;
-    this._bound = false;
-    this._deleting = false;
+    this.state = state; this.api = apiClient; this.peek = peekPanel;
+    state.profile = { users: [], items: [], total: 0, limit: 30, offset: 0, query: "", sessionId: "", identity: "", user: null, hasMore: false, detailTotal: 0, detailHasMore: false, category: "", lifecycle: "", profileEnabled: null, scopeMode: "", listError: "", detailError: "" };
+    this._fetchGeneration = 0; this._detailGeneration = 0;
   }
+  t(key, ...args) { return window.t?.(key, ...args) || key; }
+  _hydrate() { window.lmHydrateIcons?.(); }
+  _showToast(message, error = false) { window.lmShowToast?.(message, error); }
 
-  t(key, ...args) {
-    return typeof window !== "undefined" && typeof window.t === "function"
-      ? window.t(key, ...args)
-      : key;
-  }
-
-  /** Load one page of profile facts using the server's offset contract. */
   async fetch() {
     const generation = ++this._fetchGeneration;
-    const profile = this.state.profile;
-    const params = {
-      limit: String(profile.limit),
-      offset: String(profile.offset),
-    };
-    if (profile.scope) params.scope = profile.scope;
-    if (profile.sessionId) params.session_id = profile.sessionId;
-    if (profile.key) params.key = profile.key;
-
+    const p = this.state.profile;
+    const params = { limit: String(p.limit), offset: String(p.offset) };
+    if (p.query) params.q = p.query;
+    if (p.sessionId) params.session_id = p.sessionId;
     const refresh = document.getElementById("profile-refresh");
     if (refresh) refresh.disabled = true;
     try {
-      const data = await this.api.get("profiles", params);
+      const data = await this.api.get("profiles/users", params);
       if (generation !== this._fetchGeneration) return;
-
-      const items = Array.isArray(data && data.items) ? data.items : [];
-      profile.items = items.map((item) => ({
-        profile_scope: item.profile_scope || item.scope || "",
-        profile_key: item.profile_key || item.key || "",
-        category: item.category || "--",
-        value: item.value == null ? "" : String(item.value),
-        confidence: item.confidence,
-        source_memory_id: item.source_memory_id,
-        source_session_id: item.source_session_id || "",
-        source_group_id: item.source_group_id || "",
-        source_group_name: item.source_group_name || "",
-        source_sender_name: item.source_sender_name || "",
-        updated_at: item.updated_at,
-        expires_at: item.expires_at,
-      }));
-      profile.total = Number.isFinite(Number(data && data.total))
-        ? Number(data.total)
-        : profile.items.length;
-      const responseLimit = Number(data && data.limit);
-      const responseOffset = Number(data && data.offset);
-      if (Number.isFinite(responseLimit) && responseLimit >= 1) profile.limit = responseLimit;
-      if (Number.isFinite(responseOffset) && responseOffset >= 0) profile.offset = responseOffset;
-      profile.hasMore = profile.offset + profile.items.length < profile.total;
-      profile.scopes = this._uniqueStrings(data && data.scopes);
-      profile.sessionIds = this._uniqueStrings(data && data.session_ids);
-      profile.profileEnabled = typeof (data && data.profile_enabled) === "boolean"
-        ? data.profile_enabled
-        : null;
-      profile.scopeMode = data && data.scope_mode ? String(data.scope_mode) : "";
-
-      this.render();
-    } catch (error) {
-      if (generation !== this._fetchGeneration) return;
-      profile.items = [];
-      profile.total = 0;
-      profile.hasMore = false;
-      this._renderStatus();
-      this._renderEmpty(this.t("profile.fetchFailed"));
-      this._showToast(error && error.message ? error.message : this.t("profile.fetchFailed"), true);
-    } finally {
-      if (generation === this._fetchGeneration && refresh) refresh.disabled = false;
-    }
+      p.users = Array.isArray(data.users) ? data.users : [];
+      p.total = Number(data.total) || 0; p.limit = Number(data.limit) || p.limit;
+      p.offset = Number(data.offset) || 0; p.hasMore = Boolean(data.has_more);
+      p.profileEnabled = data.profile_enabled; p.scopeMode = data.scope_mode || ""; p.listError = "";
+      if (!p.users.length && p.offset > 0 && p.total > 0) { p.offset = Math.max(0, Math.floor((p.total - 1) / p.limit) * p.limit); return this.fetch(); }
+      const user = p.users.find(u => u.identity === p.identity) || p.users[0];
+      this.renderDirectory();
+      if (user) await this.selectUser(user);
+      else { ++this._detailGeneration; p.identity = ""; p.user = null; p.items = []; this.renderDetail(); }
+    } catch (error) { if (generation === this._fetchGeneration) { p.listError = error.message || this.t("profile.fetchFailed"); this.renderDirectory(); } }
+    finally { if (generation === this._fetchGeneration && refresh) refresh.disabled = false; }
   }
-
-  _uniqueStrings(values) {
-    if (!Array.isArray(values)) return [];
-    return [...new Set(values
-      .filter((value) => value != null && String(value) !== "")
-      .map((value) => String(value)))].sort((a, b) => a.localeCompare(b));
+  async selectUser(user, reveal = false) {
+    const p = this.state.profile;
+    p.identity = user.identity; p.user = user; p.items = []; p.detailTotal = Number(user.fact_count) || 0;
+    p.detailHasMore = false; p.detailError = "";
+    this.renderDirectory(); await this.fetchDetail(false);
+    if (reveal && window.matchMedia?.("(max-width: 768px)").matches) document.getElementById("profile-reader")?.scrollIntoView({ block: "start", behavior: "smooth" });
   }
+  async fetchDetail(append = false) {
+    const p = this.state.profile;
+    if (!p.identity) return;
+    const generation = ++this._detailGeneration;
+    const identity = p.identity;
+    p.detailLoading = true; p.detailError = ""; this.renderDetail();
+    try {
+      const data = await this.api.get("profiles", { identity, limit: "500", offset: String(append ? p.items.length : 0) });
+      if (generation !== this._detailGeneration || identity !== p.identity) return;
+      const incoming = (Array.isArray(data.items) ? data.items : []).map(item => ({ ...item, profile_scope: item.profile_scope || item.scope || "", profile_key: item.profile_key || item.key || "", value: item.value == null ? "" : String(item.value) }));
+      p.items = append ? [...p.items, ...incoming] : incoming;
+      p.detailTotal = Number(data.total) || p.items.length;
+      p.detailHasMore = Boolean(data.has_more) && incoming.length > 0;
+    } catch (error) { if (generation === this._detailGeneration) p.detailError = error.message || this.t("profile.fetchFailed"); }
+    finally { if (generation === this._detailGeneration) { p.detailLoading = false; this.renderDetail(); if (!append) { const reader = document.getElementById("profile-reader"); if (reader) reader.scrollTop = 0; } } }
+  }
+  lifecycle(item, now = Date.now() / 1000) {
+    if (item.suppressed) return "suppressed";
+    const expires = Number(item.expires_at);
+    return expires > 0 ? expires <= now ? "expired" : "temporary" : "stable";
+  }
+  label(item) {
+    if (item.display_label) return String(item.display_label);
+    const key = item.profile_key || "";
+    return KEY_LABELS[key] ? this.t("profile.keyLabel." + KEY_LABELS[key]) : key.replace(/[_:.-]+/g, " ").trim() || this.t("profile.fact");
+  }
+  _formatTime(value) { if (!value) return this.t("table.na"); const n = Number(value); return Number.isFinite(n) && n > 0 ? new Date(n < 1e11 ? n * 1000 : n).toLocaleString() : String(value); }
+  _formatConfidence(value) { return value != null && value !== "" && Number.isFinite(Number(value)) ? Math.round(Math.min(1, Math.max(0, Number(value))) * 100) + "%" : this.t("table.na"); }
+  _chatName(item) { return item.source_group_name || (item.source_group_id ? this.t("profile.groupWithId", item.source_group_id) : this.t("profile.privateOrUnknown")); }
+  render() { this.renderDirectory(); this.renderDetail(); }
 
-  _renderStatus() {
+  renderDirectory() {
+    const p = this.state.profile;
     const status = document.getElementById("profile-status");
-    if (!status) return;
-    const profile = this.state.profile;
-    status.className = "profile-status";
-    if (profile.profileEnabled === false) {
-      status.classList.add("is-disabled");
-      status.textContent = this.t("profile.disabled");
-    } else if (profile.profileEnabled === true) {
-      status.classList.add("is-enabled");
-      status.textContent = this.t("profile.enabled");
-    } else {
-      status.textContent = "";
-    }
-
+    if (status) status.textContent = p.profileEnabled === false ? this.t("profile.disabled") : p.profileEnabled === true ? this.t("profile.enabled") : "";
     const note = document.getElementById("profile-scope-note");
-    if (note) {
-      const knownMode = profile.scopeMode === "session" || profile.scopeMode === "user";
-      note.textContent = !profile.scopeMode ? "" : knownMode
-        ? this.t("profile.scopeMode." + profile.scopeMode)
-        : this.t("profile.scopeMode.unknown", profile.scopeMode);
-      note.classList.toggle("hidden", !profile.scopeMode);
-    }
-  }
-
-  _renderFilters() {
-    const profile = this.state.profile;
-    const scopeSelect = document.getElementById("profile-scope");
-    const sessionSelect = document.getElementById("profile-session");
-    if (scopeSelect) {
-      const current = profile.scope;
-      const choices = current && !profile.scopes.includes(current)
-        ? [current, ...profile.scopes]
-        : profile.scopes;
-      scopeSelect.innerHTML = '<option value="">' + esc(this.t("profile.allScopes")) + "</option>" +
-        choices.map((scope) => '<option value="' + esc(scope) + '">' + esc(scope) + "</option>").join("");
-      scopeSelect.value = current;
-    }
-    if (sessionSelect) {
-      const current = profile.sessionId;
-      const choices = current && !profile.sessionIds.includes(current)
-        ? [current, ...profile.sessionIds]
-        : profile.sessionIds;
-      sessionSelect.innerHTML = '<option value="">' + esc(this.t("profile.allSessions")) + "</option>" +
-        choices.map((session) => '<option value="' + esc(session) + '">' + esc(session) + "</option>").join("");
-      sessionSelect.value = current;
-    }
-    const keyInput = document.getElementById("profile-key");
-    if (keyInput && keyInput.value !== profile.key) keyInput.value = profile.key;
-  }
-
-  _formatTime(value) {
-    if (value == null || value === "") return this.t("table.na");
-    const numeric = Number(value);
-    if (Number.isFinite(numeric) && numeric > 0) {
-      const millis = numeric < 100000000000 ? numeric * 1000 : numeric;
-      const date = new Date(millis);
-      if (!Number.isNaN(date.getTime())) return date.toLocaleString();
-    }
-    return String(value);
-  }
-
-  _formatConfidence(value) {
-    if (value == null || value === "") return this.t("table.na");
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric)) return this.t("table.na");
-    const percent = numeric <= 1 ? numeric * 100 : numeric;
-    return Math.max(0, Math.min(100, percent)).toFixed(0) + "%";
-  }
-
-  render() {
-    this._renderStatus();
-    this._renderFilters();
-    this._renderTable();
-    this._updatePagination();
-    if (typeof window !== "undefined" && typeof window.lmHydrateIcons === "function") {
-      window.lmHydrateIcons();
-    }
-  }
-
-  _renderEmpty(message = this.t("common.noData")) {
-    const body = document.getElementById("profiles-body");
-    if (body) body.innerHTML = '<tr><td colspan="4" class="table-empty">' + esc(message) + "</td></tr>";
-  }
-
-  _renderTable() {
-    const body = document.getElementById("profiles-body");
-    if (!body) return;
-    const items = this.state.profile.items;
-    if (!items.length) {
-      this._renderEmpty();
-      return;
-    }
-
-    // Group facts by profile_scope so each user's identity is shown once as a
-    // group header instead of being repeated on every fact row.  Map preserves
-    // the server ordering (first occurrence wins); fact rows keep their original
-    // index into state.profile.items so edit/delete behaviour is unchanged.
-    const groups = new Map();
-    items.forEach((item, index) => {
-      const scope = item.profile_scope || "";
-      let group = groups.get(scope);
-      if (!group) {
-        group = { head: item, rows: [] };
-        groups.set(scope, group);
-      }
-      group.rows.push({ item, index });
-    });
-
-    const html = [];
-    groups.forEach((group) => {
-      html.push(this._renderGroupHeader(group));
-      group.rows.forEach(({ item, index }) => html.push(this._renderFactRow(item, index)));
-    });
-    body.innerHTML = html.join("");
-  }
-
-  _renderGroupHeader(group) {
-    const head = group.head || {};
-    const senderName = head.source_sender_name || this.t("table.na");
-    const groupName = head.source_group_name || (head.source_group_id
-      ? this.t("profile.groupWithId", head.source_group_id)
-      : this.t("profile.privateOrUnknown"));
-    return '<tr class="profile-group-header"><td class="profile-group-cell" colspan="4" title="' + esc(senderName + " / " + groupName) + '">' +
-      '<div class="profile-group-identity"><strong class="profile-group-user">' + esc(senderName) + "</strong>" +
-      '<span class="profile-group-chat">' + esc(groupName) + "</span>" +
-      '<span class="profile-group-count">' + esc(this.t("profile.groupFactCount", group.rows.length)) + "</span></div></td></tr>";
-  }
-
-  _renderFactRow(item, index) {
-    return '<tr class="profile-row" tabindex="0" data-profile-index="' + index + '" aria-label="' + esc(item.profile_key) + '">' +
-      '<td class="profile-fact-cell" title="' + esc(item.profile_key) + '"><div class="profile-fact-content"><strong class="profile-key-cell cell-mono">' + esc(item.profile_key) + '</strong><span class="type-tag">' + esc(item.category) + "</span></div></td>" +
-      '<td class="profile-value-cell" title="' + esc(item.value) + '"><div class="profile-value-content">' + esc(item.value) + "</div></td>" +
-      '<td class="cell-mono profile-updated-cell">' + esc(this._formatTime(item.updated_at)) + "</td>" +
-      '<td class="profile-action-cell"><button type="button" class="btn btn-danger btn-sm profile-delete" data-profile-scope="' + esc(item.profile_scope) + '" data-profile-key="' + esc(item.profile_key) + '" data-i18n-title="profile.deleteTitle" title="' + esc(this.t("profile.deleteTitle")) + '" aria-label="' + esc(this.t("profile.deleteTitle")) + '"><i data-lucide="trash-2" aria-hidden="true"></i><span>' + esc(this.t("profile.delete")) + "</span></button></td>" +
-      "</tr>";
-  }
-
-  _updatePagination() {
-    const profile = this.state.profile;
-    const page = Math.floor(profile.offset / profile.limit) + 1;
-    const pages = Math.max(1, Math.ceil(profile.total / profile.limit));
+    if (note) { note.textContent = p.scopeMode ? ["session", "user"].includes(p.scopeMode) ? this.t("profile.scopeMode." + p.scopeMode) : this.t("profile.scopeMode.unknown", p.scopeMode) : ""; note.classList.toggle("hidden", !p.scopeMode); }
+    const list = document.getElementById("profile-users");
+    if (list) list.innerHTML = p.listError ? '<div class="inline-feedback" role="alert">' + esc(p.listError) + '<button class="btn btn-sm" data-profile-retry="list">' + esc(this.t("common.retry")) + '</button></div>' : p.users.length ? p.users.map((user, index) => {
+      const name = user.sender_name || user.sender_id || this.t("profile.unknownUser");
+      const chat = user.last_group_name || (user.last_group_id ? this.t("profile.groupWithId", user.last_group_id) : this.t("profile.privateOrUnknown"));
+      return `<button type="button" class="profile-user ${user.identity === p.identity ? "is-selected" : ""}" data-profile-user="${index}" aria-pressed="${user.identity === p.identity}"><span class="profile-avatar" aria-hidden="true">${esc(Array.from(String(name))[0] || "?")}</span><span class="profile-user-copy"><strong>${esc(name)}</strong><span class="profile-user-id">${esc(user.platform || "")} · ${esc(user.sender_id || "--")}</span><span class="profile-user-chat">${esc(chat)}</span><span class="profile-user-count">${esc(this.t("profile.directoryCounts", user.fact_count || 0, user.scope_count || 0))}</span></span></button>`;
+    }).join("") : '<div class="table-empty">' + esc(this.t("common.noData")) + '</div>';
     const info = document.getElementById("profile-pagination-info");
-    if (info) info.textContent = this.t("common.page", page, pages, profile.total);
-    const previous = document.getElementById("profile-prev");
-    const next = document.getElementById("profile-next");
-    if (previous) previous.disabled = profile.offset <= 0;
-    if (next) next.disabled = !profile.hasMore;
+    if (info) info.textContent = this.t("profile.userPage", Math.floor(p.offset / p.limit) + 1, Math.max(1, Math.ceil(p.total / p.limit)), p.total);
+    const prev = document.getElementById("profile-prev"), next = document.getElementById("profile-next");
+    if (prev) prev.disabled = p.offset <= 0;
+    if (next) next.disabled = !p.hasMore;
+    this._hydrate();
   }
-
+  renderDetail() {
+    const container = document.getElementById("profile-reader");
+    if (!container) return;
+    const p = this.state.profile, u = p.user;
+    if (!u) { container.innerHTML = '<div class="profile-reader-empty">' + esc(this.t("profile.selectUser")) + '</div>'; return; }
+    const now = Date.now() / 1000;
+    const visible = p.items.map((item, index) => ({ item, index })).filter(({ item }) => (!p.category || item.category === p.category) && (!p.lifecycle || this.lifecycle(item, now) === p.lifecycle));
+    const scopes = new Map();
+    visible.forEach(row => { if (!scopes.has(row.item.profile_scope)) scopes.set(row.item.profile_scope, []); scopes.get(row.item.profile_scope).push(row); });
+    let html = `<header class="profile-reader-header"><div><span class="eyebrow">${esc(this.t("profile.detailBadge"))}</span><h2>${esc(u.sender_name || u.sender_id || this.t("profile.unknownUser"))}</h2><p>${esc(u.platform || "")} · ${esc(u.sender_id || "--")}<br>${esc(this.t("profile.recentGroup"))}：${esc(u.last_group_name || (u.last_group_id ? this.t("profile.groupWithId", u.last_group_id) : this.t("profile.privateOrUnknown")))}</p></div><span class="type-tag">${esc(this.t("profile.groupFactCount", p.detailTotal))}</span></header><div class="profile-reader-filters"><label>${esc(this.t("profile.category"))}<select class="select input" id="profile-category"><option value="">${esc(this.t("profile.allCategories"))}</option>${CATEGORIES.map(c => `<option value="${c}"${p.category === c ? " selected" : ""}>${esc(this.t("profile.category." + c))}</option>`).join("")}</select></label><label>${esc(this.t("profile.lifecycle"))}<select class="select input" id="profile-lifecycle"><option value="">${esc(this.t("profile.allLifecycle"))}</option>${["stable", "temporary", "expired", "suppressed"].map(c => `<option value="${c}"${p.lifecycle === c ? " selected" : ""}>${esc(this.t("profile.lifecycle." + c))}</option>`).join("")}</select></label></div>`;
+    if (p.detailError) html += '<div class="inline-feedback" role="alert">' + esc(p.detailError) + '<button class="btn btn-sm" data-profile-retry="detail">' + esc(this.t("common.retry")) + '</button></div>';
+    if (!visible.length) html += '<div class="table-empty">' + esc(this.t(p.detailLoading ? "common.loading" : "profile.noFacts")) + '</div>';
+    for (const rows of scopes.values()) {
+      const head = [...rows].sort((a, b) => Number(b.item.updated_at) - Number(a.item.updated_at))[0].item;
+      html += `<section class="profile-source-section"><header class="profile-source-header"><i data-lucide="messages-square" aria-hidden="true"></i><div><h3>${esc(this._chatName(head))}</h3><span>${esc(head.source_session_id || this.t("profile.sharedSource"))} · ${esc(this.t("profile.groupFactCount", rows.length))}</span></div></header>`;
+      const categories = [...CATEGORIES, ...new Set(rows.map(r => r.item.category).filter(c => !CATEGORIES.includes(c)))];
+      for (const category of categories) {
+        const facts = rows.filter(r => r.item.category === category);
+        if (!facts.length) continue;
+        const translated = this.t("profile.category." + category);
+        html += `<h4 class="profile-category-heading">${esc(translated.startsWith("profile.category.") ? category || this.t("profile.fact") : translated)}</h4><div class="profile-facts">`;
+        facts.forEach(({ item, index }) => {
+          const life = this.lifecycle(item, now);
+          html += `<article class="profile-fact-card ${life}"><div class="profile-fact-heading"><h5>${esc(this.label(item))}</h5><span class="profile-lifecycle ${life}">${esc(this.t("profile.lifecycle." + life))}</span></div><div class="profile-fact-value">${esc(item.value)}</div><div class="profile-fact-footer"><span>${esc(this._formatTime(item.updated_at))} · ${esc(this.t("profile.confidence"))} ${esc(this._formatConfidence(item.confidence))}</span><button type="button" class="btn btn-secondary btn-sm" data-profile-edit="${index}"><i data-lucide="square-pen" aria-hidden="true"></i>${esc(this.t("profile.readEdit"))}</button></div><details class="profile-fact-source"><summary>${esc(this.t("profile.sourceDetails"))}</summary><dl><dt>${esc(this.t("profile.key"))}</dt><dd>${esc(item.profile_key)}</dd><dt>${esc(this.t("profile.scope"))}</dt><dd>${esc(item.profile_scope)}</dd><dt>${esc(this.t("profile.sourceUser"))}</dt><dd>${esc(item.source_sender_name || "--")}</dd><dt>${esc(this.t("profile.expires"))}</dt><dd>${esc(item.expires_at ? this._formatTime(item.expires_at) : this.t("profile.never"))}</dd></dl>${item.source_memory_id != null ? `<button type="button" class="btn btn-ghost btn-sm" data-source-memory="${esc(item.source_memory_id)}">${esc(this.t("profile.openSource", item.source_memory_id))}<i data-lucide="arrow-up-right" aria-hidden="true"></i></button>` : ""}</details></article>`;
+        });
+        html += '</div>';
+      }
+      html += '</section>';
+    }
+    if (p.detailHasMore) html += `<button type="button" class="btn btn-secondary profile-load-more" id="profile-load-more"${p.detailLoading ? " disabled" : ""}>${esc(this.t(p.detailLoading ? "common.loading" : "profile.loadMore", p.items.length, p.detailTotal))}</button>`;
+    container.innerHTML = html; this._hydrate();
+  }
   _formatDateInput(value) {
-    const numeric = Number(value);
-    if (!Number.isFinite(numeric) || numeric <= 0) return "";
-    const date = new Date((numeric < 100000000000 ? numeric * 1000 : numeric));
-    if (Number.isNaN(date.getTime())) return "";
-    const pad = (number) => String(number).padStart(2, "0");
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}` +
-      `T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    const n = Number(value); if (!n || !Number.isFinite(n)) return "";
+    const d = new Date(n < 1e11 ? n * 1000 : n), pad = v => String(v).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   }
-
   openItem(item) {
     if (!item || !this.peek) return;
-    this._activeItem = item;
-    const badge = document.getElementById("peek-badge");
-    const title = document.getElementById("peek-title");
-    const body = document.getElementById("peek-body");
-    if (!body) return;
-    if (badge) badge.textContent = this.t("profile.detailBadge");
-    if (title) title.textContent = item.profile_key || this.t("profile.editTitle");
-    const groupName = item.source_group_name || (item.source_group_id
-      ? this.t("profile.groupWithId", item.source_group_id)
-      : this.t("profile.privateOrUnknown"));
-    body.innerHTML = `
-      <form class="profile-editor" id="profile-editor-form">
-        <div class="profile-editor-section">
-          <div class="peek-section-title">${esc(this.t("profile.editSection"))}</div>
-          <label class="form-label" for="profile-edit-key">${esc(this.t("profile.key"))}</label>
-          <input class="input" id="profile-edit-key" value="${esc(item.profile_key)}" readonly>
-          <label class="form-label" for="profile-edit-category">${esc(this.t("profile.category"))}</label>
-          <select class="select input" id="profile-edit-category">
-            ${["identity", "preference", "status", "task_preference", "constraint"].map((category) =>
-              `<option value="${category}"${category === item.category ? " selected" : ""}>${esc(this.t("profile.category." + category))}</option>`).join("")}
-          </select>
-          <label class="form-label" for="profile-edit-value">${esc(this.t("profile.value"))}</label>
-          <textarea class="input textarea" id="profile-edit-value" rows="5" maxlength="300">${esc(item.value)}</textarea>
-          <label class="form-label" for="profile-edit-confidence">${esc(this.t("profile.confidence"))}</label>
-          <input class="input" id="profile-edit-confidence" type="number" min="0" max="1" step="0.01" value="${esc(item.confidence == null ? "" : item.confidence)}">
-          <label class="form-label" for="profile-edit-expires">${esc(this.t("profile.expires"))}</label>
-          <input class="input" id="profile-edit-expires" type="datetime-local" value="${esc(this._formatDateInput(item.expires_at))}">
-          <small class="profile-editor-hint">${esc(this.t("profile.expiresHint"))}</small>
-        </div>
-        <div class="profile-editor-section profile-source-details">
-          <div class="peek-section-title">${esc(this.t("profile.sourceDetails"))}</div>
-          <div class="profile-detail-row"><span>${esc(this.t("profile.recentChat"))}</span><strong>${esc(groupName)}</strong></div>
-          <div class="profile-detail-row"><span>${esc(this.t("profile.sourceUser"))}</span><strong>${esc(item.source_sender_name || this.t("table.na"))}</strong></div>
-          <div class="profile-detail-row"><span>${esc(this.t("profile.scope"))}</span><code>${esc(item.profile_scope || this.t("table.na"))}</code></div>
-          <div class="profile-detail-row"><span>${esc(this.t("profile.sourceSession"))}</span><code>${esc(item.source_session_id || this.t("table.na"))}</code></div>
-          <div class="profile-detail-row"><span>${esc(this.t("profile.sourceMemory"))}</span><code>${esc(item.source_memory_id == null ? this.t("table.na") : item.source_memory_id)}</code></div>
-          <div class="profile-detail-row"><span>${esc(this.t("profile.updated"))}</span><strong>${esc(this._formatTime(item.updated_at))}</strong></div>
-        </div>
-        <div class="profile-editor-actions">
-          <button type="button" class="btn btn-danger" id="profile-editor-delete"><i data-lucide="trash-2" aria-hidden="true"></i><span>${esc(this.t("profile.delete"))}</span></button>
-          <button type="submit" class="btn btn-primary" id="profile-editor-save"><i data-lucide="save" aria-hidden="true"></i><span>${esc(this.t("common.save"))}</span></button>
-        </div>
-      </form>`;
+    this.peek._detailGeneration++; this.state._detailCache = null; this.state._nodeDetailCache = null;
+    document.getElementById("peek-badge").textContent = this.t("profile.detailBadge");
+    document.getElementById("peek-title").textContent = this.label(item);
+    const categories = [...new Set([...CATEGORIES, item.category])];
+    document.getElementById("peek-body").innerHTML = `<form class="profile-editor" id="profile-editor-form"><div class="profile-editor-section"><div class="peek-section-title">${esc(this.t("profile.editSection"))}</div><label class="form-label" for="profile-edit-category">${esc(this.t("profile.category"))}</label><select class="select input" id="profile-edit-category">${categories.map(c => `<option value="${esc(c)}"${c === item.category ? " selected" : ""}>${esc(this.t("profile.category." + c))}</option>`).join("")}</select><label class="form-label" for="profile-edit-value">${esc(this.t("profile.value"))}</label><textarea class="input textarea" id="profile-edit-value" rows="8" maxlength="300">${esc(item.value)}</textarea><label class="form-label" for="profile-edit-confidence">${esc(this.t("profile.confidence"))}</label><input class="input" id="profile-edit-confidence" type="number" min="0" max="1" step="0.01" value="${esc(item.confidence ?? 1)}"><label class="form-label" for="profile-edit-expires">${esc(this.t("profile.expires"))}</label><input class="input" id="profile-edit-expires" type="datetime-local" value="${esc(this._formatDateInput(item.expires_at))}"><small class="profile-editor-hint">${esc(this.t("profile.expiresHint"))}</small></div><details class="profile-source-details"><summary>${esc(this.t("profile.sourceDetails"))}</summary><div class="profile-detail-row"><span>${esc(this.t("profile.key"))}</span><code>${esc(item.profile_key)}</code></div><div class="profile-detail-row"><span>${esc(this.t("profile.scope"))}</span><code>${esc(item.profile_scope)}</code></div><div class="profile-detail-row"><span>${esc(this.t("profile.sourceSession"))}</span><code>${esc(item.source_session_id || "--")}</code></div>${item.source_memory_id != null ? `<button type="button" class="btn btn-sm" id="profile-editor-source">${esc(this.t("profile.openSource", item.source_memory_id))}</button>` : ""}</details><div class="profile-editor-actions"><button type="button" class="btn btn-danger" id="profile-editor-delete"><i data-lucide="trash-2" aria-hidden="true"></i>${esc(this.t("profile.delete"))}</button><button type="submit" class="btn btn-primary" id="profile-editor-save"><i data-lucide="save" aria-hidden="true"></i>${esc(this.t("common.save"))}</button></div><div id="profile-editor-feedback" class="inline-feedback hidden" role="alert"></div></form>`;
     this.peek.open(true);
-    const form = document.getElementById("profile-editor-form");
-    if (form) form.addEventListener("submit", (event) => {
-      event.preventDefault();
-      this.saveItem(item);
-    });
-    const deleteButton = document.getElementById("profile-editor-delete");
-    if (deleteButton) deleteButton.addEventListener("click", () => this.deleteItem(item.profile_scope, item.profile_key));
-    if (typeof window !== "undefined" && typeof window.lmHydrateIcons === "function") {
-      window.lmHydrateIcons();
-    }
+    document.getElementById("profile-editor-form")?.addEventListener("submit", event => { event.preventDefault(); this.saveItem(item); });
+    document.getElementById("profile-editor-delete")?.addEventListener("click", () => this.deleteItem(item.profile_scope, item.profile_key));
+    document.getElementById("profile-editor-source")?.addEventListener("click", () => this.peek.renderMemory({ memory_id: item.source_memory_id }));
+    document.getElementById("profile-edit-value")?.focus(); this._hydrate();
   }
-
   async saveItem(item) {
     if (!item || this._saving) return;
-    const value = document.getElementById("profile-edit-value")?.value?.trim() || "";
-    const category = document.getElementById("profile-edit-category")?.value || "";
-    const confidenceText = document.getElementById("profile-edit-confidence")?.value || "";
-    const expiresText = document.getElementById("profile-edit-expires")?.value || "";
-    const confidence = Number(confidenceText);
-    if (!value || !category || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
-      this._showToast(this.t("profile.invalidFields"), true);
-      return;
-    }
-    let expiresAt = null;
-    if (expiresText) {
-      const millis = Date.parse(expiresText);
-      if (!Number.isFinite(millis)) {
-        this._showToast(this.t("profile.invalidExpiry"), true);
-        return;
-      }
-      expiresAt = millis / 1000;
-    }
+    const value = document.getElementById("profile-edit-value")?.value?.trim() || "", category = document.getElementById("profile-edit-category")?.value || "";
+    const text = document.getElementById("profile-edit-confidence")?.value || "", confidence = Number(text);
+    const expiresText = document.getElementById("profile-edit-expires")?.value || "", expiry = expiresText ? Date.parse(expiresText) / 1000 : null;
+    const feedback = document.getElementById("profile-editor-feedback");
+    const fail = message => { if (feedback) { feedback.textContent = message; feedback.classList.remove("hidden"); } this._showToast(message, true); };
+    if (!value || !category || !text || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) { fail(this.t("profile.invalidFields")); return; }
+    if (expiresText && !Number.isFinite(expiry)) { fail(this.t("profile.invalidExpiry")); return; }
     this._saving = true;
-    const saveButton = document.getElementById("profile-editor-save");
-    if (saveButton) saveButton.disabled = true;
+    const button = document.getElementById("profile-editor-save"); if (button) button.disabled = true;
     try {
-      await this.api.post("profiles/update", {
-        profile_scope: item.profile_scope,
-        profile_key: item.profile_key,
-        value,
-        category,
-        confidence,
-        expires_at: expiresAt,
-      }, { retries: 0 });
-      this._showToast(this.t("profile.updateSuccess"));
-      this.peek.close();
-      await this.fetch();
-    } catch (error) {
-      this._showToast(error && error.message ? error.message : this.t("profile.updateFailed"), true);
-    } finally {
-      this._saving = false;
-      if (saveButton) saveButton.disabled = false;
-    }
+      await this.api.post("profiles/update", { profile_scope: item.profile_scope, profile_key: item.profile_key, value, category, confidence, expires_at: expiry }, { retries: 0 });
+      this._showToast(this.t("profile.updateSuccess")); this.peek.close(); await this.fetch();
+    } catch (error) { fail(error.message || this.t("profile.updateFailed")); }
+    finally { this._saving = false; if (button) button.disabled = false; }
   }
-
   async deleteItem(scope, key) {
     if (!scope || !key || this._deleting) return;
-    this._deleting = true;
-    const badge = document.getElementById("peek-badge");
-    const title = document.getElementById("peek-title");
-    if (badge) badge.textContent = "";
-    if (title) title.textContent = this.t("profile.deleteConfirmTitle");
-    this.peek.open();
+    this._deleting = true; this.peek.open(true);
     try {
-      const confirmed = await this.peek.showConfirmDialog(
-        this.t("profile.deleteConfirmTitle"),
-        this.t("profile.deleteConfirmMessage", key, scope),
-      );
-      if (!confirmed) return;
-      const result = await this.api.post("profiles/delete", {
-        profile_scope: scope,
-        profile_key: key,
-      }, { retries: 0 });
-      this._showToast(this.t("profile.deleteSuccess", Number(result && result.count) || 1));
-      if (this.state.profile.offset > 0 && this.state.profile.items.length === 1) {
-        this.state.profile.offset = Math.max(0, this.state.profile.offset - this.state.profile.limit);
-      }
-      await this.fetch();
-    } catch (error) {
-      this._showToast(error && error.message ? error.message : this.t("profile.deleteFailed"), true);
-    } finally {
-      this.peek.close();
-      this._deleting = false;
-    }
+      if (!await this.peek.showConfirmDialog(this.t("profile.deleteConfirmTitle"), this.t("profile.deleteConfirmMessage", key, scope))) return;
+      const result = await this.api.post("profiles/delete", { profile_scope: scope, profile_key: key }, { retries: 0 });
+      this._showToast(this.t("profile.deleteSuccess", Number(result.count) || 1)); await this.fetch();
+    } catch (error) { this._showToast(error.message || this.t("profile.deleteFailed"), true); }
+    finally { this.peek.close(); this._deleting = false; }
   }
-
-  _showToast(message, isError = false) {
-    if (typeof window !== "undefined" && typeof window.lmShowToast === "function") {
-      window.lmShowToast(message, isError);
-    }
-  }
-
-  _resetAndFetch() {
-    this.state.profile.offset = 0;
-    this.fetch();
-  }
-
   initEventListeners() {
-    if (this._bound) return;
-    this._bound = true;
-    const scope = document.getElementById("profile-scope");
-    const session = document.getElementById("profile-session");
-    const key = document.getElementById("profile-key");
-    const refresh = document.getElementById("profile-refresh");
-    const reset = document.getElementById("profile-reset");
-    const previous = document.getElementById("profile-prev");
-    const next = document.getElementById("profile-next");
-    const body = document.getElementById("profiles-body");
-
-    if (scope) scope.addEventListener("change", () => {
-      this.state.profile.scope = scope.value;
-      this._resetAndFetch();
+    if (this._bound) return; this._bound = true;
+    const p = this.state.profile, bind = (id, type, fn) => document.getElementById(id)?.addEventListener(type, fn);
+    bind("profile-refresh", "click", () => this.fetch());
+    bind("profile-query", "input", debounce(event => { p.query = event.target.value.trim(); p.offset = 0; this.fetch(); }, 300));
+    bind("profile-session", "input", debounce(event => { p.sessionId = event.target.value.trim(); p.offset = 0; this.fetch(); }, 300));
+    bind("profile-reset", "click", () => { p.query = ""; p.sessionId = ""; p.category = ""; p.lifecycle = ""; p.offset = 0; document.getElementById("profile-query").value = ""; document.getElementById("profile-session").value = ""; this.fetch(); });
+    bind("profile-prev", "click", () => { if (p.offset > 0) { p.offset = Math.max(0, p.offset - p.limit); this.fetch(); } });
+    bind("profile-next", "click", () => { if (p.hasMore) { p.offset += p.limit; this.fetch(); } });
+    bind("profile-users", "click", event => { const user = event.target.closest("[data-profile-user]"); if (user) this.selectUser(p.users[Number(user.dataset.profileUser)], true); if (event.target.closest('[data-profile-retry="list"]')) this.fetch(); });
+    bind("profile-reader", "click", event => {
+      const edit = event.target.closest("[data-profile-edit]"); if (edit) this.openItem(p.items[Number(edit.dataset.profileEdit)]);
+      const source = event.target.closest("[data-source-memory]"); if (source) this.peek.renderMemory({ memory_id: source.dataset.sourceMemory });
+      if (event.target.closest("#profile-load-more")) this.fetchDetail(true);
+      if (event.target.closest('[data-profile-retry="detail"]')) this.fetchDetail(p.items.length > 0);
     });
-    if (session) session.addEventListener("change", () => {
-      this.state.profile.sessionId = session.value;
-      this._resetAndFetch();
-    });
-    if (key) key.addEventListener("input", debounce(() => {
-      this.state.profile.key = key.value.trim();
-      this._resetAndFetch();
-    }, 300));
-    if (refresh) refresh.addEventListener("click", () => this.fetch());
-    if (reset) reset.addEventListener("click", () => {
-      this.state.profile.scope = "";
-      this.state.profile.sessionId = "";
-      this.state.profile.key = "";
-      this._resetAndFetch();
-    });
-    if (previous) previous.addEventListener("click", () => {
-      if (this.state.profile.offset <= 0) return;
-      this.state.profile.offset = Math.max(0, this.state.profile.offset - this.state.profile.limit);
-      this.fetch();
-    });
-    if (next) next.addEventListener("click", () => {
-      if (!this.state.profile.hasMore) return;
-      this.state.profile.offset += this.state.profile.limit;
-      this.fetch();
-    });
-    if (body) body.addEventListener("click", (event) => {
-      const button = event.target.closest(".profile-delete");
-      if (button) {
-        event.stopPropagation();
-        this.deleteItem(button.dataset.profileScope, button.dataset.profileKey);
-        return;
-      }
-      const row = event.target.closest(".profile-row");
-      if (row) this.openItem(this.state.profile.items[Number(row.dataset.profileIndex)]);
-    });
-    if (body) body.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter" && event.key !== " ") return;
-      const row = event.target.closest(".profile-row");
-      if (!row || event.target.closest("button")) return;
-      event.preventDefault();
-      this.openItem(this.state.profile.items[Number(row.dataset.profileIndex)]);
-    });
+    bind("profile-reader", "change", event => { if (event.target.id === "profile-category") p.category = event.target.value; else if (event.target.id === "profile-lifecycle") p.lifecycle = event.target.value; else return; this.renderDetail(); });
   }
 }

@@ -1,5 +1,7 @@
 # Configuration
 
+See [3.4.0 adaptations](/en/upstream-sync-3.4.0) for fusion, time windows, agentic tools and deduplication switches. The dashboard settings page supports search and validated persistence; reload the plugin to apply saved values together.
+
 Anamnesis defaults work for most users. The settings you usually need to touch are model providers, recall size, memory isolation, graph retrieval, backup, and cleanup.
 
 > [!NOTE]

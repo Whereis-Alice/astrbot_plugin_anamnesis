@@ -1290,7 +1290,7 @@ class TestRouteRegistration:
         plugin = FakePlugin()
         api = PluginPageApi(plugin)
         api.register_routes()
-        assert len(plugin._api_routes) == 23
+        assert len(plugin._api_routes) == 26
 
         paths = {route for route, _, _, _ in plugin._api_routes}
         prefix = PAGE_API_PREFIX
@@ -1741,3 +1741,30 @@ class TestConsolidationHandler:
         assert result["data"]["consolidated_count"] == 1
         assert result["data"]["archived_count"] == 1
         assert result["data"]["config"]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_profile_directory_api_passes_identity_filters(api):
+    manager = SimpleNamespace(list_users_for_web=AsyncMock(return_value={"users":[],"total":0}))
+    api.plugin.user_profile_manager = manager
+    req = _mock_page_request(args={"q":"Alice","session_id":"qq:GroupMessage:1","limit":"30","offset":"2"})
+    with _patch_page_request(req):
+        response = await api.list_profile_users()
+    assert response["status"] == "ok"
+    manager.list_users_for_web.assert_awaited_once_with(query="Alice",source_session_id="qq:GroupMessage:1",limit=30,offset=2)
+
+
+@pytest.mark.asyncio
+async def test_settings_api_validates_and_preserves_running_config(api):
+    from astrbot_plugin_anamnesis.core.base.config_manager import ConfigManager
+
+    manager = ConfigManager()
+    api.plugin.config_manager = manager
+    req = _mock_page_request(args={"lang":"en"},get_json={"updates":{"recall_engine.search_timeout_seconds":15}})
+    with _patch_page_request(req), patch("astrbot_plugin_anamnesis.core.page_api_modules.settings_handler.request", req):
+        described = await api.get_config()
+        saved = await api.update_config()
+    assert described["status"] == "ok" and described["data"]["sections"]
+    assert saved["status"] == "ok" and saved["data"]["reload_required"]
+    assert manager.get("recall_engine.search_timeout_seconds") == 5
+    assert manager.get_saved_settings()["recall_engine"]["search_timeout_seconds"] == 15

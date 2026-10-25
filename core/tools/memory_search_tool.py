@@ -5,16 +5,16 @@ import json
 from dataclasses import field
 from typing import Any
 
-from pydantic.dataclasses import dataclass
-
 from astrbot.api import logger
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
+from pydantic.dataclasses import dataclass
 
 from ..base.config_manager import ConfigManager
 from ..memory_scope import is_event_memory_allowed, resolve_memory_scope
 from ..utils import get_persona_id
+from .agentic_recall import agentic_search
 
 
 def _json_result(data: dict[str, Any]) -> str:
@@ -70,6 +70,11 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
         query: str,
         k: int = 5,
         include_source: bool = False,
+        speaker: str | None = None,
+        start_time: str | None = None,
+        end_time: str | None = None,
+        exclude_ids: list[int] | None = None,
+        cursor: str | None = None,
     ) -> ToolExecResult:
         """执行长期记忆回忆。"""
         cleaned_query = (query or "").strip()
@@ -99,6 +104,10 @@ class MemorySearchTool(FunctionTool[AstrAgentContext]):
 
         try:
             event = context.context.event
+            if self.config_manager.get("agent_tools.agentic_recall_enabled", False):
+                return await agentic_search(self, event, cleaned_query, k, include_source,
+                                            speaker=speaker, start_time=start_time, end_time=end_time,
+                                            exclude_ids=exclude_ids, cursor=cursor)
             if not is_event_memory_allowed(self.config_manager, event):
                 return _json_result(
                     {

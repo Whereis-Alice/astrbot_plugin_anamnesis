@@ -3,18 +3,19 @@ MemoryEngine 的 MemoryEngineBatchMixin 拆分模块
 自动从 core/managers/memory_engine.py 拆分，保持行为不变
 """
 
-from typing import Any
 import asyncio
-from ..utils.number_utils import clamp_float, safe_float
-from ..processors.atom_classifier import classify_atoms
 import json
-from astrbot.api import logger
-from pathlib import Path
 import time
+from pathlib import Path
+from typing import Any
 
 import aiosqlite
+from astrbot.api import logger
 
 from ...storage.atom_store import AtomStore
+from ...storage.sqlite_utils import configure_sqlite_connection
+from ..processors.atom_classifier import classify_atoms
+from ..utils.number_utils import clamp_float, safe_float
 
 
 class MemoryEngineBatchMixin:
@@ -264,8 +265,9 @@ class MemoryEngineBatchMixin:
         archived_at = time.time()
         for document in documents:
             metadata = self._safe_json_dict(document.get("metadata"))
-            if str(metadata.get("status") or "active") == "archived":
+            if str(metadata.get("status") or "active") != "active":
                 continue
+            metadata["archived_atom_lifecycle"] = await self.snapshot_archived_atom_lifecycle(int(document["id"]))
             metadata["status"] = "archived"
             metadata["archived_at"] = archived_at
             active_documents.append(document)
@@ -276,27 +278,54 @@ class MemoryEngineBatchMixin:
             return 0
 
         archived_ids = [int(document["id"]) for document in active_documents]
+        profile_manager = getattr(self, "user_profile_manager", None)
+        if profile_manager is not None:
+            await profile_manager.set_source_suppressed(archived_ids, True)
         placeholders = ",".join("?" * len(archived_ids))
-        await self.db_connection.executemany(
-            "UPDATE documents SET metadata = ? WHERE id = ?",
-            metadata_updates,
-        )
-        await self.db_connection.execute(
-            f"DELETE FROM livingmemory_memories_fts WHERE doc_id IN ({placeholders})",
-            archived_ids,
-        )
-        await self.db_connection.commit()
+        try:
+            async with aiosqlite.connect(self.db_path) as connection:
+                await configure_sqlite_connection(connection, self.config)
+                await connection.executemany(
+                    "UPDATE documents SET metadata=json_set(metadata, '$.status','archived', "
+                    "'$.archived_at', ?, '$.archived_atom_lifecycle', json(?)) WHERE id=?",
+                    [(archived_at, json.dumps(json.loads(raw)["archived_atom_lifecycle"]), memory_id)
+                     for raw, memory_id in metadata_updates],
+                )
+                await connection.execute(
+                    f"DELETE FROM livingmemory_memories_fts WHERE doc_id IN ({placeholders})", archived_ids,
+                )
+                await connection.commit()
+            self._invalidate_search_cache()
+        except BaseException:
+            if profile_manager is not None:
+                await profile_manager.set_source_suppressed(archived_ids, False)
+            raise
 
         embedding_storage = getattr(self.faiss_db, "embedding_storage", None)
         embedding_delete = getattr(embedding_storage, "delete", None)
         if callable(embedding_delete):
-            await embedding_delete(archived_ids)
+            try:
+                await embedding_delete(archived_ids)
+            except asyncio.CancelledError:
+                await self._set_index_rebuild_required(True)
+                raise
+            except Exception:
+                await self._set_index_rebuild_required(True)
+                logger.warning("归档向量删除失败，已标记索引需要重建", exc_info=True)
         else:
+            await self._set_index_rebuild_required(True)
             logger.warning(
                 "[归档] 当前 AstrBot 不支持独立删除向量，已保留软归档状态"
             )
 
-        await self._delete_graph_and_atoms_for_batch(archived_ids)
+        try:
+            await self._delete_graph_and_atoms_for_batch(archived_ids)
+        except asyncio.CancelledError:
+            await self._set_index_rebuild_required(True)
+            raise
+        except Exception:
+            await self._set_index_rebuild_required(True)
+            logger.warning("归档已完成，派生索引清理失败，已标记重建", exc_info=True)
         self._invalidate_search_cache()
         logger.info(f"[归档] 已归档 {len(archived_ids)} 条记忆")
         return len(archived_ids)
@@ -309,7 +338,11 @@ class MemoryEngineBatchMixin:
         if not memory:
             return False
         metadata = self._safe_json_dict(memory.get("metadata"))
+        original_metadata = dict(metadata)
         if str(metadata.get("status") or "active") != "archived":
+            profile_manager = getattr(self, "user_profile_manager", None)
+            if profile_manager is not None and metadata.get("status", "active") == "active":
+                await profile_manager.set_source_suppressed([memory_id], False)
             return True
 
         embedding_storage = getattr(self.faiss_db, "embedding_storage", None)
@@ -353,6 +386,12 @@ class MemoryEngineBatchMixin:
                 atom.parent_memory_id = memory_id
             if atoms and self.atom_store is not None:
                 await self.atom_store.insert_many(atoms)
+            if "archived_atom_lifecycle" in metadata:
+                await self.restore_archived_atom_lifecycle(
+                    memory_id, metadata["archived_atom_lifecycle"],
+                    session_id=metadata.get("session_id"), persona_id=metadata.get("persona_id"))
+                if self.atom_store is not None:
+                    atoms = await self.atom_store.get_by_parent(memory_id)
             if self.graph_memory_manager is not None:
                 await self.graph_memory_manager.index_memory(
                     memory_id, content, metadata, atoms
@@ -363,9 +402,23 @@ class MemoryEngineBatchMixin:
                 (json.dumps(metadata, ensure_ascii=False), memory_id),
             )
             await self.db_connection.commit()
+            profile_manager = getattr(self, "user_profile_manager", None)
+            if profile_manager is not None:
+                try:
+                    await profile_manager.set_source_suppressed([memory_id], False)
+                except Exception:
+                    logger.warning("记忆已恢复，但档案解除暂停失败；再次恢复可重试", exc_info=True)
+                    self._invalidate_search_cache()
+                    return False
             self._invalidate_search_cache()
             return True
-        except Exception:
+        except BaseException:
+            original_metadata["status"] = "archived"
+            await self.db_connection.execute(
+                "UPDATE documents SET metadata=? WHERE id=?",
+                (json.dumps(original_metadata, ensure_ascii=False), memory_id),
+            )
+            await self.db_connection.commit()
             if fts_inserted:
                 await self.db_connection.execute(
                     "DELETE FROM livingmemory_memories_fts WHERE doc_id = ?",

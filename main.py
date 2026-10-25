@@ -23,11 +23,13 @@ from .core.i18n_backend import t
 from .core.managers.backup_manager import BackupManager
 from .core.managers.user_profile_manager import UserProfileManager
 from .core.memory_scope import is_event_memory_allowed
-from .core.passive_group_capture import PassiveGroupCaptureFilter
-from .core.passive_group_capture import get_active_plugin
-from .core.passive_group_capture import is_plugin_enabled_for_session
-from .core.passive_group_capture import is_session_enabled
-from .core.passive_group_capture import set_active_plugin
+from .core.passive_group_capture import (
+    PassiveGroupCaptureFilter,
+    get_active_plugin,
+    is_plugin_enabled_for_session,
+    is_session_enabled,
+    set_active_plugin,
+)
 from .core.plugin_initializer import PluginInitializer
 from .core.tools import MemoryForgetTool, MemoryMemorizeTool, MemorySearchTool
 
@@ -244,6 +246,8 @@ class AnamnesisPlugin(Star):
                 self.user_profile_manager = UserProfileManager(
                     self.config_manager, self.initializer.conversation_manager
                 )
+            self.initializer.memory_engine.user_profile_manager = self.user_profile_manager
+            self.user_profile_manager.memory_engine = self.initializer.memory_engine
             if not self.event_handler:
                 self.event_handler = EventHandler(
                     context=self.context,
@@ -289,6 +293,17 @@ class AnamnesisPlugin(Star):
                     memory_engine=self.initializer.memory_engine,
                 )
             )
+            if self.config_manager.get("agent_tools.agentic_recall_enabled", False):
+                from .core.tools.memory_evidence_tool import MemoryEvidenceTool
+                tools[-1].parameters["properties"].update({
+                    "speaker": {"type": "string", "description": "Exact participant ID or name"},
+                    "start_time": {"type": "string", "description": "Inclusive epoch seconds or ISO-8601 time"},
+                    "end_time": {"type": "string", "description": "Inclusive epoch seconds or ISO-8601 time"},
+                    "exclude_ids": {"type": "array", "items": {"type": "integer"}},
+                    "cursor": {"type": "string", "description": "next_cursor from the same query and filters"},
+                })
+                tools.append(MemoryEvidenceTool(context=self.context, config_manager=self.config_manager,
+                                                memory_engine=self.initializer.memory_engine))
         if self.config_manager.get("agent_tools.enable_memorize_tool", False):
             tools.append(
                 MemoryMemorizeTool(
@@ -390,8 +405,7 @@ class AnamnesisPlugin(Star):
     @filter.on_llm_request()
     async def handle_memory_recall(self, event: AstrMessageEvent, req: ProviderRequest):
         """[Event Hook] Query and inject long-term memory before LLM request"""
-        ready, _ = await self._ensure_plugin_ready()
-        if not ready:
+        if not self.initializer.is_initialized or not self.event_handler:
             logger.debug("插件未完成初始化，跳过记忆召回")
             return
 
@@ -405,8 +419,7 @@ class AnamnesisPlugin(Star):
         self, event: AstrMessageEvent, resp: LLMResponse
     ):
         """[Event Hook] Check if reflection and memory storage is needed after LLM response"""
-        ready, _ = await self._ensure_plugin_ready()
-        if not ready:
+        if not self.initializer.is_initialized or not self.event_handler:
             logger.debug("插件未完成初始化，跳过记忆反思")
             return
 
@@ -695,6 +708,18 @@ class AnamnesisPlugin(Star):
 
         async for message in self.command_handler.handle_migrate_verify(event):
             yield message
+
+    @permission_type(PermissionType.ADMIN)
+    @anam.command("migrate-scope")
+    async def migrate_scope(self, event: AstrMessageEvent, source: str, target: str,
+                            mode: str = "preview", fingerprint: str = "", persona: str = ""):
+        """[Admin] Preview, back up and explicitly migrate a memory scope."""
+        ready, message = await self._ensure_plugin_ready()
+        if not ready:
+            yield event.plain_result(message)
+            return
+        async for result in self.command_handler.handle_migrate_scope(event, source, target, mode, fingerprint, persona):
+            yield result
 
     @permission_type(PermissionType.ADMIN)
     @anam.command("vacuum")

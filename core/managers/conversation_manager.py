@@ -11,9 +11,10 @@
 """
 
 import asyncio
-import json
+import math
 import time
 from collections import OrderedDict
+from datetime import datetime
 from typing import Any
 
 from astrbot.api import logger
@@ -22,9 +23,10 @@ from astrbot.api.platform import MessageType
 from ...storage.conversation_store import ConversationStore
 from ..memory_scope import resolve_sender_alias
 from ..models.conversation_models import Message, Session
+from .conversation_history import ConversationHistoryMixin
 
 
-class ConversationManager:
+class ConversationManager(ConversationHistoryMixin):
     """
     会话管理器 - 提供高级的会话和消息管理功能
 
@@ -84,6 +86,16 @@ class ConversationManager:
         )
 
     async def add_message_from_event(
+        self, event: Any, role: str, content: str,
+    ) -> Message | None:
+        # Reconcile/retry/clear use this same lock. A response may have become
+        # obsolete between the reflection hook's early check and this append.
+        async with self._history_lock(event.unified_msg_origin):
+            if role == "assistant" and not await self.response_checkpoint_valid(event):
+                return None
+            return await self._add_message_from_event_unlocked(event, role, content)
+
+    async def _add_message_from_event_unlocked(
         self,
         event: Any,  # AstrBot MessageEvent
         role: str,
@@ -170,7 +182,32 @@ class ConversationManager:
             group_id=group_id,
             platform=platform,
             is_bot_message=(role == "assistant"),
+            timestamp=self._event_timestamp(event) if role == "user" else None,
+            metadata=self._event_checkpoint(event),
         )
+
+    @staticmethod
+    def _event_checkpoint(event):
+        getter = getattr(event, "get_extra", None)
+        checkpoint = getter("llm_checkpoint_id") if callable(getter) else None
+        metadata = {"llm_checkpoint_id": checkpoint} if isinstance(checkpoint, str) and checkpoint else {}
+        cid = getter("anamnesis_conversation_id") if callable(getter) else None
+        if isinstance(cid, str) and cid:
+            metadata["anamnesis_conversation_id"] = cid
+        return metadata
+
+    @staticmethod
+    def _event_timestamp(event):
+        value = getattr(getattr(event, "message_obj", None), "timestamp", None)
+        if isinstance(value, datetime):
+            value = value.timestamp()
+        try:
+            value = float(value)
+            if value > 1e11:
+                value /= 1000
+            return value if math.isfinite(value) and 0 < value <= time.time() + 300 else None
+        except (TypeError, ValueError):
+            return None
 
     async def add_message(
         self,
@@ -182,6 +219,8 @@ class ConversationManager:
         group_id: str | None = None,
         platform: str = "unknown",
         is_bot_message: bool = False,
+        timestamp: float | None = None,
+        metadata: dict | None = None,
     ) -> Message:
         """
         添加消息到会话
@@ -212,8 +251,8 @@ class ConversationManager:
             sender_name=sender_name,
             group_id=group_id,
             platform=platform,
-            timestamp=time.time(),
-            metadata={"is_bot_message": True} if is_bot_message else {},
+            timestamp=timestamp or time.time(),
+            metadata={**(metadata or {}), **({"is_bot_message": True} if is_bot_message else {})},
         )
 
         # 存储到数据库
@@ -530,15 +569,7 @@ class ConversationManager:
         Args:
             session_id: 会话ID
         """
-        # 删除数据库中的消息
-        await self.store.delete_session_messages(session_id)
-
-        # 清除缓存
-        async with self._cache_lock:
-            if session_id in self._cache:
-                del self._cache[session_id]
-        # 同步重置会话元数据，特别是记忆总结的计数器
-        await self.reset_session_metadata(session_id)
+        await self._clear_session_history(session_id)
 
         logger.info(f"[ConversationManager] 已清空会话并重置记忆上下文: {session_id}")
 
@@ -713,6 +744,10 @@ class ConversationManager:
     async def update_session_metadata(
         self, session_id: str, key: str, value: Any
     ) -> None:
+        async with self._history_lock(session_id):
+            await self._update_session_metadata_unlocked(session_id, key, value)
+
+    async def _update_session_metadata_unlocked(self, session_id, key, value):
         """
         更新会话元数据
 
@@ -721,30 +756,12 @@ class ConversationManager:
             key: 元数据键
             value: 元数据值
         """
-        session = await self.store.get_session(session_id)
-        if not session:
+        changed = await self._update_metadata_batch_unlocked(session_id, {key: value}, None)
+        if not changed:
             logger.warning(
                 f"[ConversationManager] 会话 {session_id} 不存在，无法更新元数据"
             )
             return
-
-        # 更新元数据
-        session.metadata[key] = value
-
-        # 保存到数据库
-        if self.store.connection is not None:
-            try:
-                await self.store.connection.execute(
-                    """
-                    UPDATE sessions
-                    SET metadata = ?
-                    WHERE session_id = ?
-                """,
-                    (json.dumps(session.metadata, ensure_ascii=False), session_id),
-                )
-                await self.store.connection.commit()
-            except Exception as e:
-                logger.error(f"更新会话元数据失败: {e}", exc_info=True)
 
         logger.debug(
             f"[ConversationManager] 更新会话元数据: {session_id}, {key}={value}"

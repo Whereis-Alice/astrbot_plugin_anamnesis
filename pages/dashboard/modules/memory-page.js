@@ -3,7 +3,7 @@
  * 负责记忆列表展示、虚拟滚动、筛选和排序
  */
 
-import { normalizeImportance, esc, statusPill, typeLabel, debounce } from "./utils.js";
+import { normalizeImportance, esc, statusPill, typeLabel, debounce, originLabel } from "./utils.js";
 
 export class MemoryPage {
   constructor(state, apiClient, peekPanel) {
@@ -162,7 +162,7 @@ export class MemoryPage {
       const consBadge = item.consolidated_count > 0
         ? '<span class="type-tag cons-badge" title="' + esc(window.t("table.consolidatedTitle")) + '">' + window.t("table.consolidated", item.consolidated_count) + '</span> '
         : "";
-      html += '<td class="cell-summary">' + consBadge + '<div class="memory-summary-text">' + esc(item.summary || "") + '</div><div class="memory-summary-meta">' + esc(window.t("table.updated", item.updated_at || "--")) + '</div></td>';
+      html += '<td class="cell-summary">' + consBadge + '<div class="memory-summary-text">' + esc(item.summary || "") + '</div><div class="memory-summary-meta"><span class="origin-tag">' + esc(originLabel(item.raw?.metadata?.memory_origin)) + '</span>' + esc(window.t("table.updated", item.updated_at || "--")) + '</div></td>';
       html += '<td class="cell-type"><span class="type-tag">' + esc(typeLabel(item.memory_type)) + '</span></td>';
       html += '<td class="cell-importance"><div class="importance-bar"><div class="importance-bar-track">';
       html += '<div class="importance-bar-fill ' + impCls + '" style="width:' + (impNum * 10) + '%"></div></div>';

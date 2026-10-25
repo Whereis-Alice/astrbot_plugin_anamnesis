@@ -87,6 +87,8 @@ Migration reads the old data directory only. It never modifies or deletes anythi
 
 ## Project
 
+**3.4.0** redesigns profiles and settings, and adds bounded retrieval, edited-history reconciliation, optional agentic recall, conservative deduplication, explicit scope migration and reversible forgetting. See [the update guide](docs/en/upstream-sync-3.4.0.md).
+
 [Documentation](docs/en/) · [Releases](https://github.com/Whereis-Alice/astrbot_plugin_anamnesis/releases) · [Changelog](CHANGELOG.md) · [Upstream history](CHANGELOG_upstream.md) · [Issues](https://github.com/Whereis-Alice/astrbot_plugin_anamnesis/issues)
 
 Anamnesis is released under the [AGPL-3.0 license](LICENSE).

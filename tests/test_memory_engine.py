@@ -50,6 +50,7 @@ class _FakeFaissDB:
         self.docs: dict[int, dict] = {}
         self._next_id = 1
         self.document_storage = _FakeDocumentStorage(self)
+        self._sqlite_path = None
 
     async def insert(self, content: str, metadata: dict) -> int:
         doc_id = self._next_id
@@ -60,6 +61,15 @@ class _FakeFaissDB:
             "text": content,
             "metadata": dict(metadata),
         }
+        if self._sqlite_path is not None:
+            # Real AstrBot FAISS writes its parent document to this SQLite DB.
+            # Keep the fake's insert behavior consistent with lifecycle reads.
+            async with aiosqlite.connect(self._sqlite_path) as connection:
+                await connection.execute(
+                    "INSERT INTO documents(id,doc_id,text,metadata) VALUES(?,?,?,?)",
+                    (doc_id, f"uuid-{doc_id}", content, json.dumps(metadata)),
+                )
+                await connection.commit()
         return doc_id
 
     async def retrieve(
@@ -100,9 +110,25 @@ class _FakeFaissDB:
                 break
         if target is not None:
             self.docs.pop(target, None)
+            if self._sqlite_path is not None:
+                async with aiosqlite.connect(self._sqlite_path) as connection:
+                    await connection.execute("DELETE FROM documents WHERE id=?", (target,))
+                    await connection.commit()
 
     async def close(self) -> None:
         return None
+
+
+@pytest.fixture(autouse=True)
+def _bind_fake_faiss_to_parent_document_database(monkeypatch):
+    initialize = MemoryEngine.initialize
+
+    async def initialize_with_parent_storage(engine):
+        if isinstance(engine.faiss_db, _FakeFaissDB):
+            engine.faiss_db._sqlite_path = engine.db_path
+        await initialize(engine)
+
+    monkeypatch.setattr(MemoryEngine, "initialize", initialize_with_parent_storage)
 
 
 def test_memory_engine_atom_enabled_honors_explicit_false(tmp_path: Path):
@@ -263,7 +289,7 @@ async def test_memory_transfer_records_include_source_and_duplicate_key(tmp_path
         source_messages=source,
     )
     await engine.db_connection.execute(
-        "INSERT INTO documents (id, doc_id, text, metadata, created_at, updated_at) "
+        "INSERT OR REPLACE INTO documents (id, doc_id, text, metadata, created_at, updated_at) "
         "VALUES (?, ?, ?, ?, datetime('now'), datetime('now'))",
         (
             memory_id,

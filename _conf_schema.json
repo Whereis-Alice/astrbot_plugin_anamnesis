@@ -57,7 +57,11 @@
         "description": "记忆处理流式调用",
         "hint": "auto：先非流式，模型明确不支持时自动改用流式；always：始终流式；never：始终非流式。只保存完整响应，流中断时不写入记忆。",
         "type": "string",
-        "options": ["auto", "always", "never"],
+        "options": [
+          "auto",
+          "always",
+          "never"
+        ],
         "default": "auto"
       }
     }
@@ -162,14 +166,22 @@
         "hint": "单轮自动召回文本的总字符上限（包含说明与边界）；伪工具模式限制结果 JSON。默认 6000，0 表示不限。仅限制展示，不截断已存记忆。（允许范围：0–100000）",
         "type": "int",
         "default": 6000,
-        "slider": {"min": 0, "max": 100000, "step": 100}
+        "slider": {
+          "min": 0,
+          "max": 100000,
+          "step": 100
+        }
       },
       "injection_entry_max_chars": {
         "description": "自动召回单条展示上限",
         "hint": "每条自动召回记忆的展示字符上限。默认 1200，0 表示不限；防止长导入记忆占满模型上下文。（允许范围：0–20000）",
         "type": "int",
         "default": 1200,
-        "slider": {"min": 0, "max": 20000, "step": 100}
+        "slider": {
+          "min": 0,
+          "max": 20000,
+          "step": 100
+        }
       },
       "max_k": {
         "description": "主动检索最大数量",
@@ -340,6 +352,60 @@
           "max": 10000,
           "step": 1
         }
+      },
+      "fusion_mode": {
+        "description": "融合算法",
+        "hint": "rrf 保持原排序；score 按归一化相关度、路权重与共识排序。",
+        "type": "string",
+        "default": "rrf",
+        "options": [
+          "rrf",
+          "score"
+        ]
+      },
+      "fusion_bm25_weight": {
+        "description": "关键词路权重",
+        "hint": "score 模式中 BM25 权重；向量路使用其余权重。",
+        "type": "float",
+        "default": 0.5,
+        "slider": {
+          "min": 0,
+          "max": 1,
+          "step": 0.05
+        }
+      },
+      "fusion_agreement_bonus": {
+        "description": "双路共识加分",
+        "hint": "score 模式中，关键词和向量同时命中的额外奖励。",
+        "type": "float",
+        "default": 0.25,
+        "slider": {
+          "min": 0,
+          "max": 1,
+          "step": 0.05
+        }
+      },
+      "recall_candidate_multiplier": {
+        "description": "融合候选倍数",
+        "hint": "score 模式扩大候选池；rrf 保留兼容窗口。",
+        "type": "int",
+        "default": 3,
+        "slider": {
+          "min": 1,
+          "max": 20,
+          "step": 1
+        }
+      },
+      "vector_max_fetch_candidates": {
+        "description": "向量扩窗上限",
+        "hint": "作用域过滤后不足 Top-K 时逐步扩大向量窗口，到此上限停止。",
+        "type": "int",
+        "default": 8192,
+        "slider": {
+          "min": 32,
+          "max": 100000,
+          "step": 32
+        }
       }
     }
   },
@@ -491,6 +557,57 @@
           "max": 1.0,
           "step": 0.01
         }
+      },
+      "align_webchat_history": {
+        "description": "WebChat 编辑与重试对账",
+        "hint": "依据宿主 checkpoint 只清理已撤销尾部；头部压缩保留。不适用于无 checkpoint 的平台。",
+        "type": "bool",
+        "default": true
+      },
+      "split_by_day": {
+        "description": "总结按日期分段",
+        "hint": "按 AstrBot 时区分日；同轮问答保持在一起。",
+        "type": "bool",
+        "default": true
+      },
+      "idle_gap_minutes": {
+        "description": "总结空闲分段（分钟）",
+        "hint": "达到该间隔后分开总结，0 关闭空闲分段。",
+        "type": "int",
+        "default": 180,
+        "slider": {
+          "min": 0,
+          "max": 10080,
+          "step": 1
+        }
+      },
+      "dedup_enabled": {
+        "description": "保守近重复合并",
+        "hint": "默认关闭。仅同作用域、人格、源会话且事实完全相同的近重复总结才合并；矛盾和变化另存。",
+        "type": "bool",
+        "default": false
+      },
+      "dedup_candidate_count": {
+        "description": "去重候选数",
+        "hint": "近重复判断的最大候选数。",
+        "type": "int",
+        "default": 10,
+        "slider": {
+          "min": 1,
+          "max": 50,
+          "step": 1
+        }
+      },
+      "dedup_similarity_threshold": {
+        "description": "近重复文本阈值",
+        "hint": "文本相似度下限；事实、否定词和数值还需精确一致。",
+        "type": "float",
+        "default": 0.97,
+        "slider": {
+          "min": 0.9,
+          "max": 1,
+          "step": 0.01
+        }
       }
     }
   },
@@ -509,39 +626,62 @@
         "description": "档案隔离模式",
         "hint": "session：同一用户按 unified_msg_origin 聊天来源隔离（默认），/new 不清除此来源的档案；user：同一平台用户跨不同聊天共享。配置了 filtering_settings.isolated_sessions 的会话始终单独隔离。",
         "type": "string",
-        "options": ["session", "user"],
+        "options": [
+          "session",
+          "user"
+        ],
         "default": "session"
       },
       "max_items": {
         "description": "每个档案作用域最多条数",
         "type": "int",
         "default": 40,
-        "slider": {"min": 1, "max": 200, "step": 1}
+        "slider": {
+          "min": 1,
+          "max": 200,
+          "step": 1
+        }
       },
       "max_injection_chars": {
         "description": "每轮档案注入字数上限",
         "type": "int",
         "default": 3000,
-        "slider": {"min": 500, "max": 20000, "step": 100}
+        "slider": {
+          "min": 500,
+          "max": 20000,
+          "step": 100
+        }
       },
       "volatile_ttl_days": {
         "description": "临时状态保留天数",
         "hint": "当前状态类事实超期后不再注入；长期偏好不受此项限制。",
         "type": "int",
         "default": 7,
-        "slider": {"min": 1, "max": 3650, "step": 1}
+        "slider": {
+          "min": 1,
+          "max": 3650,
+          "step": 1
+        }
       },
       "extraction_max_chars": {
         "description": "单次提取来源文本字数上限",
         "type": "int",
         "default": 12000,
-        "slider": {"min": 1000, "max": 50000, "step": 1000}
+        "slider": {
+          "min": 1000,
+          "max": 50000,
+          "step": 1000
+        }
       },
       "llm_max_retries": {
         "description": "档案提取 LLM 额外重试次数",
         "type": "int",
         "default": 1,
-        "slider": {"min": 0, "max": 3, "step": 1}
+        "slider": {
+          "min": 0,
+          "max": 3,
+          "step": 1
+        }
       }
     }
   },
@@ -567,6 +707,88 @@
         "hint": "开启后注册 anamnesis_forget_memory；Agent 仅能按记忆 ID 删除当前作用域中的记忆。建议仅在可信场景中启用。",
         "type": "bool",
         "default": false
+      },
+      "agentic_recall_enabled": {
+        "description": "启用分步回忆与证据工具",
+        "hint": "增加人物、时间、排除 ID、游标与原文读取；与基础回忆保持同样的权限隔离。",
+        "type": "bool",
+        "default": false
+      },
+      "recall_max_calls": {
+        "description": "每轮回忆工具调用上限",
+        "hint": "检索与证据读取共用此调用预算。",
+        "type": "int",
+        "default": 5,
+        "slider": {
+          "min": 1,
+          "max": 30,
+          "step": 1
+        }
+      },
+      "recall_budget_seconds": {
+        "description": "每轮工具执行时间预算",
+        "hint": "累计检索与证据工具执行耗时；耗尽后停止。",
+        "type": "float",
+        "default": 20,
+        "slider": {
+          "min": 1,
+          "max": 600,
+          "step": 1
+        }
+      },
+      "recall_output_max_chars": {
+        "description": "每轮工具输出字符预算",
+        "hint": "所有检索与证据工具累计输出预算，完整 JSON 超出时明确标记截断。",
+        "type": "int",
+        "default": 16000,
+        "slider": {
+          "min": 1000,
+          "max": 100000,
+          "step": 1000
+        }
+      },
+      "recall_candidate_limit": {
+        "description": "分步回忆候选上限",
+        "hint": "分步筛选和分页基于有界候选池，不承诺遍历全库。",
+        "type": "int",
+        "default": 100,
+        "slider": {
+          "min": 10,
+          "max": 500,
+          "step": 10
+        }
+      },
+      "forget_mode": {
+        "description": "LLM 遗忘方式",
+        "hint": "delete 永久删除；archive 可恢复归档，并暂停相关档案注入。",
+        "type": "string",
+        "default": "delete",
+        "options": [
+          "delete",
+          "archive"
+        ]
+      },
+      "forget_max_per_request": {
+        "description": "每轮遗忘操作上限",
+        "hint": "删除、归档和恢复共用该限制。",
+        "type": "int",
+        "default": 3,
+        "slider": {
+          "min": 1,
+          "max": 20,
+          "step": 1
+        }
+      },
+      "forget_cooldown_seconds": {
+        "description": "遗忘操作冷却（秒）",
+        "hint": "同作用域连续遗忘操作间隔；0 关闭。",
+        "type": "float",
+        "default": 2,
+        "slider": {
+          "min": 0,
+          "max": 3600,
+          "step": 1
+        }
       }
     }
   },

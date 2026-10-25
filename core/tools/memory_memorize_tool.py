@@ -5,13 +5,12 @@ import json
 from dataclasses import field
 from typing import Any
 
-from pydantic.dataclasses import dataclass
-
 from astrbot.api import logger
 from astrbot.api.platform import MessageType
 from astrbot.core.agent.run_context import ContextWrapper
 from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
+from pydantic.dataclasses import dataclass
 
 from ..memory_scope import is_event_memory_allowed, resolve_memory_scope
 from ..utils import get_persona_id
@@ -152,8 +151,10 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
                 "tool_name": self.name,
             }
             metadata["memory_origin"] = "agent_memorize_tool"
+            metadata["source_type"] = "agent_memorize_tool"
             metadata["source_session_id"] = session_id
             cleaned_reason = (reason or "").strip()
+            metadata["record_reason"] = cleaned_reason or "Agent 主动保存明确事实"
             if cleaned_reason:
                 metadata["memorize_reason"] = cleaned_reason
 

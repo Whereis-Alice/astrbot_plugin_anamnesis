@@ -24,6 +24,7 @@ from .page_api_modules import (
     RecallHandler,
     StatsHandler,
 )
+from .page_api_modules.settings_handler import SettingsHandler
 
 PLUGIN_NAME = "astrbot_plugin_anamnesis"
 PAGE_API_PREFIX = f"/{PLUGIN_NAME}/page"
@@ -45,6 +46,7 @@ class PluginPageApi:
         self.graph_handler = GraphHandler(self.utils)
         self.prompt_handler = PromptHandler(self.utils)
         self.consolidation_handler = ConsolidationHandler(self.utils)
+        self.settings_handler = SettingsHandler(self.utils)
 
         # BackupHandler 需要 data_dir，延迟初始化
         self._backup_handler = None
@@ -62,6 +64,12 @@ class PluginPageApi:
     def register_routes(self) -> None:
         """注册官方插件页面所需的原生 API。"""
         register = self.plugin.context.register_web_api
+        register(f"{PAGE_API_PREFIX}/profiles/users", self.list_profile_users, ["GET"],
+                 "Anamnesis Page profile directory")
+        register(f"{PAGE_API_PREFIX}/config", self.get_config, ["GET"],
+                 "Anamnesis Page settings")
+        register(f"{PAGE_API_PREFIX}/config/update", self.update_config, ["POST"],
+                 "Anamnesis Page save settings")
         register(
             f"{PAGE_API_PREFIX}/stats",
             self.get_stats,
@@ -273,6 +281,39 @@ class PluginPageApi:
             return error
         return await self.memory_handler.batch_update_memories(ready["memory_engine"])
 
+    async def get_config(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.settings_handler.get_config(ready["config_manager"])
+
+    async def update_config(self):
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.settings_handler.update_config(ready["config_manager"])
+
+    async def list_profile_users(self):
+        _, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        manager = getattr(self.plugin, "user_profile_manager", None)
+        if manager is None:
+            return self.utils.error("用户档案组件尚未初始化")
+        try:
+            data = await manager.list_users_for_web(
+                query=str(request.args.get("q", ""))[:200],
+                source_session_id=self.utils.optional_text(request.args.get("session_id")),
+                limit=max(1, min(100, int(request.args.get("limit", 30)))),
+                offset=max(0, int(request.args.get("offset", 0))),
+            )
+            return self.utils.ok(data)
+        except (TypeError, ValueError):
+            return self.utils.error("limit 和 offset 必须是整数")
+        except Exception:
+            logger.exception("读取用户目录失败")
+            return self.utils.error("读取用户目录失败，请查看插件日志")
+
     async def list_profiles(self):
         """List independent user-profile facts for the administrator WebUI."""
         ready, error = await self._ensure_plugin_ready()
@@ -291,6 +332,7 @@ class PluginPageApi:
         try:
             data = await profile_manager.list_for_web(
                 profile_scope=self.utils.optional_text(args.get("scope")),
+                **({"identity": self.utils.optional_text(args.get("identity"))} if args.get("identity") else {}),
                 source_session_id=self.utils.optional_text(args.get("session_id")),
                 key_query=self.utils.optional_text(args.get("key")),
                 limit=limit,
@@ -342,7 +384,7 @@ class PluginPageApi:
             return self.utils.error("必须提供 profile_scope 和 profile_key")
         updates = {
             field: payload[field]
-            for field in ("value", "category", "confidence", "expires_at")
+            for field in ("value", "category", "confidence", "expires_at", "display_label")
             if field in payload
         }
         if not updates:

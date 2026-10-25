@@ -6,13 +6,20 @@ import json
 from pathlib import Path
 from typing import Any
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = PROJECT_ROOT / "_conf_schema.json"
 I18N_DIR = PROJECT_ROOT / ".astrbot-plugin" / "i18n"
 
 EXPECTED_OPTION_LABELS = {
     "en-US": {
+        "recall_engine.fusion_mode": {
+            "rrf": "Reciprocal rank fusion (RRF)",
+            "score": "Weighted relevance score",
+        },
+        "agent_tools.forget_mode": {
+            "delete": "Permanently delete",
+            "archive": "Archive for restoration",
+        },
         "provider_settings.llm_stream_mode": {
             "auto": "Automatic", "always": "Always stream", "never": "Never stream",
         },
@@ -57,6 +64,14 @@ EXPECTED_OPTION_LABELS = {
         },
     },
     "ru-RU": {
+        "recall_engine.fusion_mode": {
+            "rrf": "Слияние обратных рангов (RRF)",
+            "score": "Взвешенная релевантность",
+        },
+        "agent_tools.forget_mode": {
+            "delete": "Удалить безвозвратно",
+            "archive": "Архивировать для восстановления",
+        },
         "provider_settings.llm_stream_mode": {
             "auto": "Автоматически", "always": "Всегда потоковый", "never": "Без потока",
         },

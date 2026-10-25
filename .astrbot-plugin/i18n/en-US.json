@@ -49,8 +49,16 @@
       "llm_stream_mode": {
         "description": "Memory LLM Streaming",
         "hint": "auto: try non-streaming first and switch only when explicitly unsupported; always: stream; never: non-stream. Only complete responses are saved; interrupted streams do not create memories.",
-        "options": {"auto": "Automatic", "always": "Always stream", "never": "Never stream"},
-        "labels": ["Automatic", "Always stream", "Never stream"]
+        "options": {
+          "auto": "Automatic",
+          "always": "Always stream",
+          "never": "Never stream"
+        },
+        "labels": [
+          "Automatic",
+          "Always stream",
+          "Never stream"
+        ]
       }
     },
     "session_manager": {
@@ -183,6 +191,31 @@
       "search_cache_max_size": {
         "description": "Max Search Cache Entries",
         "hint": "Maximum number of retrieval results kept in memory. When the limit is exceeded, the least recently used entries are evicted. Allowed range: 0-10000."
+      },
+      "fusion_mode": {
+        "description": "Fusion algorithm",
+        "hint": "rrf preserves compatibility. score combines normalized relevance, route weights and agreement.",
+        "options": {
+          "rrf": "Reciprocal rank fusion (RRF)",
+          "score": "Weighted relevance score"
+        },
+        "labels": ["Reciprocal rank fusion (RRF)", "Weighted relevance score"]
+      },
+      "fusion_bm25_weight": {
+        "description": "Keyword route weight",
+        "hint": "Default: 0.5. Range: 0–1."
+      },
+      "fusion_agreement_bonus": {
+        "description": "Route agreement bonus",
+        "hint": "Default: 0.25. Range: 0–1."
+      },
+      "recall_candidate_multiplier": {
+        "description": "Fusion candidate multiplier",
+        "hint": "Default: 3. Range: 1–20."
+      },
+      "vector_max_fetch_candidates": {
+        "description": "Vector expansion cap",
+        "hint": "Default: 8192. Range: 32–100000."
       }
     },
     "importance_decay": {
@@ -257,18 +290,63 @@
       "source_retention_importance_threshold": {
         "description": "Source Retention Importance Threshold",
         "hint": "Store original messages separately when summary importance reaches this value, enabling verification, detailed Agent recall, and re-summarization. Range 0-1; 1 keeps only maximum-importance memories."
+      },
+      "align_webchat_history": {
+        "description": "Align edited WebChat history",
+        "hint": "Uses host checkpoints to remove reverted tails. Compressed history heads stay intact. Other platforms are unchanged."
+      },
+      "split_by_day": {
+        "description": "Split summaries by day",
+        "hint": "Enabled by default. Use the AstrBot timezone; a user message and its reply stay together."
+      },
+      "idle_gap_minutes": {
+        "description": "Summary idle gap (minutes)",
+        "hint": "Split after this idle interval. Default: 180 minutes; 0 disables idle boundaries. Range: 0–10080."
+      },
+      "dedup_enabled": {
+        "description": "Conservative duplicate merge",
+        "hint": "Off by default. Only equivalent facts in the same scope/persona/source chat merge; changed facts stay separate."
+      },
+      "dedup_candidate_count": {
+        "description": "Duplicate candidate count",
+        "hint": "Default: 10. Range: 1–50."
+      },
+      "dedup_similarity_threshold": {
+        "description": "Duplicate text threshold",
+        "hint": "Default: 0.97. Range: 0.9–1."
       }
     },
     "user_profile": {
       "description": "User Profiles (Beta)",
       "hint": "Keep explicit per-user facts outside top-k memory retrieval. When enabled, each successful summary makes one additional LLM extraction call.",
-      "enabled": {"description": "Enable User Profiles", "hint": "When off, no profiles are extracted or injected."},
-      "scope_mode": {"description": "Profile Scope Mode", "hint": "session (default) isolates each user's profile by unified message origin; /new keeps that profile. user shares across different chats on the same platform. Configured isolated sessions remain isolated.", "labels": ["Per Chat Origin", "Per User"]},
-      "max_items": {"description": "Maximum Facts per Profile Scope"},
-      "max_injection_chars": {"description": "Maximum Injection Characters"},
-      "volatile_ttl_days": {"description": "Temporary Fact Lifetime (Days)", "hint": "Temporary status facts stop being injected after this many days; stable preferences remain."},
-      "extraction_max_chars": {"description": "Maximum Extraction Source Characters"},
-      "llm_max_retries": {"description": "Additional LLM Extraction Retries"}
+      "enabled": {
+        "description": "Enable User Profiles",
+        "hint": "When off, no profiles are extracted or injected."
+      },
+      "scope_mode": {
+        "description": "Profile Scope Mode",
+        "hint": "session (default) isolates each user's profile by unified message origin; /new keeps that profile. user shares across different chats on the same platform. Configured isolated sessions remain isolated.",
+        "labels": [
+          "Per Chat Origin",
+          "Per User"
+        ]
+      },
+      "max_items": {
+        "description": "Maximum Facts per Profile Scope"
+      },
+      "max_injection_chars": {
+        "description": "Maximum Injection Characters"
+      },
+      "volatile_ttl_days": {
+        "description": "Temporary Fact Lifetime (Days)",
+        "hint": "Temporary status facts stop being injected after this many days; stable preferences remain."
+      },
+      "extraction_max_chars": {
+        "description": "Maximum Extraction Source Characters"
+      },
+      "llm_max_retries": {
+        "description": "Additional LLM Extraction Retries"
+      }
     },
     "agent_tools": {
       "description": "Agent Active Memory Tools",
@@ -284,6 +362,43 @@
       "enable_forget_tool": {
         "description": "Enable Active Memory Delete Tool",
         "hint": "When enabled, registers anamnesis_forget_memory. Only exact memory IDs in the current scope can be deleted."
+      },
+      "agentic_recall_enabled": {
+        "description": "Enable agentic recall and evidence",
+        "hint": "Adds speaker/time filters, exclusions, cursors and retained evidence under the existing scope/persona boundaries."
+      },
+      "recall_max_calls": {
+        "description": "Recall calls per request",
+        "hint": "Default: 5. Range: 1–30."
+      },
+      "recall_budget_seconds": {
+        "description": "Recall execution budget (seconds)",
+        "hint": "Default: 20. Range: 1–600."
+      },
+      "recall_output_max_chars": {
+        "description": "Recall output character budget",
+        "hint": "Default: 16000. Range: 1000–100000."
+      },
+      "recall_candidate_limit": {
+        "description": "Agentic recall candidate cap",
+        "hint": "Default: 100. Range: 10–500."
+      },
+      "forget_mode": {
+        "description": "LLM forget mode",
+        "hint": "delete is permanent. archive retains documents and original atom TTL, and suppresses related profile facts until restored.",
+        "options": {
+          "delete": "Permanently delete",
+          "archive": "Archive for restoration"
+        },
+        "labels": ["Permanently delete", "Archive for restoration"]
+      },
+      "forget_max_per_request": {
+        "description": "Forget operations per request",
+        "hint": "Default: 3. Range: 1–20."
+      },
+      "forget_cooldown_seconds": {
+        "description": "Forget cooldown (seconds)",
+        "hint": "Default: 2. Range: 0–3600."
       }
     },
     "graph_memory": {

@@ -17,6 +17,7 @@ from ..utils.number_utils import clamp_float, safe_float
 from .bm25_retriever import BM25Retriever
 from .rrf_fusion import BM25Result, FusedResult, RRFFusion, VectorResult
 from .vector_retriever import VectorRetriever
+from .vector_search import query_embedding_scope
 
 
 @dataclass
@@ -83,6 +84,17 @@ class HybridRetriever:
         self.decay_rate = self.config.get("decay_rate", 0.01)
         self.importance_weight = self.config.get("importance_weight", 1.0)
         self.fallback_enabled = self.config.get("fallback_enabled", True)
+        self.fusion_mode = self.config.get("fusion_mode", "rrf")
+        if self.fusion_mode not in ("rrf", "score"):
+            self.fusion_mode = "rrf"
+        self.fusion_bm25_weight = self.config.get("fusion_bm25_weight", 0.5)
+        self.fusion_agreement_bonus = self.config.get("fusion_agreement_bonus", 0.25)
+        try:
+            self.recall_candidate_multiplier = max(
+                1, min(10, int(self.config.get("recall_candidate_multiplier", 3)))
+            )
+        except (TypeError, ValueError, OverflowError):
+            self.recall_candidate_multiplier = 3
 
         # Rerank重排序参数
         self.rerank_enabled = bool(self.config.get("rerank_enabled", False))
@@ -177,20 +189,22 @@ class HybridRetriever:
         if not query or not query.strip():
             return []
 
-        # 1. 并行执行两路检索
-        (
-            (bm25_results, bm25_error),
-            (vector_results, vector_error),
-        ) = await asyncio.gather(
-            self._search_route(
-                "BM25",
-                self.bm25_retriever.search(query, k, session_id, persona_id),
-            ),
-            self._search_route(
-                "向量",
-                self.vector_retriever.search(query, k, session_id, persona_id),
-            ),
-        )
+        # Legacy RRF retains its candidate window and ordering by default.
+        candidate_k = k * self.recall_candidate_multiplier if self.fusion_mode == "score" else k
+        if self.fusion_mode == "score" and self.rerank_enabled:
+            candidate_k = max(candidate_k, self.rerank_candidates)
+        async with query_embedding_scope():
+            (
+                (bm25_results, bm25_error),
+                (vector_results, vector_error),
+            ) = await asyncio.gather(
+                self._search_route(
+                    "BM25", self.bm25_retriever.search(query, candidate_k, session_id, persona_id),
+                ),
+                self._search_route(
+                    "向量", self.vector_retriever.search(query, candidate_k, session_id, persona_id),
+                ),
+            )
 
         # 2. 处理退化情况
         if bm25_error and vector_error:
@@ -228,9 +242,16 @@ class HybridRetriever:
         )
         fuse_top_k = self.rerank_candidates if rerank_active else k
 
-        fused_results = self.rrf_fusion.fuse(
-            rrf_bm25_results, rrf_vector_results, top_k=fuse_top_k
-        )
+        if self.fusion_mode == "score":
+            fused_results = self.rrf_fusion.fuse_scores(
+                rrf_bm25_results, rrf_vector_results, top_k=fuse_top_k,
+                bm25_weight=self.fusion_bm25_weight,
+                agreement_bonus=self.fusion_agreement_bonus,
+            )
+        else:
+            fused_results = self.rrf_fusion.fuse(
+                rrf_bm25_results, rrf_vector_results, top_k=fuse_top_k
+            )
 
         if not fused_results:
             return []

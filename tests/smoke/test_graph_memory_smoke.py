@@ -37,6 +37,8 @@ async def _create_engine(tmp_path: Path) -> MemoryEngine:
             "cross_route_bonus": 0.08,
         },
     )
+    # Imported fakes do not inherit the defining module's autouse fixture.
+    engine.faiss_db._sqlite_path = engine.db_path
     await engine.initialize()
     return engine
 

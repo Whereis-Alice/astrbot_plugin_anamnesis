@@ -8,8 +8,11 @@ def test_dashboard_vendors_and_loads_lucide() -> None:
     index = (DASHBOARD / "index.html").read_text(encoding="utf-8")
     app = (DASHBOARD / "app.js").read_text(encoding="utf-8")
 
-    assert '<script src="./vendor/lucide.min.js"></script>' in index
-    assert (DASHBOARD / "vendor" / "lucide.min.js").stat().st_size > 100_000
+    assert '<script src="./assets/base.min.js"></script>' in index
+    assert (DASHBOARD / "vendor" / "lucide-icons.json").stat().st_size < 30_000
+    assert (DASHBOARD / "vendor" / "lucide-runtime.js").is_file()
+    assert not (DASHBOARD / "vendor" / "lucide.min.js").exists()
+    assert "AnamIcons" in (DASHBOARD / "assets" / "base.min.js").read_text(encoding="utf-8")
     assert (DASHBOARD / "vendor" / "LUCIDE_LICENSE").is_file()
     assert "lucide.createIcons" in app
     assert 'data-lucide="' in index

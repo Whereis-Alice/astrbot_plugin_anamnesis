@@ -11,6 +11,7 @@ import {
   SystemPage,
   PromptPage,
   ProfilePage,
+  SettingsPage,
   esc,
   statusPill,
   nodeBadge,
@@ -69,6 +70,7 @@ import {
   const systemPage = new SystemPage(state, api);
   const promptPage = new PromptPage(state, api);
   const profilePage = new ProfilePage(state, api, peekPanel);
+  const settingsPage = new SettingsPage(state, api);
 
   function hydrateIcons() {
     if (!window.lucide || typeof window.lucide.createIcons !== "function") return;
@@ -183,6 +185,7 @@ import {
     if (name === "system") systemPage.fetch();
     if (name === "prompts") promptPage.fetch();
     if (name === "profiles") profilePage.fetch();
+    if (name === "settings") settingsPage.fetch();
   }
 
   function normalizeLocale(locale) {
@@ -269,6 +272,7 @@ import {
       promptPage.refreshEditorTitle();
     }
     if (state.page === "profiles") profilePage.render();
+    if (state.page === "settings") settingsPage.fetch();
 
     const peekPanelEl = document.getElementById("peek-panel");
     const peekVisible = peekPanelEl && peekPanelEl.classList.contains("visible");
@@ -333,6 +337,7 @@ import {
     recallPage.initEventListeners();
     systemPage.initEventListeners();
     profilePage.initEventListeners();
+    settingsPage.initEventListeners();
 
     document.getElementById("peek-close").addEventListener("click", () => peekPanel.close());
     document.getElementById("peek-overlay").addEventListener("click", () => peekPanel.close());
@@ -369,6 +374,13 @@ import {
   window.lmStatusPill = statusPill;
   window.lmNodeBadge = nodeBadge;
   window.lmHydrateIcons = hydrateIcons;
+  window.lmLocateMemoryInGraph = async (id) => {
+    peekPanel.close();
+    switchPage("graph");
+    const input = document.getElementById("graph-memory-id");
+    if (input) input.value = String(id);
+    if (window.lmFocusMemoryInGraph) await window.lmFocusMemoryInGraph(id);
+  };
 
   // 图谱小视图绘制函数（如果需要）
   window.lmDrawMiniGraph = (canvas, nodes, edges) => {

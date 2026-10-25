@@ -3,22 +3,24 @@ PluginInitializer 的 InitializerFinalizeMixin 拆分模块
 自动从 core/plugin_initializer.py 拆分，保持行为不变
 """
 
-from typing import Any
 import asyncio
-from .managers.conversation_manager import ConversationManager
+import time
+from pathlib import Path
+from typing import Any
+
+from astrbot.api import logger
+from astrbot.core.provider.provider import Provider
+
 from ..storage.conversation_store import ConversationStore
 from ..storage.db_migration import DBMigration
-from .schedulers.decay_scheduler import DecayScheduler
-from .validators.index_validator import IndexValidator
 from .base.exceptions import InitializationError, ProviderNotReadyError
-from astrbot.api import logger
 from .faiss_async_persist import install_async_persist
 from .managers.consolidation_manager import MemoryConsolidationManager
+from .managers.conversation_manager import ConversationManager
 from .managers.memory_engine import MemoryEngine
 from .processors.memory_processor import MemoryProcessor
-from pathlib import Path
-from astrbot.core.provider.provider import Provider
-import time
+from .schedulers.decay_scheduler import DecayScheduler
+from .validators.index_validator import IndexValidator
 
 
 class InitializerFinalizeMixin:
@@ -44,7 +46,7 @@ class InitializerFinalizeMixin:
             if not self.llm_provider or not isinstance(self.llm_provider, Provider):
                 raise ProviderNotReadyError("LLM Provider 未初始化或类型不正确")
 
-            faiss_vec_db_cls = self._load_faiss_vec_db_class()
+            faiss_vec_db_cls = await asyncio.to_thread(self._load_faiss_vec_db_class)
 
             # 检查索引文件维度与当前 embedding provider 维度是否一致
             await self._check_and_fix_dimension_mismatch(str(index_path))
@@ -109,6 +111,11 @@ class InitializerFinalizeMixin:
                 "importance_weight": self.config_manager.get(
                     "recall_engine.importance_weight", 1.0
                 ),
+                **{key: self.config_manager.get(f"recall_engine.{key}", default)
+                   for key, default in {"fusion_mode": "rrf", "fusion_bm25_weight": 0.5,
+                                        "fusion_agreement_bonus": 0.25,
+                                        "recall_candidate_multiplier": 3,
+                                        "vector_max_fetch_candidates": 8192}.items()},
                 "min_importance_for_retrieval": self.config_manager.get(
                     "recall_engine.min_importance_for_retrieval", 0.0
                 ),
@@ -718,6 +725,9 @@ class InitializerFinalizeMixin:
             result=dict(result),
         )
         if success:
+            clear_flag = getattr(self.memory_engine, "_set_index_rebuild_required", None)
+            if callable(clear_flag):
+                await clear_flag(False)
             logger.info(
                 f"索引后台维护完成: 成功 {result.get('processed', 0)} 条, "
                 f"失败 {result.get('errors', 0)} 条"

@@ -1,5 +1,7 @@
 # WebUI
 
+3.4.0 redesigns profiles into a user directory and full categorized reader, and adds a settings page. See [the update guide](/en/upstream-sync-3.4.0).
+
 Anamnesis uses AstrBot official Plugin Pages for its dashboard. No extra web server is required.
 
 ## Entry

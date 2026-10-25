@@ -37,8 +37,11 @@ export class PromptPage {
       const data = await this.api.get("prompts");
       this.prompts = data.prompts || [];
       this.categories = data.categories || [];
+      this._error = "";
       this.render();
     } catch (e) {
+      this._error = e.message || window.t("prompt.fetchFailed");
+      this.renderFeedback();
       this.showToast(e.message || window.t("prompt.fetchFailed"), true);
     }
   }
@@ -47,6 +50,7 @@ export class PromptPage {
    * 渲染主页面
    */
   render() {
+    this.renderFeedback();
     const container = document.getElementById("prompt-content");
     if (!container) return;
 
@@ -173,6 +177,14 @@ export class PromptPage {
         this.openEditor(id);
       });
     });
+  }
+
+  renderFeedback() {
+    const el = document.getElementById("prompt-feedback");
+    if (!el) return;
+    el.classList.toggle("hidden", !this._error);
+    el.innerHTML = this._error ? esc(this._error) + '<button type="button" class="btn btn-sm" id="prompt-retry">' + esc(window.t("common.retry")) + '</button>' : "";
+    document.getElementById("prompt-retry")?.addEventListener("click", () => this.fetch());
   }
 
   /**

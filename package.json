@@ -1,10 +1,13 @@
 {
   "name": "astrbot-plugin-anamnesis-docs",
-  "version": "3.3.0",
+  "version": "3.4.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "test:frontend": "node --test tests/frontend/*.test.js",
+    "test:frontend": "node --test --test-concurrency=1 tests/frontend/*.test.js",
+    "dashboard:build": "node scripts/build_dashboard.mjs",
+    "dashboard:check": "node scripts/build_dashboard.mjs --check",
+    "test:browser": "node tests/browser/dashboard.spec.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs"
@@ -16,6 +19,8 @@
     "vue": "^3.5.44"
   },
   "devDependencies": {
+    "esbuild": "^0.25.12",
+    "playwright-core": "^1.55.1",
     "vitepress": "^1.6.4"
   }
 }

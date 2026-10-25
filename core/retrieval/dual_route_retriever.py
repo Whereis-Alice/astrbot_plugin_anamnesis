@@ -10,6 +10,7 @@ from astrbot.api import logger
 
 from .graph_retriever import GraphRetriever
 from .hybrid_retriever import HybridResult, HybridRetriever
+from .vector_search import query_embedding_scope
 
 # Bug I：intent 关键词表原先以局部元组硬编码在 `_route_weights_for_query` 内，
 # 只覆盖中英文；插件却随包发布了俄语 i18n（core/i18n/ru.json），俄语用户的意图
@@ -164,12 +165,13 @@ class DualRouteRetriever:
         persona_id: str | None = None,
     ) -> list[HybridResult]:
         """Run both retrieval routes and merge their memory candidates."""
-        doc_results, graph_results = await asyncio.gather(
-            self.document_retriever.search(
-                query, max(k * 2, k), session_id, persona_id
-            ),
-            self.graph_retriever.search(query, max(k * 2, k), session_id, persona_id),
-        )
+        async with query_embedding_scope():
+            doc_results, graph_results = await asyncio.gather(
+                self.document_retriever.search(
+                    query, max(k * 2, k), session_id, persona_id
+                ),
+                self.graph_retriever.search(query, max(k * 2, k), session_id, persona_id),
+            )
 
         if not graph_results:
             return doc_results[:k]

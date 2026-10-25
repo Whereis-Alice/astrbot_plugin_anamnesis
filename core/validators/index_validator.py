@@ -9,9 +9,10 @@ from dataclasses import dataclass
 from typing import Any, cast
 
 import aiosqlite
-
 from astrbot.api import logger
+
 from .index_validator_rebuild import IndexValidatorRebuildMixin
+
 
 @dataclass
 class IndexStatus:
@@ -263,6 +264,14 @@ class IndexValidator(IndexValidatorRebuildMixin):
                     is_consistent = True
                     reason = "索引状态正常"
 
+                async with db.execute("SELECT name FROM sqlite_master WHERE name='migration_status'") as cursor:
+                    has_status = await cursor.fetchone()
+                if has_status:
+                    async with db.execute("SELECT value FROM migration_status WHERE key='document_index_rebuild_required'") as cursor:
+                        flagged = await cursor.fetchone()
+                    if flagged and flagged[0] == "true":
+                        needs_rebuild, is_consistent = True, False
+                        reason = "向量删除失败或接口缺失，需要重建索引"
                 return IndexStatus(
                     is_consistent=is_consistent,
                     documents_count=documents_count,

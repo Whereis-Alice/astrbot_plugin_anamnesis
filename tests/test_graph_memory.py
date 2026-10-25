@@ -7,6 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import aiosqlite
 import pytest
 from astrbot_plugin_anamnesis.core.managers.graph_memory_manager import (
     GraphMemoryManager,
@@ -66,6 +67,7 @@ class _FakeFaissDB:
         self.insert_batch_calls = 0
         self.delete_documents_calls = 0
         self.document_storage = _FakeDocumentStorage(self)
+        self._sqlite_path = None
 
     async def insert(self, content: str, metadata: dict) -> int:
         doc_id = self._next_id
@@ -76,6 +78,13 @@ class _FakeFaissDB:
             "text": content,
             "metadata": dict(metadata),
         }
+        if self._sqlite_path is not None:
+            async with aiosqlite.connect(self._sqlite_path) as connection:
+                await connection.execute(
+                    "INSERT INTO documents(id,doc_id,text,metadata) VALUES(?,?,?,?)",
+                    (doc_id, f"uuid-{doc_id}", content, json.dumps(metadata)),
+                )
+                await connection.commit()
         return doc_id
 
     async def insert_batch(self, contents: list[str], metadatas: list[dict]):
@@ -123,6 +132,10 @@ class _FakeFaissDB:
                 break
         if target is not None:
             self.docs.pop(target, None)
+            if self._sqlite_path is not None:
+                async with aiosqlite.connect(self._sqlite_path) as connection:
+                    await connection.execute("DELETE FROM documents WHERE id=?", (target,))
+                    await connection.commit()
 
     async def delete_documents(self, metadata_filters: dict) -> None:
         self.delete_documents_calls += 1
@@ -135,10 +148,23 @@ class _FakeFaissDB:
             )
         ]
         for doc_id in matching_ids:
-            self.docs.pop(doc_id, None)
+            await self.delete(self.docs[doc_id]["doc_id"])
 
     async def close(self) -> None:
         return None
+
+
+@pytest.fixture(autouse=True)
+def _bind_fake_faiss_to_parent_document_database(monkeypatch):
+    initialize = MemoryEngine.initialize
+
+    async def initialize_with_parent_storage(engine):
+        if isinstance(engine.faiss_db, _FakeFaissDB):
+            # Graph vectors remain independent of the parent document table.
+            engine.faiss_db._sqlite_path = engine.db_path
+        await initialize(engine)
+
+    monkeypatch.setattr(MemoryEngine, "initialize", initialize_with_parent_storage)
 
 
 @pytest.mark.asyncio
@@ -602,6 +628,7 @@ async def test_memory_engine_dual_route_promotes_graph_hits(tmp_path: Path):
             "graph_memory_enabled": True,
             "document_route_weight": 0.6,
             "graph_route_weight": 0.4,
+            "recent_memory_count": 0,
         },
     )
     await engine.initialize()
@@ -672,8 +699,7 @@ async def test_memory_engine_rebuild_graph_index(tmp_path: Path):
     )
     assert memory_id > 0
 
-    # The lightweight FAISS fake does not persist its document row in SQLite.
-    # Graph rebuild deliberately streams from SQLite as the source of truth.
+    # Graph rebuild deliberately streams from the current SQLite source row.
     source_doc = engine.faiss_db.docs[memory_id]
     await engine.db_connection.execute(
         """

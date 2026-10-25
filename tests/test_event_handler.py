@@ -7,10 +7,9 @@ import time
 from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
+from astrbot.api.platform import MessageType
 from astrbot_plugin_anamnesis.core.base.config_manager import ConfigManager
 from astrbot_plugin_anamnesis.core.event_handler import EventHandler
-
-from astrbot.api.platform import MessageType
 
 
 @pytest.fixture
@@ -1784,12 +1783,38 @@ async def test_context_expansion_skips_when_empty(
 
 # ==================== 总结重试测试 ====================
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fallback_id,preserve_long_term", [(False, True), (True, True), (False, False)])
+async def test_webchat_alignment_wiring_preserves_new_conversation_memories(
+    handler, conversation_manager, memory_engine, fallback_id, preserve_long_term,
+):
+    from types import SimpleNamespace
+
+    event = _make_event(group=False)
+    event.get_platform_name.return_value = "webchat"
+    req = _make_req()
+    req.conversation = None if fallback_id else SimpleNamespace(cid="new-cid")
+    req.conversation_id = "new-cid" if fallback_id else None
+    conversation_manager.align_webchat_history = AsyncMock(return_value={
+        "cutoff": 0, "revision": 1, "preserve_long_term": preserve_long_term,
+    })
+    memory_engine.delete_reverted_summaries = AsyncMock(return_value=[])
+    await handler.handle_memory_recall(event, req)
+    conversation_manager.align_webchat_history.assert_awaited_once_with(
+        event, req.contexts, conversation_id="new-cid"
+    )
+    event.set_extra.assert_any_call("anamnesis_conversation_id", "new-cid")
+    if preserve_long_term:
+        memory_engine.delete_reverted_summaries.assert_not_awaited()
+    else:
+        memory_engine.delete_reverted_summaries.assert_awaited_once_with(event.unified_msg_origin, 0, 1)
+
 
 @pytest.mark.asyncio
 async def test_pending_summary_retry_max_abandons(
     handler, conversation_manager, memory_engine
 ):
-    """retry_count >= 3 时应放弃该范围，更新 last_summarized_index 并跳过总结。"""
+    """放弃已失败的窗口，但保留并处理它之后新到达的消息。"""
     conversation_manager.get_session_metadata = AsyncMock(
         side_effect=lambda sid, key, default=None: {
             "last_summarized_index": 0,
@@ -1821,9 +1846,10 @@ async def test_pending_summary_retry_max_abandons(
         for c in conversation_manager.update_session_metadata.await_args_list
         if c.args[1] == "last_summarized_index"
     ]
-    assert any(c.args[2] == 12 for c in skip_calls)
-    # 不应触发记忆总结
-    memory_engine.add_memory.assert_not_awaited()
+    assert any(c.args[2] == 10 for c in skip_calls)
+    conversation_manager.get_messages_range.assert_awaited_with(
+        session_id=event.unified_msg_origin, start_index=10, end_index=12
+    )
 
 
 @pytest.mark.asyncio

@@ -1,219 +1,79 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
 import { ProfilePage } from "../../pages/dashboard/modules/profile-page.js";
-
-function fakeElement() {
+function element() {
   const classes = new Set();
-  const listeners = {};
-  return {
-    innerHTML: "",
-    textContent: "",
-    value: "",
-    disabled: false,
-    className: "",
-    listeners,
-    addEventListener(type, handler) { listeners[type] = handler; },
-    closest() { return null; },
-    classList: {
-      add(name) { classes.add(name); },
-      toggle(name, enabled) {
-        if (enabled) classes.add(name);
-        else classes.delete(name);
-      },
-      contains(name) { return classes.has(name); },
-    },
-  };
+  return { innerHTML: "", textContent: "", value: "", disabled: false, listeners: {}, focus() {},
+    addEventListener(type, handler) { this.listeners[type] = handler; },
+    classList: { add: name => classes.add(name), remove: name => classes.delete(name), toggle: (name, yes) => yes ? classes.add(name) : classes.delete(name), contains: name => classes.has(name) } };
 }
-
 function setup(api) {
-  const ids = [
-    "profile-refresh", "profile-reset", "profile-status", "profile-scope-note", "profile-scope",
-    "profile-session", "profile-key", "profiles-body", "profile-pagination-info",
-    "profile-prev", "profile-next", "peek-badge", "peek-title",
-    "peek-body", "profile-editor-form", "profile-edit-value", "profile-edit-category",
-    "profile-edit-confidence", "profile-edit-expires", "profile-editor-save", "profile-editor-delete",
-  ];
-  const elements = Object.fromEntries(ids.map((id) => [id, fakeElement()]));
-  globalThis.document = { getElementById: (id) => elements[id] || null };
+  const ids = ["profile-refresh", "profile-status", "profile-scope-note", "profile-users", "profile-reader", "profile-pagination-info", "profile-prev", "profile-next", "peek-badge", "peek-title", "peek-body", "profile-editor-form", "profile-editor-delete", "profile-editor-source", "profile-edit-value", "profile-edit-category", "profile-edit-confidence", "profile-edit-expires", "profile-editor-save", "profile-editor-feedback"];
+  const elements = Object.fromEntries(ids.map(id => [id, element()]));
+  globalThis.document = { getElementById: id => elements[id] || null };
   globalThis.window = { t: (key, ...args) => `${key}:${args.join("|")}` };
-  const state = {};
-  const peek = {
-    opens: 0,
-    closes: 0,
-    confirmed: true,
-    open() { this.opens += 1; },
-    close() { this.closes += 1; },
-    async showConfirmDialog(title, message) {
-      this.lastDialog = { title, message };
-      return this.confirmed;
-    },
-  };
-  return { page: new ProfilePage(state, api, peek), state, peek, elements };
+  const peek = { _detailGeneration: 0, open() {}, close() {}, confirmed: true, async showConfirmDialog() { return this.confirmed; } };
+  const state = {}; return { page: new ProfilePage(state, api, peek), state, peek, elements };
 }
-
-function cleanup() {
-  delete globalThis.document;
-  delete globalThis.window;
-}
-
-const response = {
-  items: [{
-    profile_scope: "platform:user:chat-A",
-    profile_key: "favorite_food",
-    category: "preference",
-    value: "rice & <script>alert(1)</script>",
-    confidence: 0.85,
-    source_session_id: "chat-A",
-    updated_at: 1_700_000_000,
-    expires_at: null,
-  }],
-  total: 2,
-  limit: 1,
-  offset: 0,
-  scopes: ["platform:user:chat-A", "platform:user:chat-B"],
-  session_ids: ["chat-A", "chat-B"],
-  profile_enabled: true,
-  scope_mode: "session",
-};
-
-test("profile page lists scoped facts, escapes stored text, and paginates", async () => {
-  const gets = [];
-  const { page, state, elements } = setup({
-    async get(path, params) { gets.push({ path, params }); return response; },
-  });
-  try {
-    state.profile.limit = 1;
-    state.profile.scope = "platform:user:chat-A";
-    state.profile.sessionId = "chat-A";
-    state.profile.key = "favorite";
-    await page.fetch();
-    assert.deepEqual(gets, [{
-      path: "profiles",
-      params: { limit: "1", offset: "0", scope: "platform:user:chat-A", session_id: "chat-A", key: "favorite" },
-    }]);
-    assert.match(elements["profiles-body"].innerHTML, /favorite_food/);
-    assert.match(elements["profiles-body"].innerHTML, /rice &amp; &lt;script&gt;/);
-    // Layout wrappers must stay inside td; browser fixture verifies computed CSS.
-    assert.match(elements["profiles-body"].innerHTML, /<td class="profile-fact-cell"[^>]*><div class="profile-fact-content">/);
-    assert.match(elements["profiles-body"].innerHTML, /<td class="profile-value-cell"[^>]*><div class="profile-value-content">/);
-    assert.match(elements["profiles-body"].innerHTML, /<tr class="profile-group-header"><td class="profile-group-cell" colspan="4"/);
-    assert.doesNotMatch(elements["profiles-body"].innerHTML, /profile-chat-cell/);
-    assert.match(elements["profiles-body"].innerHTML, /class="btn btn-danger btn-sm profile-delete"[^>]*aria-label="profile.deleteTitle:/);
-    assert.doesNotMatch(elements["profiles-body"].innerHTML, /<script>/);
-    assert.match(elements["profile-scope-note"].textContent, /profile.scopeMode.session/);
-    assert.equal(elements["profile-prev"].disabled, true);
-    assert.equal(elements["profile-next"].disabled, false);
-  } finally {
-    cleanup();
-  }
+const user = { identity: "opaque:user:alice", platform: "qq", sender_id: "100", sender_name: "Alice <img>", last_group_name: "夜猫子游戏群", fact_count: 3, scope_count: 2 };
+const facts = [
+  { profile_scope: "scope:A", profile_key: "favorite_food", category: "preference", value: "rice & <script>alert(1)</script>", source_group_name: "游戏群", source_memory_id: 42, updated_at: 1700000000, confidence: .9 },
+  { profile_scope: "scope:B", profile_key: "preferred_nickname", category: "identity", value: "Alice", source_group_name: "读书群", expires_at: null },
+];
+const directory = { users: [user], total: 2, limit: 1, offset: 0, has_more: true, profile_enabled: true, scope_mode: "session" };
+const detail = { items: facts, total: 3, has_more: true };
+test("directory paginates users; one identity reads separate exact scopes with escaped full text", async () => {
+  const calls = [], { page, state, elements } = setup({ async get(path, params) { calls.push({ path, params }); return path === "profiles/users" ? directory : detail; } });
+  state.profile.limit = 1; state.profile.query = "Alice"; state.profile.sessionId = "chat-A";
+  await page.fetch();
+  assert.deepEqual(calls, [{ path: "profiles/users", params: { limit: "1", offset: "0", q: "Alice", session_id: "chat-A" } }, { path: "profiles", params: { identity: user.identity, limit: "500", offset: "0" } }]);
+  assert.equal((elements["profile-users"].innerHTML.match(/data-profile-user=/g) || []).length, 1);
+  assert.match(elements["profile-users"].innerHTML, /Alice &lt;img&gt;/);
+  assert.match(elements["profile-users"].innerHTML, /夜猫子游戏群/);
+  assert.equal((elements["profile-reader"].innerHTML.match(/class="profile-source-section"/g) || []).length, 2);
+  assert.match(elements["profile-reader"].innerHTML, /scope:A/); assert.match(elements["profile-reader"].innerHTML, /scope:B/);
+  assert.match(elements["profile-reader"].innerHTML, /profile.keyLabel.food/);
+  assert.match(elements["profile-reader"].innerHTML, /rice &amp; &lt;script&gt;/);
+  assert.doesNotMatch(elements["profile-reader"].innerHTML, /<script>/);
+  assert.equal(elements["profile-next"].disabled, false);
+  assert.match(elements["profile-reader"].innerHTML, /data-source-memory="42"/);
 });
-
-test("profile rows expose recent group context and editor saves exact scope/key", async () => {
-  const posts = [];
-  const { page, state, elements, peek } = setup({
-    async get() {
-      return {
-        ...response,
-        items: [{ ...response.items[0], source_group_id: "42", source_group_name: "夜猫子游戏群", source_sender_name: "Alice" }],
-        total: 1,
-      };
-    },
-    async post(path, body, options) {
-      posts.push({ path, body, options });
-      return { profile_key: body.profile_key, value: body.value };
-    },
-  });
-  try {
-    await page.fetch();
-    assert.match(elements["profiles-body"].innerHTML, /夜猫子游戏群/);
-    const item = state.profile.items[0];
-    page.openItem(item);
-    assert.equal(peek.opens, 1);
-    elements["profile-edit-value"].value = "new value";
-    elements["profile-edit-category"].value = "preference";
-    elements["profile-edit-confidence"].value = "0.91";
-    elements["profile-edit-expires"].value = "";
-    await page.saveItem(item);
-    assert.deepEqual(posts[0], {
-      path: "profiles/update",
-      body: {
-        profile_scope: "platform:user:chat-A",
-        profile_key: "favorite_food",
-        value: "new value",
-        category: "preference",
-        confidence: 0.91,
-        expires_at: null,
-      },
-      options: { retries: 0 },
-    });
-  } finally {
-    cleanup();
-  }
+test("fact continuation uses identity and loaded offset without splitting the user directory", async () => {
+  const calls = [], { page, state } = setup({ async get(path, params) { calls.push(params); return params.offset === "0" ? detail : { items: [{ ...facts[0], profile_key: "hobbies" }], total: 3, has_more: false }; } });
+  state.profile.identity = user.identity; state.profile.user = user;
+  await page.fetchDetail(); await page.fetchDetail(true);
+  assert.equal(calls[1].offset, "2"); assert.equal(calls[1].identity, user.identity);
+  assert.equal(state.profile.items.length, 3); assert.equal(state.profile.detailHasMore, false);
 });
-
-test("deletion sends exact scope and key only after confirmation", async () => {
-  const posts = [];
-  const { page, peek } = setup({
-    async get() { return { ...response, total: 0, items: [] }; },
-    async post(path, body, options) {
-      posts.push({ path, body, options });
-      return { deleted: true, count: 1 };
-    },
-  });
-  try {
-    peek.confirmed = false;
-    await page.deleteItem("platform:user:chat-A", "favorite_food");
-    assert.equal(posts.length, 0);
-    assert.equal(peek.closes, 1);
-
-    peek.confirmed = true;
-    await page.deleteItem("platform:user:chat-B", "favorite_food");
-    assert.deepEqual(posts, [{
-      path: "profiles/delete",
-      body: { profile_scope: "platform:user:chat-B", profile_key: "favorite_food" },
-      options: { retries: 0 },
-    }]);
-    assert.match(peek.lastDialog.message, /platform:user:chat-B/);
-    assert.equal(peek.closes, 2);
-  } finally {
-    cleanup();
-  }
+test("lifetime is explicit and suppressed facts never look active", () => {
+  const { page } = setup({});
+  assert.equal(page.lifecycle({ expires_at: null }, 100), "stable");
+  assert.equal(page.lifecycle({ expires_at: 200 }, 100), "temporary");
+  assert.equal(page.lifecycle({ expires_at: 99 }, 100), "expired");
+  assert.equal(page.lifecycle({ suppressed: true, expires_at: 200 }, 100), "suppressed");
 });
-
-test("unknown confidence and scope mode remain explicit", async () => {
-  const { page, elements } = setup({
-    async get() {
-      return {
-        ...response,
-        items: [{ ...response.items[0], confidence: null }],
-        scope_mode: "future_mode",
-      };
-    },
-  });
-  try {
-    await page.fetch();
-    assert.match(elements["profiles-body"].innerHTML, /table.na/);
-    assert.match(elements["profile-scope-note"].textContent, /profile.scopeMode.unknown:future_mode/);
-  } finally {
-    cleanup();
-  }
+test("saving and confirmed deletion keep the exact original scope/key", async () => {
+  const posts = [], { page, peek, elements } = setup({ async get(path) { return path === "profiles/users" ? directory : detail; }, async post(path, body, options) { posts.push({ path, body, options }); return { count: 1 }; } });
+  page.openItem(facts[0]);
+  assert.equal(peek._detailGeneration, 1);
+  elements["profile-edit-value"].value = "new value"; elements["profile-edit-category"].value = "preference";
+  elements["profile-edit-confidence"].value = "0.85";
+  await page.saveItem(facts[0]);
+  assert.deepEqual(posts[0], { path: "profiles/update", body: { profile_scope: "scope:A", profile_key: "favorite_food", value: "new value", category: "preference", confidence: .85, expires_at: null }, options: { retries: 0 } });
+  peek.confirmed = false; await page.deleteItem("scope:B", "preferred_nickname"); assert.equal(posts.length, 1);
+  peek.confirmed = true; await page.deleteItem("scope:B", "preferred_nickname");
+  assert.deepEqual(posts[1].body, { profile_scope: "scope:B", profile_key: "preferred_nickname" });
 });
-
-test("a selected scope stays visible after its last fact is removed", async () => {
-  const { page, state, elements } = setup({
-    async get() {
-      return { ...response, items: [], total: 0, scopes: [], session_ids: [] };
-    },
-  });
-  try {
-    state.profile.scope = "platform:user:chat-A";
-    state.profile.sessionId = "chat-A";
-    await page.fetch();
-    assert.equal(elements["profile-scope"].value, "platform:user:chat-A");
-    assert.match(elements["profile-scope"].innerHTML, /platform:user:chat-A/);
-    assert.equal(elements["profile-session"].value, "chat-A");
-  } finally {
-    cleanup();
-  }
+test("a slow previous identity response cannot replace the new user's facts", async () => {
+  let resolveA;
+  const { page, state } = setup({ get(_path, params) { return params.identity === "A" ? new Promise(resolve => { resolveA = resolve; }) : Promise.resolve({ items: [facts[1]], total: 1 }); } });
+  const first = page.selectUser({ ...user, identity: "A" });
+  await page.selectUser({ ...user, identity: "B" }); resolveA({ items: [facts[0]], total: 1 }); await first;
+  assert.equal(state.profile.identity, "B"); assert.equal(state.profile.items[0].profile_scope, "scope:B");
+});
+test("directory load failures remain visible and retryable", async () => {
+  const { page, elements } = setup({ async get() { throw new Error("offline <script>"); } });
+  await page.fetch(); assert.match(elements["profile-users"].innerHTML, /role="alert"/);
+  assert.match(elements["profile-users"].innerHTML, /data-profile-retry="list"/);
+  assert.match(elements["profile-users"].innerHTML, /offline &lt;script&gt;/);
 });

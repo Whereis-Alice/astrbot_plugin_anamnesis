@@ -3,10 +3,11 @@ MemoryHandler 的 MemoryHandlerUpdateMixin 拆分模块
 自动从 core/page_api_modules/memory_handler.py 拆分，保持行为不变
 """
 
+import time
 from typing import Any
+
 from astrbot.api import logger
 from quart import request
-import time
 
 
 class MemoryHandlerUpdateMixin:
@@ -397,7 +398,14 @@ class MemoryHandlerUpdateMixin:
                         continue
                     updates["metadata"] = {"memory_type": type_value}
 
-                success = await memory_engine.update_memory(memory_id, updates)
+                if field == "status" and str(value).strip() == "archived":
+                    memory = await memory_engine.get_memory(memory_id)
+                    already_archived = bool(memory and memory.get("metadata", {}).get("status") == "archived")
+                    success = already_archived or bool(await memory_engine.archive_memories([memory_id]))
+                elif field == "status" and str(value).strip() == "active":
+                    success = await memory_engine.restore_memory(memory_id)
+                else:
+                    success = await memory_engine.update_memory(memory_id, updates)
                 if success:
                     updated_count += 1
                 else:

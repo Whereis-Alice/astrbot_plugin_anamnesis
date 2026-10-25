@@ -14,18 +14,21 @@ export class SystemPage {
   /**
    * 获取系统概览数据
    */
-  async fetch() {
+  async fetch(force = false) {
     // 如果有缓存且未过期，直接使用
-    if (this.state._systemCache && Date.now() - this.state._systemCache.timestamp < 10000) {
+    if (!force && this.state._systemCache && Date.now() - this.state._systemCache.timestamp < 10000) {
       this.render(this.state._systemCache.data);
       return;
     }
 
     try {
       const data = await this.api.get("stats");
+      this._error = "";
       this.state._systemCache = { data, timestamp: Date.now() };
       this.render(data);
     } catch (e) {
+      this._error = e.message || window.t("system.fetchFailed");
+      this.renderFeedback();
       this.showToast(e.message || window.t("system.fetchFailed"), true);
     }
   }
@@ -35,6 +38,7 @@ export class SystemPage {
    * @param {Object} data - 统计数据
    */
   render(data) {
+    this.renderFeedback();
     // 更新统计卡片
     this.renderStatCards(data);
 
@@ -155,7 +159,7 @@ export class SystemPage {
       html += '<div class="session-item">';
       html += '<div class="session-item-header">';
       html += '<span class="session-item-id">' + esc(String(sessionId)) + '</span>';
-      html += '<span class="session-item-count">' + messageCount + ' ' + window.t("system.messages") + '</span>';
+      html += '<span class="session-item-count">' + messageCount + ' ' + window.t("system.memoryCount") + '</span>';
       html += '</div>';
       if (lastActive !== "--") {
         html += '<div class="session-item-meta">' + window.t("system.lastActive") + ': ' + esc(lastActive) + '</div>';
@@ -180,11 +184,11 @@ export class SystemPage {
     }
 
     let html = '';
-    backups.forEach(backup => {
+    [...backups].sort((a, b) => Number(b.backup_unix_time || 0) - Number(a.backup_unix_time || 0)).forEach(backup => {
       // 后端返回字段：name, directory, backup_timestamp, file_count, files_copied
       const name = backup.name || backup.directory || "Unknown";
       const timestamp = backup.backup_timestamp || "--";
-      const fileCount = backup.file_count || backup.files_copied || 0;
+      const fileCount = backup.files_copied ?? backup.file_count ?? 0;
 
       html += '<div class="backup-item">';
       html += '<div class="backup-item-name">' + esc(name) + '</div>';
@@ -209,7 +213,8 @@ export class SystemPage {
       // 备份功能可能不可用，静默失败
       const listEl = document.getElementById("backup-list");
       if (listEl) {
-        listEl.innerHTML = '<div class="backup-empty">' + window.t("common.unavailable") + '</div>';
+        listEl.innerHTML = '<div class="inline-feedback" role="alert">' + esc(e.message || window.t("common.unavailable")) + '<button type="button" class="btn btn-sm" id="backup-retry">' + esc(window.t("common.retry")) + '</button></div>';
+        document.getElementById("backup-retry")?.addEventListener("click", () => this.fetchAndRenderBackups());
       }
     }
   }
@@ -223,7 +228,7 @@ export class SystemPage {
       this.renderConsolidation(data);
     } catch (e) {
       const metaEl = document.getElementById("consolidation-meta");
-      if (metaEl) metaEl.innerHTML = '<div class="session-empty">' + window.t("common.unavailable") + '</div>';
+      if (metaEl) { metaEl.innerHTML = '<div class="inline-feedback" role="alert">' + esc(e.message || window.t("common.unavailable")) + '<button type="button" class="btn btn-sm" id="consolidation-retry">' + esc(window.t("common.retry")) + '</button></div>'; document.getElementById("consolidation-retry")?.addEventListener("click", () => this.fetchConsolidation()); }
     }
   }
 
@@ -303,6 +308,14 @@ export class SystemPage {
   initEventListeners() {
     const runBtn = document.getElementById("cons-run-btn");
     if (runBtn) runBtn.addEventListener("click", () => this.runConsolidation());
+  }
+
+  renderFeedback() {
+    const el = document.getElementById("system-feedback");
+    if (!el) return;
+    el.classList.toggle("hidden", !this._error);
+    el.innerHTML = this._error ? esc(this._error) + '<button type="button" class="btn btn-sm" id="system-retry">' + esc(window.t("common.retry")) + '</button>' : "";
+    document.getElementById("system-retry")?.addEventListener("click", () => this.fetch(true));
   }
 
   /**

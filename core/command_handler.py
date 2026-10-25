@@ -1267,6 +1267,38 @@ class CommandHandler:
                 )
             )
 
+    async def handle_migrate_scope(self, event, source: str, target: str,
+                                   mode: str = "preview", fingerprint: str = "", persona: str = ""):
+        """Explicit administrator scope migration; profiles retain their own boundary."""
+        from .managers.scope_migrator import ScopeMigrator
+
+        try:
+            migrator = ScopeMigrator(self.memory_engine, backup_dir=Path(
+                self._resolve_data_dir() or Path(self.memory_engine.db_path).parent) / "scope-backups")
+            if mode == "preview":
+                result = await migrator.preview(source, target, persona_id=persona or None)
+                message = (f"作用域迁移预览：{source} → {target}\n"
+                           f"记忆 {result['document_count']} 条；原子 {result['atom_count']} 条；"
+                           f"图条目 {result['graph_entry_count']} 条\n"
+                           f"目标已有 {result['target_document_count']} 条记忆。源会话与人格保留，个人档案仍按原会话隔离。\n"
+                           f"预览指纹：{result['fingerprint']}\n"
+                           f"执行：/anam migrate-scope {source} {target} apply {result['fingerprint']}"
+                           + (f" {persona}" if persona else ""))
+            elif mode in ("backup", "apply"):
+                if not fingerprint:
+                    raise ValueError("请先 preview，并提供该次预览指纹")
+                operation = migrator.backup if mode == "backup" else migrator.apply
+                result = await operation(source, target, fingerprint, persona_id=persona or None)
+                paths = "\n".join(str(path) for path in result.get("backup_paths", []))
+                message = ("已创建迁移备份" if mode == "backup" else f"作用域迁移完成，共 {result['document_count']} 条记忆") + f"\n备份：\n{paths}"
+            else:
+                raise ValueError("mode 必须为 preview、backup 或 apply")
+            yield event.plain_result(message)
+        except Exception as error:
+            logger.warning("作用域迁移失败", exc_info=True)
+            paths = "\n".join(str(path) for path in getattr(error, "backup_paths", []))
+            yield event.plain_result(f"作用域迁移未完成：{error}" + (f"\n已保留备份：\n{paths}" if paths else ""))
+
     async def handle_help(
         self, event: AstrMessageEvent
     ) -> AsyncGenerator[MessageEventResult, None]:

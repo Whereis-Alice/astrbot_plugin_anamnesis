@@ -275,7 +275,18 @@
     if (dom.searchButton) dom.searchButton.disabled = loading;
     if (dom.focusButton) dom.focusButton.disabled = loading;
     if (dom.overviewButton) dom.overviewButton.disabled = loading;
+    if (!loading && state.pendingMemoryId != null) {
+      dom.memoryInput.value = String(state.pendingMemoryId);
+      state.pendingMemoryId = null;
+      queueMicrotask(focusMemory);
+    }
   }
+  window.lmFocusMemoryInGraph = function(id) {
+    if (!dom.memoryInput) return;
+    if (state.isLoading) { state.pendingMemoryId = id; return; }
+    dom.memoryInput.value = String(id);
+    return focusMemory();
+  };
 
   function renderPayload(payload, focusSelection) {
     state.payload = payload;
@@ -413,7 +424,8 @@
 
     /* Show in peek panel */
     var node = state.graphIndex.nodeMap.get(nodeId);
-    if (window.lmOpenPeekNode && node) window.lmOpenPeekNode(node);
+    var related = Array.from(state.graphIndex.nodeToMemories.get(nodeId) || []).map(function(id) { return state.graphIndex.memoryMap.get(id); }).filter(Boolean);
+    if (window.lmOpenPeekNode && node) window.lmOpenPeekNode(Object.assign({}, node, { related_memories: related }));
   }
 
   function selectMemory(memoryId) {

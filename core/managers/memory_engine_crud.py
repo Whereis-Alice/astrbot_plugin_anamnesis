@@ -7,19 +7,19 @@ import asyncio
 import json
 import math
 import sqlite3
-from typing import Any
-from ..utils.number_utils import clamp_float, safe_float
-from ..processors.atom_classifier import classify_atoms
-from ..retrieval.hybrid_retriever import HybridResult
-from astrbot.api import logger
-from ..memory_transfer import memory_import_key
 import time
+from typing import Any
 
 import aiosqlite
+from astrbot.api import logger
 
 from ...storage.alias_store import AliasStore
 from ...storage.atom_store import AtomStore
 from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
+from ..memory_transfer import memory_import_key
+from ..processors.atom_classifier import classify_atoms
+from ..retrieval.hybrid_retriever import HybridResult
+from ..utils.number_utils import clamp_float, safe_float
 
 
 class MemoryEngineCrudMixin:
@@ -527,11 +527,10 @@ class MemoryEngineCrudMixin:
         cache_key = self._search_cache_key(query, k, session_id, persona_id)
         cached_results = self._get_cached_search_results(cache_key)
         if cached_results is not None:
-            self._create_tracked_task(
-                self._update_access_times_internal(
-                    [result.doc_id for result in cached_results]
-                )
-            )
+            lifecycle_filter = getattr(self, "filter_recall_lifecycle", None)
+            if callable(lifecycle_filter):
+                cached_results = await lifecycle_filter(cached_results)
+            self._schedule_access_updates([result.doc_id for result in cached_results])
             return cached_results
 
         # 如果session_id是unified_msg_origin格式，自动触发旧数据迁移
@@ -563,21 +562,35 @@ class MemoryEngineCrudMixin:
             )
 
         results = self._filter_by_retrieval_policy(results)
+        atom_merge = getattr(self, "merge_atom_recall_candidates", None)
+        if callable(atom_merge):
+            results = await atom_merge(query, results, k, session_id, persona_id)
+            results = self._filter_by_retrieval_policy(results)
+        lifecycle_filter = getattr(self, "filter_recall_lifecycle", None)
+        if callable(lifecycle_filter):
+            results = await lifecycle_filter(results)
         results = await self._merge_recent_memories(
             results,
             k,
             session_id,
             persona_id,
         )
+        if callable(lifecycle_filter):
+            results = await lifecycle_filter(results)
 
         # 异步更新访问时间(不阻塞返回)
         if results:
-            self._create_tracked_task(
-                self._update_access_times_internal([r.doc_id for r in results])
-            )
+            self._schedule_access_updates([r.doc_id for r in results])
 
         self._set_cached_search_results(cache_key, results)
         return results
+
+    def _schedule_access_updates(self, ids):
+        queue = getattr(self, "_queue_access_updates", None)
+        if callable(queue):
+            queue(ids)
+        else:
+            self._create_tracked_task(self._update_access_times_internal(ids))
 
     async def get_memory(self, memory_id: int) -> dict[str, Any] | None:
         """
@@ -735,6 +748,10 @@ class MemoryEngineCrudMixin:
 
             if success:
                 logger.info(f"[更新] 元数据更新成功 (memory_id={memory_id})")
+                profile_manager = getattr(self, "user_profile_manager", None)
+                if "status" in metadata_updates and profile_manager is not None:
+                    await profile_manager.set_source_suppressed(
+                        [memory_id], metadata_updates["status"] != "active")
                 # 仅当更新触及图谱提取依赖的字段时才重建图谱索引；
                 # 状态/类型等纯元数据编辑重建整图（删节点+FAISS 落盘）纯属浪费
                 graph_affecting = metadata_updates.keys() & {
@@ -1187,7 +1204,7 @@ class MemoryEngineCrudMixin:
         """Atomically bump a single memory's access time and count."""
         return await self._update_access_times_internal([memory_id])
 
-    async def _update_access_times_internal(self, doc_ids: list[int]) -> bool:
+    async def _update_access_times_internal(self, doc_ids: list[int], *, counts=None) -> bool:
         """Atomically bump access time and count for multiple memories in one UPDATE.
 
         Args:
@@ -1217,6 +1234,9 @@ class MemoryEngineCrudMixin:
             # 单条原子 SQL，避免并发召回任务对同一记忆产生丢失更新，
             # 同时将多条结果合并为一次 commit 以降低写放大。
             placeholders = ",".join("?" * len(unique_ids))
+            increments = "CASE id " + " ".join("WHEN ? THEN ?" for _ in unique_ids) + " ELSE 1 END"
+            count_params = [value for doc_id in unique_ids
+                            for value in (doc_id, max(1, int((counts or {}).get(doc_id, 1))))]
             cursor = await access_connection.execute(
                 f"""
                 UPDATE documents
@@ -1228,15 +1248,15 @@ class MemoryEngineCrudMixin:
                             COALESCE(
                                 CAST(json_extract(metadata, '$.access_count') AS INTEGER),
                                 0
-                            ) + 1,
+                            ) + ({increments}),
                             1000000
                         )
                     )
-                    ELSE json_set('{{}}', '$.last_access_time', ?, '$.access_count', 1)
+                    ELSE json_set('{{}}', '$.last_access_time', ?, '$.access_count', ({increments}))
                 END
                 WHERE id IN ({placeholders})
                 """,
-                (current_time, current_time, *unique_ids),
+                (current_time, *count_params, current_time, *count_params, *unique_ids),
             )
             await access_connection.commit()
             return cursor.rowcount > 0

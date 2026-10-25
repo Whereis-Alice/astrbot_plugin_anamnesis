@@ -3,14 +3,16 @@ PluginInitializer 的 InitializerFaissMixin 拆分模块
 自动从 core/plugin_initializer.py 拆分，保持行为不变
 """
 
-from .base.exceptions import InitializationError
-from astrbot.api import logger
+import asyncio
 import os
 import subprocess
 import sys
 from importlib import metadata
 from typing import Any
 
+from astrbot.api import logger
+
+from .base.exceptions import InitializationError
 from .utils.faiss_path_bridge import (
     bridge_installed,
     needs_bridge,
@@ -178,7 +180,7 @@ class InitializerFaissMixin:
 
         # 读取索引文件 — 仅在 FAISS I/O 失败时进入坏索引处理
         try:
-            old_index = self._faiss_read_index_safe(index_path)
+            old_index = await asyncio.to_thread(self._faiss_read_index_safe, index_path)
         except InitializationError:
             raise
         except Exception as e:

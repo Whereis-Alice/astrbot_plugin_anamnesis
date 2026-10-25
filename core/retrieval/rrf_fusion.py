@@ -3,6 +3,7 @@ RRF融合器 - Reciprocal Rank Fusion
 实现纯Python的结果融合算法,用于合并BM25和向量检索结果
 """
 
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -157,6 +158,66 @@ class RRFFusion:
             )
 
         return fused_results
+
+    def fuse_scores(
+        self, bm25_results: list[BM25Result], vector_results: list[VectorResult],
+        top_k: int, bm25_weight: float = 0.5, agreement_bonus: float = 0.0,
+    ) -> list[FusedResult]:
+        """Fuse normalized relevance and reward close cross-route ranks."""
+        if not bm25_results and not vector_results:
+            return []
+
+        def finite(value, default=0.0):
+            try:
+                number = float(value)
+                return number if math.isfinite(number) else default
+            except (TypeError, ValueError, OverflowError):
+                return default
+
+        weight = max(0.0, min(1.0, finite(bm25_weight, 0.5)))
+        bonus = max(0.0, min(1.0, finite(agreement_bonus)))
+        bm25_rank = {r.doc_id: rank for rank, r in enumerate(bm25_results)}
+        vector_rank = {r.doc_id: rank for rank, r in enumerate(vector_results)}
+
+        def normalize(results):
+            values = {r.doc_id: finite(r.score) for r in results}
+            if not values:
+                return {}
+            low, high = min(values.values()), max(values.values())
+            if high-low < 1e-9:
+                return dict.fromkeys(values, 1.0)
+            return {doc_id: (score-low)/(high-low) for doc_id, score in values.items()}
+
+        bm25_norm, vector_norm = normalize(bm25_results), normalize(vector_results)
+        bm25_scores = {r.doc_id: r.score for r in bm25_results}
+        vector_scores = {r.doc_id: r.score for r in vector_results}
+        payloads = {}
+        for result in [*bm25_results, *vector_results]:
+            payloads.setdefault(result.doc_id, (result.content, result.metadata))
+        scores, best_rank = {}, {}
+        span = max(len(bm25_results), len(vector_results), 1)
+        for doc_id in set(bm25_norm) | set(vector_norm):
+            total, denominator = 0.0, 0.0
+            if doc_id in bm25_norm:
+                total += weight * bm25_norm[doc_id]
+                denominator += weight
+            if doc_id in vector_norm:
+                total += (1.0-weight) * vector_norm[doc_id]
+                denominator += 1.0-weight
+            score = total/denominator if denominator else 0.0
+            if doc_id in bm25_rank and doc_id in vector_rank:
+                score += bonus * (1.0-abs(bm25_rank[doc_id]-vector_rank[doc_id])/span)
+            scores[doc_id] = score
+            best_rank[doc_id] = min(
+                bm25_rank.get(doc_id, len(bm25_results)+1),
+                vector_rank.get(doc_id, len(vector_results)+1),
+            )
+        ordered = sorted(scores, key=lambda doc_id: (-scores[doc_id], best_rank[doc_id], doc_id))[:top_k]
+        return [FusedResult(
+            doc_id=doc_id, rrf_score=scores[doc_id], bm25_score=bm25_scores.get(doc_id),
+            vector_score=vector_scores.get(doc_id), content=payloads[doc_id][0],
+            metadata=payloads[doc_id][1],
+        ) for doc_id in ordered]
 
     def _convert_bm25_only(
         self, bm25_results: list[BM25Result], top_k: int

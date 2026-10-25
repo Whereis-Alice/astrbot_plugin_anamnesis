@@ -9,10 +9,9 @@ import re
 import time
 from typing import Any
 
-from astrbot.api import logger
-
 from ..memory_scope import parse_value_list, resolve_event_identity
 from ..utils import extract_json_from_response
+from .user_profile_directory import UserProfileDirectoryMixin
 
 _CATEGORIES = {"identity", "preference", "status", "task_preference", "constraint"}
 _CATEGORY_ORDER = ("identity", "preference", "status", "task_preference", "constraint")
@@ -20,7 +19,7 @@ _KEY_PATTERN = re.compile(r"^[\w.-]{1,64}$", re.UNICODE)
 _CONTROL_PATTERN = re.compile(r"[\x00-\x1f\x7f]+")
 
 
-class UserProfileManager:
+class UserProfileManager(UserProfileDirectoryMixin):
     """Maintain explicit user facts in the existing conversation SQLite connection.
 
     The store's write lock is shared with normal message writes, so profile updates
@@ -145,11 +144,19 @@ class UserProfileManager:
                 """)
                 async with connection.execute("PRAGMA table_info(user_profiles)") as cursor:
                     existing_columns = {row[1] for row in await cursor.fetchall()}
-                for column in ("source_group_id", "source_group_name", "source_sender_name"):
+                for column in ("source_group_id", "source_group_name", "source_sender_name",
+                               "identity", "platform", "sender_id", "display_label"):
                     if column not in existing_columns:
                         await connection.execute(
                             f"ALTER TABLE user_profiles ADD COLUMN {column} TEXT"
                         )
+                for column, definition in (("suppressed", "INTEGER NOT NULL DEFAULT 0"),
+                                           ("context_updated_at", "REAL")):
+                    if column not in existing_columns:
+                        await connection.execute(
+                            f"ALTER TABLE user_profiles ADD COLUMN {column} {definition}"
+                        )
+                await self._backfill_directory(connection)
                 await connection.execute("""
                     CREATE INDEX IF NOT EXISTS idx_user_profiles_scope
                     ON user_profiles(profile_scope, expires_at, updated_at DESC)
@@ -158,6 +165,16 @@ class UserProfileManager:
                     CREATE INDEX IF NOT EXISTS idx_user_profiles_source
                     ON user_profiles(source_memory_id)
                 """)
+                memory_connection = getattr(getattr(self, "memory_engine", None), "db_connection", None)
+                if memory_connection is not None:
+                    async with memory_connection.execute(
+                        "SELECT id FROM documents WHERE COALESCE(json_extract(metadata,'$.status'),'active') <> 'active'"
+                    ) as cursor:
+                        while batch := await cursor.fetchmany(500):
+                            ids = [row[0] for row in batch]
+                            placeholders = ",".join("?" for _ in ids)
+                            await connection.execute(
+                                f"UPDATE user_profiles SET suppressed=1 WHERE source_memory_id IN ({placeholders})", ids)
                 await connection.commit()
             self._schema_ready = True
             return True
@@ -176,7 +193,8 @@ class UserProfileManager:
                       source_session_id, source_group_id, source_group_name,
                       source_sender_name, updated_at, expires_at
                FROM user_profiles
-               WHERE profile_scope = ? AND (expires_at IS NULL OR expires_at > ?)
+               WHERE profile_scope = ? AND suppressed = 0
+                 AND (expires_at IS NULL OR expires_at > ?)
                ORDER BY (expires_at IS NOT NULL) ASC, confidence DESC,
                         updated_at DESC LIMIT ?""",
             (scope, time.time(), limit),
@@ -213,10 +231,12 @@ class UserProfileManager:
                     """INSERT INTO user_profiles
                        (profile_scope, profile_key, category, value, confidence,
                        source_memory_id, source_session_id, source_group_id,
-                       source_group_name, source_sender_name, updated_at, expires_at)
+                       source_group_name, source_sender_name, updated_at, expires_at,
+                       identity, platform, sender_id, display_label, suppressed, context_updated_at)
                        SELECT ?, profile_key, category, value, confidence,
                               source_memory_id, source_session_id, source_group_id,
-                              source_group_name, source_sender_name, updated_at, expires_at
+                              source_group_name, source_sender_name, updated_at, expires_at,
+                              identity, platform, sender_id, display_label, suppressed, context_updated_at
                        FROM user_profiles
                        WHERE profile_scope IN (?, ?) AND source_session_id = ?
                        ON CONFLICT(profile_scope, profile_key) DO NOTHING""",
@@ -236,6 +256,7 @@ class UserProfileManager:
         self,
         *,
         profile_scope: str | None = None,
+        identity: str | None = None,
         source_session_id: str | None = None,
         key_query: str | None = None,
         limit: int = 200,
@@ -267,6 +288,9 @@ class UserProfileManager:
         if profile_scope:
             clauses.append("profile_scope = ?")
             params.append(profile_scope)
+        if identity:
+            clauses.append("identity = ?")
+            params.append(identity)
         if source_session_id:
             clauses.append("source_session_id = ?")
             params.append(source_session_id)
@@ -290,6 +314,7 @@ class UserProfileManager:
             f"""SELECT profile_scope, profile_key, category, value, confidence,
                        source_memory_id, source_session_id, source_group_id,
                        source_group_name, source_sender_name, updated_at, expires_at
+                       , identity, platform, sender_id, display_label, suppressed
                 FROM user_profiles {where}
                 ORDER BY updated_at DESC, profile_scope, profile_key
                 LIMIT ? OFFSET ?""",
@@ -315,6 +340,7 @@ class UserProfileManager:
             "total": total,
             "limit": limit,
             "offset": offset,
+            "has_more": offset + len(rows) < total,
             "scopes": [row["profile_scope"] for row in scope_rows],
             "session_ids": [row["source_session_id"] for row in session_rows],
             "profile_enabled": self.enabled,
@@ -335,6 +361,10 @@ class UserProfileManager:
 
         assignments: list[str] = []
         params: list[Any] = []
+        if "display_label" in updates:
+            label = self._clean_context_value(updates["display_label"], max_length=80)
+            assignments.append("display_label = ?")
+            params.append(label)
         if "value" in updates:
             value = _CONTROL_PATTERN.sub(" ", str(updates.get("value") or "")).strip()
             if (
@@ -403,6 +433,7 @@ class UserProfileManager:
             """SELECT profile_scope, profile_key, category, value, confidence,
                       source_memory_id, source_session_id, source_group_id,
                       source_group_name, source_sender_name, updated_at, expires_at
+                      , identity, platform, sender_id, display_label, suppressed
                FROM user_profiles WHERE profile_scope = ? AND profile_key = ?""",
             (scope, key),
         ) as cursor:
@@ -456,6 +487,9 @@ class UserProfileManager:
             "value": value,
             "confidence": confidence,
             "volatile": category == "status" or item.get("volatile") is True,
+            "display_label": UserProfileManager._clean_context_value(
+                item.get("label"), max_length=80
+            ),
         }
 
     async def upsert_facts(
@@ -480,6 +514,9 @@ class UserProfileManager:
         ttl_days = int(self.config_manager.get("user_profile.volatile_ttl_days", 7))
         max_items = int(self.config_manager.get("user_profile.max_items", 40))
         source_context = self._event_source_context(event)
+        owner = self._directory_owner(scope, source_context["source_session_id"])
+        sender_getter = getattr(event, "get_sender_id", None)
+        sender_id = str(sender_getter() if callable(sender_getter) else "")
         source_session_id = source_context["source_session_id"] or ""
         async with self.store._write_lock:
             try:
@@ -493,8 +530,10 @@ class UserProfileManager:
                         """INSERT INTO user_profiles
                            (profile_scope, profile_key, category, value, confidence,
                            source_memory_id, source_session_id, source_group_id,
-                           source_group_name, source_sender_name, updated_at, expires_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           source_group_name, source_sender_name, updated_at, expires_at,
+                           identity, platform, sender_id, display_label, suppressed,
+                           context_updated_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
                            ON CONFLICT(profile_scope, profile_key) DO UPDATE SET
                              category=excluded.category, value=excluded.value,
                              confidence=excluded.confidence,
@@ -503,7 +542,10 @@ class UserProfileManager:
                              source_group_id=excluded.source_group_id,
                              source_group_name=excluded.source_group_name,
                              source_sender_name=excluded.source_sender_name,
-                             updated_at=excluded.updated_at, expires_at=excluded.expires_at""",
+                             updated_at=excluded.updated_at, expires_at=excluded.expires_at,
+                             identity=excluded.identity, platform=excluded.platform,
+                             sender_id=excluded.sender_id, display_label=excluded.display_label,
+                             suppressed=0, context_updated_at=excluded.context_updated_at""",
                         (
                             scope,
                             fact["key"],
@@ -517,17 +559,22 @@ class UserProfileManager:
                             source_context["source_sender_name"],
                             now,
                             expires,
+                            owner["identity"], owner["platform"], sender_id,
+                            fact["display_label"], now,
                         ),
                     )
                 await connection.execute(
                     """UPDATE user_profiles
-                       SET source_group_id = ?, source_group_name = ?,
-                           source_sender_name = ?
+                       SET source_group_id = COALESCE(?, source_group_id),
+                           source_group_name = COALESCE(?, source_group_name),
+                           source_sender_name = COALESCE(?, source_sender_name),
+                           context_updated_at = ?
                        WHERE profile_scope = ?""",
                     (
                         source_context["source_group_id"],
                         source_context["source_group_name"],
                         source_context["source_sender_name"],
+                        now,
                         scope,
                     ),
                 )
@@ -622,13 +669,16 @@ class UserProfileManager:
             try:
                 await connection.execute(
                     """UPDATE user_profiles
-                       SET source_group_id = ?, source_group_name = ?,
-                           source_sender_name = ?
+                       SET source_group_id = COALESCE(?, source_group_id),
+                           source_group_name = COALESCE(?, source_group_name),
+                           source_sender_name = COALESCE(?, source_sender_name),
+                           context_updated_at = ?
                        WHERE profile_scope = ?""",
                     (
                         context["source_group_id"],
                         context["source_group_name"],
                         context["source_sender_name"],
+                        time.time(),
                         scope,
                     ),
                 )
@@ -720,7 +770,7 @@ class UserProfileManager:
             "无合适事实返回空数组。\n"
             f"已有档案 key: {json.dumps(current_keys, ensure_ascii=False)}\n"
             f"用户发言:\n{source_text}\n"
-            '只返回 JSON：{"facts":[{"key":"english_stable_key","value":"简短事实",'
+            '只返回 JSON：{"facts":[{"key":"english_stable_key","label":"易读的简短标题","value":"简短事实",'
             '"category":"identity|preference|status|task_preference|constraint",'
             '"volatile":false,"confidence":0.9,"explicit":true,'
             '"evidence":"用户原话中的逐字片段"}]}'

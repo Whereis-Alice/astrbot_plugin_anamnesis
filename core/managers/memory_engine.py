@@ -4,13 +4,12 @@
 """
 
 import asyncio
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import aiosqlite
-
 from astrbot.api import logger
 
 from ...storage.alias_store import AliasStore
@@ -33,11 +32,14 @@ from ..retrieval.graph_vector_retriever import GraphVectorRetriever
 from ..retrieval.hybrid_retriever import HybridResult, HybridRetriever
 from ..retrieval.rrf_fusion import RRFFusion
 from ..retrieval.vector_retriever import VectorRetriever
-from .memory_engine_write_ops import MemoryEngineWriteOpsMixin
-from .memory_engine_crud import MemoryEngineCrudMixin
 from .memory_engine_batch import MemoryEngineBatchMixin
+from .memory_engine_crud import MemoryEngineCrudMixin
+from .memory_engine_evidence import MemoryEngineEvidenceMixin
+from .memory_engine_operations import MemoryEngineOperationsMixin
+from .memory_engine_write_ops import MemoryEngineWriteOpsMixin
 
-class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngineBatchMixin):
+
+class MemoryEngine(MemoryEngineOperationsMixin, MemoryEngineEvidenceMixin, MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngineBatchMixin):
     """
     统一记忆引擎
 
@@ -135,6 +137,8 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         # Serialising them avoids a burst of tiny transactions competing with
         # FAISS/graph writers, while the CRUD mixin adds bounded locked retries.
         self._access_update_lock = asyncio.Lock()
+        self._access_pending_counts = Counter()
+        self._access_flush_task = None
         # Keep access-time metadata writes on a separate SQLite connection.
         # The main connection is also used by multi-step memory writes; a
         # background UPDATE must never rollback or commit one of those
@@ -274,7 +278,7 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         )
 
         if self.graph_enabled and self.graph_vector_db is not None:
-            self.graph_store = GraphStore(self.db_path, self.config)
+            self.graph_store = GraphStore(self.db_path, self.config, cache_reads=True)
             await self.graph_store.initialize()
 
             self.atom_store = AtomStore(self.db_path, self.config)
@@ -344,12 +348,17 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         """关闭数据库连接和清理资源"""
         if self.atom_lifecycle_manager is not None:
             await self.atom_lifecycle_manager.stop()
+        if self._access_flush_task is not None:
+            await asyncio.gather(self._access_flush_task, return_exceptions=True)
+        await self._flush_access_updates()
         if self._pending_tasks:
             for task in self._pending_tasks:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*self._pending_tasks, return_exceptions=True)
             self._pending_tasks.clear()
+        if self.graph_store is not None:
+            await self.graph_store.close()
         if self._access_update_connection:
             try:
                 await self._access_update_connection.close()
@@ -370,6 +379,25 @@ class MemoryEngine(MemoryEngineWriteOpsMixin, MemoryEngineCrudMixin, MemoryEngin
         self._pending_tasks.add(task)
         task.add_done_callback(self._on_background_task_done)
         return task
+
+    def _queue_access_updates(self, doc_ids: list[int]) -> None:
+        self._access_pending_counts.update(set(doc_ids))
+        if self._access_flush_task is None or self._access_flush_task.done():
+            self._access_flush_task = self._create_tracked_task(self._delayed_access_flush())
+
+    async def _delayed_access_flush(self) -> None:
+        while self._access_pending_counts:
+            await asyncio.sleep(0.25)
+            await self._flush_access_updates()
+
+    async def _flush_access_updates(self) -> None:
+        counts = self._access_pending_counts.copy()
+        self._access_pending_counts.clear()
+        ids = list(counts)
+        for start in range(0, len(ids), 500):
+            batch = ids[start:start + 500]
+            if not await self._update_access_times_internal(batch, counts=counts):
+                logger.debug("访问统计写入失败，跳过本批最佳努力统计 (%s 项)", len(batch))
 
     def _on_background_task_done(self, task: asyncio.Task) -> None:
         """取回后台任务异常，保证失败可观测。"""

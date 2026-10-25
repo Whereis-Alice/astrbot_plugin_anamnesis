@@ -3,13 +3,14 @@ IndexValidator 的 IndexValidatorRebuildMixin 拆分模块
 自动从 core/validators/index_validator.py 拆分，保持行为不变
 """
 
-import aiosqlite
-from typing import Any, cast
 import asyncio
 import json
-from astrbot.api import logger
 import os
 import time
+from typing import Any, cast
+
+import aiosqlite
+from astrbot.api import logger
 
 from ..faiss_async_persist import get_async_persister
 from ..utils.faiss_path_bridge import read_index_safe, write_index_safe
@@ -852,8 +853,15 @@ class IndexValidatorRebuildMixin:
             logger.info("开始分批安全重建索引。")
             options = self._get_rebuild_options(memory_engine)
             total = await self._get_document_count()
+            async with aiosqlite.connect(self.db_path) as db:
+                async with db.execute("SELECT name FROM sqlite_master WHERE name='migration_status'") as cursor:
+                    has_status = await cursor.fetchone()
+                if has_status:
+                    async with db.execute("SELECT value FROM migration_status WHERE key='document_index_rebuild_required'") as cursor:
+                        flag = await cursor.fetchone()
+                    force_full_vector = force_full_vector or bool(flag and flag[0] == "true")
 
-            if total <= 0:
+            if total <= 0 and not force_full_vector:
                 return {
                     "success": True,
                     "message": "没有需要重建的文档",
@@ -920,6 +928,9 @@ class IndexValidatorRebuildMixin:
                 )
                 if not partial:
                     await self.record_provider_fingerprint()
+                    async with aiosqlite.connect(self.db_path) as db:
+                        await db.execute("UPDATE migration_status SET value='false' WHERE key='document_index_rebuild_required'")
+                        await db.commit()
                 message = (
                     "索引重建完成"
                     if not partial

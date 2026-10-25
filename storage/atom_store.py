@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
 import aiosqlite
+from astrbot.api import logger
 
 from ..core.models.memory_atom import (
     AtomStatus,
@@ -132,6 +134,31 @@ class AtomStore:
                 USING fts5(content, atom_id UNINDEXED, tokenize='unicode61')
                 """
             )
+            # Old releases did not index existing atoms. Repair identities and
+            # content, including equal-count mismatches, without resurrecting
+            # deliberately forgotten atoms on every restart.
+            removed = await db.execute(
+                "DELETE FROM memory_atoms_fts WHERE NOT EXISTS ("
+                "SELECT 1 FROM memory_atoms ma WHERE ma.id=memory_atoms_fts.atom_id "
+                "AND ma.status IN ('active','expired') "
+                "AND ma.content=memory_atoms_fts.content)"
+            )
+            duplicates = await db.execute(
+                "DELETE FROM memory_atoms_fts WHERE rowid NOT IN ("
+                "SELECT MIN(rowid) FROM memory_atoms_fts GROUP BY CAST(atom_id AS INTEGER))"
+            )
+            inserted = await db.execute(
+                "INSERT INTO memory_atoms_fts(atom_id, content) "
+                "SELECT ma.id, ma.content FROM memory_atoms ma "
+                "WHERE ma.status IN ('active','expired') AND ma.id NOT IN ("
+                "SELECT CAST(atom_id AS INTEGER) FROM memory_atoms_fts)"
+            )
+            if removed.rowcount or duplicates.rowcount or inserted.rowcount:
+                logger.info(
+                    "[AtomStore] 修复原子 FTS: "
+                    f"补入={inserted.rowcount}, 删除={removed.rowcount}, "
+                    f"去重={duplicates.rowcount}"
+                )
             await db.commit()
 
     async def insert(self, atom: MemoryAtom) -> int:
@@ -272,6 +299,10 @@ class AtomStore:
 
         filters = ["ma.status = 'active'"] if not include_expired else []
         params: list[Any] = [fts_query]
+        cutoff = time.time()
+        if not include_expired:
+            filters.append("CAST(ma.expires_at AS REAL) > ?")
+            params.append(cutoff)
         if session_id is not None:
             filters.append("ma.session_id = ?")
             params.append(session_id)
@@ -307,12 +338,15 @@ class AtomStore:
                 status_filter = (
                     "AND ma.status = 'active'" if not include_expired else ""
                 )
+                expiry_filter = "AND CAST(ma.expires_at AS REAL) > ?" if not include_expired else ""
                 session_filter = (
                     "AND ma.session_id = ?" if session_id is not None else ""
                 )
                 persona_filter = (
                     "AND ma.persona_id = ?" if persona_id is not None else ""
                 )
+                if not include_expired:
+                    like_params_full.append(cutoff)
                 if session_id is not None:
                     like_params_full.append(session_id)
                 if persona_id is not None:
@@ -321,7 +355,7 @@ class AtomStore:
                     f"""
                     SELECT ma.*, 0.5 AS bm25_score
                     FROM memory_atoms ma
-                    WHERE ({like_clauses}) {status_filter} {session_filter} {persona_filter}
+                    WHERE ({like_clauses}) {status_filter} {expiry_filter} {session_filter} {persona_filter}
                     ORDER BY ma.id DESC
                     LIMIT ?
                     """,
@@ -341,6 +375,10 @@ class AtomStore:
         now = time.time()
         for row in rows:
             atom = self._row_to_atom(row)
+            if not include_expired and (
+                not math.isfinite(atom.expires_at) or atom.is_expired(now)
+            ):
+                continue
             normalized = (
                 1.0
                 if score_range == 0

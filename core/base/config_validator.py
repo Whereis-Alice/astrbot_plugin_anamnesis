@@ -7,9 +7,8 @@ import math
 import re
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
-
 from astrbot.api import logger
+from pydantic import BaseModel, Field, model_validator
 
 
 class SessionManagerConfig(BaseModel):
@@ -137,6 +136,13 @@ class RecallEngineConfig(BaseModel):
     )
 
 
+    fusion_mode: str = Field(default="rrf", pattern="^(rrf|score)$")
+    fusion_bm25_weight: float = Field(default=0.5, ge=0, le=1)
+    fusion_agreement_bonus: float = Field(default=0.25, ge=0, le=1)
+    recall_candidate_multiplier: int = Field(default=3, ge=1, le=20)
+    vector_max_fetch_candidates: int = Field(default=8192, ge=32, le=100000)
+
+
 class FusionStrategyConfig(BaseModel):
     """结果融合策略配置"""
 
@@ -160,6 +166,14 @@ class ReflectionEngineConfig(BaseModel):
     )
 
 
+    align_webchat_history: bool = Field(default=True)
+    split_by_day: bool = Field(default=True)
+    idle_gap_minutes: int = Field(default=180, ge=0, le=10080)
+    dedup_enabled: bool = Field(default=False)
+    dedup_candidate_count: int = Field(default=10, ge=1, le=50)
+    dedup_similarity_threshold: float = Field(default=0.97, ge=0.9, le=1)
+
+
 class AgentToolsConfig(BaseModel):
     """Agent 工具配置"""
 
@@ -172,6 +186,16 @@ class AgentToolsConfig(BaseModel):
     enable_forget_tool: bool = Field(
         default=False, description="是否启用 Agent 删除长期记忆工具"
     )
+
+
+    agentic_recall_enabled: bool = Field(default=False)
+    recall_max_calls: int = Field(default=5, ge=1, le=30)
+    recall_budget_seconds: float = Field(default=20, ge=1, le=600)
+    recall_output_max_chars: int = Field(default=16000, ge=1000, le=100000)
+    recall_candidate_limit: int = Field(default=100, ge=10, le=500)
+    forget_mode: str = Field(default="delete", pattern="^(delete|archive)$")
+    forget_max_per_request: int = Field(default=3, ge=1, le=20)
+    forget_cooldown_seconds: float = Field(default=2, ge=0, le=3600)
 
 
 class UserProfileConfig(BaseModel):

@@ -3,6 +3,8 @@
 集中管理插件配置的加载、验证、修正和访问
 """
 
+import threading
+from copy import deepcopy
 from typing import Any
 
 from astrbot.api import logger
@@ -26,9 +28,11 @@ class ConfigManager:
         Args:
             user_config: 用户提供的配置字典
         """
-        self._raw_config = user_config or {}
+        self._raw_config = user_config if user_config is not None else {}
         self._config: dict[str, Any] = {}
         self._config_obj = None
+        self._pending_config: dict[str, Any] | None = None
+        self._settings_lock = threading.Lock()
         self._load_config()
 
     def _load_config(self) -> None:
@@ -122,6 +126,50 @@ class ConfigManager:
     def get_all(self) -> dict[str, Any]:
         """获取所有配置"""
         return self._config.copy()
+
+    def get_saved_settings(self) -> dict[str, Any]:
+        """Settings UI reads saved values; active components change only on reload."""
+        return deepcopy(self._pending_config or self._config)
+
+    def save_settings(self, updates: dict[str, Any], allowed_paths: set[str]) -> dict:
+        """Validate and persist a complete candidate without partially hot-reloading."""
+        if not isinstance(updates, dict) or not updates:
+            raise ConfigurationError("没有可保存的配置项")
+        unknown = set(updates) - allowed_paths
+        if unknown:
+            raise ConfigurationError("未知或不可修改的配置项: " + ", ".join(sorted(unknown)))
+        with self._settings_lock:
+            candidate = self.get_saved_settings()
+            for path, value in updates.items():
+                parts = path.split(".")
+                target = candidate
+                for part in parts[:-1]:
+                    child = target.get(part)
+                    if not isinstance(child, dict):
+                        raise ConfigurationError(f"配置路径无效: {path}")
+                    target = child
+                target[parts[-1]] = deepcopy(value)
+            validate_config(candidate)  # Editor rejects invalid values before normalization.
+            normalized, corrections = normalize_config(candidate)
+            validated = validate_config(normalized).model_dump()
+            raw_before = deepcopy(dict(self._raw_config))
+            try:
+                self._raw_config.clear()
+                self._raw_config.update(deepcopy(validated))
+                save = getattr(self._raw_config, "save_config", None)
+                if callable(save):
+                    save()
+            except BaseException:
+                self._raw_config.clear()
+                self._raw_config.update(raw_before)
+                raise
+            self._pending_config = validated
+            return {
+                "config": deepcopy(validated),
+                "changed_paths": sorted(updates),
+                "corrections": corrections,
+                "reload_required": True,
+            }
 
     @property
     def provider_settings(self) -> dict[str, Any]:

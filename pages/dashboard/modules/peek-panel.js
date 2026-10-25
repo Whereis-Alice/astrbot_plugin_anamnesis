@@ -11,7 +11,8 @@ import {
   statusLabel,
   typeLabel,
   nodeBadge,
-  metaItem
+  metaItem,
+  originLabel
 } from "./utils.js";
 
 export class PeekPanel {
@@ -28,7 +29,7 @@ export class PeekPanel {
    * 打开侧边面板
    * @param {boolean} isWide - 是否使用宽模式
    */
-  open(isWide = false) {
+  open(isWide = false, isModal = true) {
     const panel = document.getElementById("peek-panel");
     panel.removeAttribute("inert");
     panel.setAttribute("aria-hidden", "false");
@@ -38,7 +39,8 @@ export class PeekPanel {
     } else {
       panel.classList.remove("wide");
     }
-    document.getElementById("peek-overlay").classList.add("visible");
+    panel.classList.toggle("non-modal", !isModal);
+    document.getElementById("peek-overlay").classList.toggle("visible", isModal);
   }
 
   /**
@@ -54,7 +56,7 @@ export class PeekPanel {
       this._closeBatchEditDialog(null);
     }
     const panel = document.getElementById("peek-panel");
-    panel.classList.remove("visible", "wide");
+    panel.classList.remove("visible", "wide", "non-modal");
     panel.setAttribute("inert", "");
     panel.setAttribute("aria-hidden", "true");
     document.getElementById("peek-overlay").classList.remove("visible");
@@ -137,6 +139,7 @@ export class PeekPanel {
         topics: Array.isArray(rawMeta.topics) ? rawMeta.topics : [],
         update_history: Array.isArray(rawMeta.update_history) ? rawMeta.update_history : [],
         graph_context: null,
+        metadata: rawMeta,
       };
     }
 
@@ -176,6 +179,10 @@ export class PeekPanel {
         ? detail.metadata.consolidated_from
         : [];
     const graphCtx = detail.graph_context;
+    const metadata = detail.metadata || {};
+    const origin = detail.memory_origin || metadata.memory_origin || (consolidatedFrom.length ? "consolidation" : "auto");
+    const reason = detail.memorize_reason || metadata.memorize_reason;
+    const previousId = detail.previous_id || metadata.previous_id;
 
     document.getElementById("peek-badge").innerHTML = "";
     document.getElementById("peek-title").textContent = window.t("detail.memoryTitle", id);
@@ -186,6 +193,7 @@ export class PeekPanel {
     html += '<div class="memory-detail-header">';
     html += statusPill(status);
     html += '<span class="type-tag">' + esc(type) + '</span>';
+    html += '<span class="origin-tag">' + esc(originLabel(origin)) + '</span>';
     html += '<span class="memory-detail-importance">' + window.t("detail.importance") + ': ' + importance + '/10</span>';
     html += '</div>';
 
@@ -201,41 +209,45 @@ export class PeekPanel {
     // 内容区域
     html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.content") + '</div>';
     html += '<div class="memory-detail-content" id="detail-content-display">' + esc(content) + '</div></div>';
+    if (reason) html += '<div class="peek-section"><div class="peek-section-title">' + esc(window.t("detail.memorizeReason")) + '</div><div class="memory-detail-content">' + esc(reason) + '</div></div>';
+    if (previousId != null) html += '<button type="button" class="btn btn-sm btn-ghost" data-linked-memory="' + esc(previousId) + '">' + esc(window.t("detail.previousMemory", previousId)) + '</button>';
 
     if (sourceMessages.length) {
-      html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.sourceMessages", sourceMessages.length) + '</div><div class="edit-history-list">';
+      html += '<details class="peek-section"><summary class="peek-section-title">' + window.t("detail.sourceMessages", sourceMessages.length) + '</summary><div class="edit-history-list">';
       sourceMessages.forEach(message => {
         const sender = message.sender_name || message.sender_id || message.role || "--";
         const time = message.timestamp ? new Date(message.timestamp * 1000).toLocaleString() : "--";
         html += '<div class="edit-history-item"><span class="edit-history-time">' + esc(time) + '</span>';
         html += '<span class="edit-history-desc"><strong>' + esc(String(sender)) + '</strong> ' + esc(String(message.content || "")) + '</span></div>';
       });
-      html += '</div></div>';
+      html += '</div></details>';
     }
 
     // 图谱上下文小视图
     if (graphCtx && graphCtx.nodes && graphCtx.nodes.length) {
       html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.graphContext") + '</div>';
       html += '<canvas id="peek-mini-graph" class="memory-detail-mini-graph" width="440" height="160" data-memory-id="' + id + '"></canvas></div>';
+      html += '<button type="button" class="btn btn-sm btn-secondary" id="peek-locate-graph"><i data-lucide="network" aria-hidden="true"></i>' + esc(window.t("detail.locateGraph")) + '</button>';
     }
 
     // 元数据网格
     html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.metadata") + '</div>';
     html += '<div class="memory-detail-meta-grid">';
-    html += metaItem(window.t("detail.status"), statusPill(status));
-    html += metaItem(window.t("detail.type"), '<span class="type-tag">' + esc(type) + '</span>');
+    html += metaItem(window.t("detail.status"), statusPill(status), true);
+    html += metaItem(window.t("detail.type"), '<span class="type-tag">' + esc(type) + '</span>', true);
     html += metaItem(window.t("detail.importance"), importance + ' / 10');
-    html += metaItem(window.t("detail.sessionId"), '<span style="font-size:11px;font-family:monospace">' + esc(String(sessionId)) + '</span>');
-    html += metaItem(window.t("detail.personaId"), '<span style="font-size:11px;font-family:monospace">' + esc(String(personaId)) + '</span>');
-    html += metaItem(window.t("detail.created"), esc(created));
-    html += metaItem(window.t("detail.updated"), esc(updated));
+    html += metaItem(window.t("detail.sessionId"), String(sessionId));
+    html += metaItem(window.t("detail.personaId"), String(personaId));
+    html += metaItem(window.t("detail.created"), created);
+    html += metaItem(window.t("detail.updated"), updated);
+    html += metaItem(window.t("detail.origin"), originLabel(origin));
     html += '</div></div>';
 
     // 来源记忆（整合产生）
     if (consolidatedFrom.length) {
       html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.consolidatedFrom", consolidatedFrom.length) + '</div>';
       html += '<div class="peek-fact-list">';
-      consolidatedFrom.forEach(id => { html += '<div class="peek-fact-item"># ' + esc(String(id)) + '</div>'; });
+      consolidatedFrom.forEach(id => { html += '<button type="button" class="btn btn-sm btn-ghost" data-linked-memory="' + esc(id) + '"># ' + esc(String(id)) + '</button>'; });
       html += '</div></div>';
     }
 
@@ -276,6 +288,8 @@ export class PeekPanel {
     if (editBtn) editBtn.addEventListener("click", () => this.renderEditView(detail));
     if (resummarizeBtn) resummarizeBtn.addEventListener("click", () => this.resummarizeMemory(id));
     if (delBtn) delBtn.addEventListener("click", () => this.deleteSingleMemory(parseInt(id)));
+    document.getElementById("peek-locate-graph")?.addEventListener("click", () => window.lmLocateMemoryInGraph?.(id));
+    peekBody.querySelectorAll("[data-linked-memory]").forEach(button => button.addEventListener("click", () => this.renderMemory({ memory_id: button.dataset.linkedMemory })));
 
     // 加载图谱小视图
     const miniCanvas = document.getElementById("peek-mini-graph");
@@ -521,6 +535,7 @@ export class PeekPanel {
    * @param {Object} nodeData - 节点数据
    */
   renderNode(nodeData) {
+    ++this._detailGeneration;
     this.state._nodeDetailCache = nodeData;
     this.state._detailCache = null;
     this.state.isEditing = false;
@@ -538,8 +553,16 @@ export class PeekPanel {
     html += '<div class="peek-meta-item"><span class="peek-meta-label">' + window.t("detail.nodeWeight") + '</span><span class="peek-meta-value">' + Number(nodeData.weight || 0).toFixed(2) + '</span></div>';
     html += '</div></div>';
 
+    const related = Array.isArray(nodeData.related_memories) ? nodeData.related_memories : [];
+    if (related.length) {
+      html += '<div class="peek-section"><div class="peek-section-title">' + esc(window.t("detail.relatedMemories")) + '</div><div class="peek-linked-memories">';
+      related.forEach(memory => { html += '<button type="button" class="btn btn-secondary peek-linked-memory" data-linked-memory="' + esc(memory.memory_id) + '"><strong>#' + esc(memory.memory_id) + '</strong> ' + esc(memory.summary || memory.content || "") + '</button>'; });
+      html += '</div></div>';
+    }
+
     document.getElementById("peek-body").innerHTML = html;
-    this.open(false);
+    document.getElementById("peek-body").querySelectorAll("[data-linked-memory]").forEach(button => button.addEventListener("click", () => this.renderMemory({ memory_id: button.dataset.linkedMemory })));
+    this.open(false, false);
   }
 
   /**

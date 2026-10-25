@@ -97,8 +97,13 @@ export function nodeBadge(type) {
  * @param {string} value - 值
  * @returns {string} HTML 字符串
  */
-export function metaItem(label, value) {
-  return '<div class="memory-detail-meta-item"><span class="memory-detail-meta-label">' + esc(label) + '</span><span class="memory-detail-meta-value">' + value + '</span></div>';
+export function metaItem(label, value, valueIsHtml = false) {
+  return '<div class="memory-detail-meta-item"><span class="memory-detail-meta-label">' + esc(label) + '</span><span class="memory-detail-meta-value">' + (valueIsHtml ? value : esc(value)) + '</span></div>';
+}
+
+export function originLabel(origin) {
+  const keys = { agent_memorize_tool: "tool", memory_import: "import", source_resummarization: "resummary", consolidation: "consolidation", memory_consolidation: "consolidation", auto: "auto" };
+  return keys[origin || "auto"] ? window.t("origin." + keys[origin || "auto"]) : String(origin);
 }
 
 /**

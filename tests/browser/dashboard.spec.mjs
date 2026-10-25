@@ -1,0 +1,79 @@
+/** npm run test:browser. Set CHROMIUM_EXECUTABLE_PATH or use installed Edge.
+ * Optional: DASHBOARD_BASE_URL, DASHBOARD_ARTIFACT_DIR. Uses synthetic data only. */
+import assert from "node:assert/strict";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { pathToFileURL } from "node:url";
+const { chromium } = await import(process.env.PLAYWRIGHT_MODULE_PATH ? pathToFileURL(process.env.PLAYWRIGHT_MODULE_PATH).href : "playwright-core");
+const executable = process.env.CHROMIUM_EXECUTABLE_PATH || (process.platform === "win32" ? "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" : undefined);
+if (executable && !existsSync(executable)) throw new Error("Set CHROMIUM_EXECUTABLE_PATH to an installed Chromium browser.");
+const output = process.env.DASHBOARD_ARTIFACT_DIR || mkdtempSync(join(tmpdir(), "anamnesis-dashboard-"));
+mkdirSync(output, { recursive: true });
+let server;
+const base = process.env.DASHBOARD_BASE_URL || "http://127.0.0.1:8767";
+if (!process.env.DASHBOARD_BASE_URL) {
+  server = spawn(process.env.PYTHON || "python", ["tests/browser/serve.py", "--port", "8767"], { stdio: "ignore", windowsHide: true });
+  server.on("error", error => { throw error; });
+  for (let attempt = 0; attempt < 50; attempt++) { try { await fetch(base); break; } catch { await new Promise(resolve => setTimeout(resolve, 100)); } }
+}
+const browser = await chromium.launch({ executablePath: executable, headless: true });
+const context = await browser.newContext({ viewport: { width: 1320, height: 950 } });
+const page = await context.newPage();
+const errors = []; page.on("pageerror", error => errors.push(error.message));
+const passes = [];
+try {
+  await page.goto(base + "/tests/browser/profile-layout.html");
+  await page.waitForFunction(() => window.fixtureReady === true);
+  const layout = await page.evaluate(() => window.fixtureResults);
+  assert.equal(layout.filter(line => line.startsWith("FAIL")).length, 0, layout.join("\n")); passes.push(...layout);
+  const frame = page.frames().find(frame => frame.parentFrame()); assert.ok(frame);
+  await frame.locator('[data-profile-edit="1"]').click();
+  await frame.locator('#profile-edit-value').fill('浏览器测试修改：喜欢合作游戏');
+  await frame.locator('#profile-editor-save').click();
+  await frame.waitForFunction(() => window.profileFixturePosts.some(post => post.path === 'page/profiles/update'));
+  const update = await frame.evaluate(() => window.profileFixturePosts.find(post => post.path === 'page/profiles/update'));
+  assert.equal(update.body.profile_scope, 'profile:alpha:session:B'); assert.equal(update.body.profile_key, 'favorite_game_1');
+  await frame.locator('.profile-fact-card').filter({hasText:'浏览器测试修改'}).waitFor(); passes.push('PASS edit: saved the exact scope/key and refreshed full text');
+  await frame.locator('[data-profile-user="1"]').focus(); await page.keyboard.press('Enter');
+  await frame.waitForFunction(() => document.querySelector('#profile-reader h2')?.textContent === '测试用户 beta');
+  assert.equal(await frame.locator('.profile-fact-card').count(), 2); passes.push('PASS keyboard: user buttons switch identity with Enter');
+  await frame.locator('[data-profile-user="0"]').click(); await frame.locator('.profile-fact-card').nth(10).waitFor();
+  await frame.locator('.profile-fact-source').first().locator('summary').click();
+  await frame.locator('[data-source-memory]').first().click();
+  await frame.locator('#peek-title').filter({hasText:'100'}).waitFor();
+  assert.match(await frame.locator('#peek-body').innerText(), /用户希望我记住偏好/);
+  passes.push('PASS provenance: source memory and record reason are readable');
+  await frame.locator('#peek-locate-graph').click();
+  await frame.waitForFunction(() => window.profileFixturePosts.some(post => post.path === 'page/graph/query' && post.body.memory_id === 100));
+  passes.push('PASS graph: memory details locate their exact memory ID');
+  await frame.locator('[data-page="settings"]').click(); await frame.locator('[data-setting-path="retrieval.timeout"]').waitFor();
+  await frame.locator('[data-setting-path="retrieval.timeout"]').fill('12'); await frame.locator('#settings-save').click();
+  await frame.waitForFunction(() => window.profileFixturePosts.some(post => post.path === 'page/config/update'));
+  const config = await frame.evaluate(() => window.profileFixturePosts.find(post => post.path === 'page/config/update'));
+  assert.deepEqual(config.body, {updates:{'retrieval.timeout':12}});
+  assert.match(await frame.locator('#settings-feedback').innerText(), /重载/); passes.push('PASS settings: only edited paths are saved, with reload guidance');
+  await frame.locator('#settings-search').fill('隔离范围');
+  await frame.waitForFunction(() => document.querySelectorAll('.settings-field').length === 1); passes.push('PASS settings search: unrelated fields are filtered');
+  await frame.locator('[data-page="system"]').click();
+  await frame.evaluate(() => window.fixtureFail.add('page/prompts'));
+  await frame.locator('[data-page="prompts"]').click();
+  await frame.locator('#prompt-retry').waitFor();
+  await frame.evaluate(() => window.fixtureFail.delete('page/prompts')); await frame.locator('#prompt-retry').click();
+  await frame.waitForFunction(() => document.getElementById('prompt-feedback').classList.contains('hidden'));
+  passes.push('PASS retry: prompt failure persists until a successful retry');
+  await frame.locator('[data-page="recall"]').click(); await frame.locator('#recall-query').fill('喜欢什么游戏'); await frame.locator('#recall-search-btn').click();
+  await frame.locator('.recall-route-score').nth(3).waitFor(); assert.equal(await frame.locator('.recall-route-score').count(), 4);
+  assert.match(await frame.locator('.recall-route-score').nth(2).innerText(), /0\.000/); passes.push('PASS recall: all four route scores, including zero, are shown');
+  await frame.locator('[data-page="profiles"]').click(); await frame.locator('.profile-fact-card').nth(10).waitFor();
+  await frame.waitForFunction(() => !document.getElementById('toast').classList.contains('visible'));
+  await frame.locator('#profile-reader h2').scrollIntoViewIfNeeded();
+  await page.locator('#preview').screenshot({path:join(output,'profiles-desktop.png')});
+  await page.locator('#width').selectOption('390'); await page.waitForFunction(() => document.getElementById('preview').style.width === '390px');
+  await frame.locator('[data-profile-user="0"]').click();
+  await frame.locator('#profile-reader h2').scrollIntoViewIfNeeded();
+  await page.locator('#preview').screenshot({path:join(output,'profiles-mobile.png')});
+  assert.deepEqual(errors, [], `page errors: ${errors.join('; ')}`);
+  writeFileSync(join(output,'results.txt'), passes.join('\n')+'\n'); console.log(passes.join('\n')); console.log(`Artifacts: ${output}`);
+} finally { await context.close(); await browser.close(); server?.kill(); }

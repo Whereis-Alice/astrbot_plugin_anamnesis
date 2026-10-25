@@ -10,6 +10,8 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from .vector_search import retrieve_vectors
+
 if TYPE_CHECKING:
     from astrbot.core.db.vec_db.faiss_impl.vec_db import FaissVecDB
 
@@ -218,16 +220,9 @@ class VectorRetriever:
         if persona_id is not None:
             metadata_filters["persona_id"] = persona_id
 
-        # 执行向量检索
-        # fetch_k设置为k*2以确保过滤后有足够的结果
-        fetch_k = k * 4 if metadata_filters else k * 2
-
-        faiss_results = await self.faiss_db.retrieve(
-            query=processed_query,
-            k=k,
-            fetch_k=fetch_k,
-            rerank=False,
-            metadata_filters=metadata_filters if metadata_filters else None,
+        faiss_results = await retrieve_vectors(
+            self.faiss_db, processed_query, k, metadata_filters,
+            max_candidates=self.config.get("vector_max_fetch_candidates", 8192),
         )
 
         # 转换为VectorResult格式
@@ -469,7 +464,6 @@ class VectorRetriever:
             (vectors, valid_ids)，两者一一对应；缺失向量的 id 会被跳过。
         """
         import numpy as np
-
         from astrbot.api import logger as _logger
 
         batch_fn = getattr(index, "reconstruct_batch", None)
@@ -521,7 +515,6 @@ class VectorRetriever:
     ) -> list[tuple[int, int, float]]:
         """find_similar_pairs 的同步实现，整体在线程池里执行（Bug H）。"""
         import numpy as np
-
         from astrbot.api import logger as _logger
 
         vectors, valid_ids = self._reconstruct_vectors(index, unique_ids)

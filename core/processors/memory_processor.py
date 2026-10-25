@@ -6,7 +6,6 @@ import ast
 import asyncio
 import json
 import random
-import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -16,8 +15,8 @@ from astrbot.api import logger
 from ..identity_guard import IdentityGuard
 from ..models.conversation_models import Message
 from .identity_anchor import IdentityAnchor
-from .memory_processor_parse import MemoryProcessorParseMixin
 from .memory_processor_build import MemoryProcessorBuildMixin
+from .memory_processor_parse import MemoryProcessorParseMixin
 
 # 后备提示词文件的进程内缓存：{绝对路径: (mtime, 文件内容)}
 # PromptManager 不可用时会退化到直接读盘，而 _load_prompts_fallback 位于
@@ -706,6 +705,8 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
                 fallback_excerpt, structured_data, is_group_chat
             )
             metadata["participant_identities"] = identities
+            metadata.setdefault("source_type", "reflection")
+            metadata.setdefault("record_reason", "从对话窗口自动总结可复用事实")
             content = self._apply_source_time_tags(content, metadata, messages)
             # 将质量标记写入 metadata
             metadata["summary_quality"] = structured_data.get("_quality", "normal")

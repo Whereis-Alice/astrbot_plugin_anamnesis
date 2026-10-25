@@ -196,6 +196,24 @@ class MemoryRecall:
                 # 存储用户消息（仅私聊），无论是否启用召回都需要
                 is_group = event.get_message_type() == MessageType.GROUP_MESSAGE
                 if not is_group and actual_query:
+                    align = getattr(self.conversation_manager, "align_webchat_history", None)
+                    if (str(event.get_platform_name()).casefold() == "webchat"
+                            and callable(align) and self.config_manager.get("reflection_engine.align_webchat_history", True)):
+                        conversation_id = getattr(getattr(req, "conversation", None), "cid", None)
+                        if not isinstance(conversation_id, str) or not conversation_id:
+                            conversation_id = getattr(req, "conversation_id", None)
+                        if not isinstance(conversation_id, str) or not conversation_id:
+                            conversation_id = None
+                        setter = getattr(event, "set_extra", None)
+                        if conversation_id and callable(setter):
+                            setter("anamnesis_conversation_id", conversation_id)
+                        reverted = await align(event, getattr(req, "contexts", []), conversation_id=conversation_id)
+                        if reverted and not reverted.get("preserve_long_term") and self.memory_engine:
+                            removed = await self.memory_engine.delete_reverted_summaries(
+                                session_id, reverted["cutoff"], reverted["revision"]
+                            )
+                            if removed and self.user_profile_manager:
+                                await self.user_profile_manager.delete_by_source_memories(removed)
                     message_to_store = request_query
                     if not message_to_store:
                         message_to_store = (

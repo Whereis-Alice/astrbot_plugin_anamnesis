@@ -74,7 +74,8 @@ export class RecallPage {
       this.renderResults(data, elapsed);
     } catch (e) {
       this.showToast(e.message || window.t("recall.fail"), true);
-      document.getElementById("recall-results").innerHTML = "";
+      document.getElementById("recall-results").innerHTML = '<div class="inline-feedback" role="alert">' + esc(e.message || window.t("recall.fail")) + '<button type="button" class="btn btn-sm" id="recall-retry">' + esc(window.t("common.retry")) + '</button></div>';
+      document.getElementById("recall-retry")?.addEventListener("click", () => this.runRecall());
       document.getElementById("recall-stats").classList.add("hidden");
       this.state._recallCache = null;
     } finally {
@@ -120,23 +121,20 @@ export class RecallPage {
 
     memories.forEach((mem, idx) => {
       // 后端返回 memory_id 和 content
-      const memoryId = mem.memory_id || mem.id;
+      const memoryId = mem.memory_id ?? mem.id;
       const content = mem.content || mem.text || mem.summary || "";
       // 后端返回 similarity_score，不是 score
       const score = mem.similarity_score != null ? Number(mem.similarity_score).toFixed(3) :
                     (mem.score != null ? Number(mem.score).toFixed(3) : "--");
-      const importance = normalizeImportance(mem.metadata?.importance || 0.5).toFixed(1);
+      const importance = normalizeImportance(mem.metadata?.importance ?? 0.5).toFixed(1);
       const type = mem.metadata?.memory_type || "GENERAL";
       const status = mem.metadata?.status || "active";
 
-      const scoreNum = Number(score);
-      const scoreCls = scoreNum >= 0.75 ? "high" : scoreNum >= 0.45 ? "medium" : "low";
-
-      html += '<div class="result-card recall-result-item" data-memory-id="' + memoryId + '">';
+      html += '<div class="result-card recall-result-item" role="button" tabindex="0" aria-label="' + esc(window.t("detail.memoryTitle", memoryId)) + '" data-memory-id="' + esc(memoryId) + '">';
       html += '<div class="result-card-header recall-result-header">';
       html += '<span class="result-rank recall-result-rank">#' + (idx + 1) + '</span>';
-      html += '<span class="cell-mono recall-result-id">ID: ' + memoryId + '</span>';
-      html += '<span class="result-score-badge ' + scoreCls + ' recall-result-score">Score: ' + score + '</span>';
+      html += '<span class="cell-mono recall-result-id">#' + esc(memoryId) + '</span>';
+      html += '<span class="result-score-badge recall-result-score">' + esc(window.t("recall.fusedScore")) + ': ' + esc(score) + '</span>';
       html += statusPill(status);
       html += '<span class="type-tag">' + esc(type) + '</span>';
       html += '</div>';
@@ -144,9 +142,15 @@ export class RecallPage {
       html += '<div class="recall-result-meta text-secondary">';
       html += '<span>' + window.t("detail.importance") + ': ' + importance + '/10</span>';
       if (mem.metadata?.session_id) {
-        html += '<span>Session: ' + esc(String(mem.metadata.session_id)) + '</span>';
+        html += '<span>' + esc(window.t("detail.sessionId")) + ': ' + esc(String(mem.metadata.session_id)) + '</span>';
       }
       html += '</div>';
+      if (mem.score_breakdown && typeof mem.score_breakdown === "object") {
+        html += '<div class="recall-route-scores" aria-label="' + esc(window.t("recall.scoreRoutes")) + '">';
+        const routes = { document_keyword_score: "graph.scoreDocKW", document_vector_score: "graph.scoreDocVec", graph_keyword_score: "graph.scoreGraphKW", graph_vector_score: "graph.scoreGraphVec" };
+        Object.entries(routes).forEach(([key, label]) => { const value = Number(mem.score_breakdown[key]); if (mem.score_breakdown[key] != null && Number.isFinite(value)) html += '<span class="recall-route-score">' + esc(window.t(label)) + ': ' + value.toFixed(3) + '</span>'; });
+        html += '</div>';
+      }
       html += '</div>';
     });
 
@@ -155,7 +159,7 @@ export class RecallPage {
 
     // 绑定点击事件
     resultsEl.querySelectorAll(".recall-result-item").forEach(item => {
-      item.addEventListener("click", () => {
+      const open = () => {
         const memoryId = item.dataset.memoryId;
         const memory = memories.find(m => String(m.memory_id || m.id) === memoryId);
         if (memory) {
@@ -172,7 +176,9 @@ export class RecallPage {
             raw: memory
           });
         }
-      });
+      };
+      item.addEventListener("click", open);
+      item.addEventListener("keydown", event => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); open(); } });
     });
   }
 
