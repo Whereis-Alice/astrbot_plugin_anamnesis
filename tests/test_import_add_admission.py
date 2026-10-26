@@ -1,6 +1,7 @@
 """Skip imports coordinate with plain adds without serializing ordinary writers."""
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
@@ -354,6 +355,65 @@ async def test_shutdown_settles_inflight_add_and_cancels_import_admission(
         release.set()
         await asyncio.gather(
             *(task for task in (ordinary, imported, shutdown) if task),
+            return_exceptions=True,
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("slow_stage", ["administration", "lifecycle"])
+async def test_shutdown_rejects_queued_import_before_background_services_stop(
+    engine, monkeypatch, slow_stage
+):
+    entered, release = asyncio.Event(), asyncio.Event()
+    stopping, resume_stop = asyncio.Event(), asyncio.Event()
+    add = engine.hybrid_retriever.add_memory
+    stop_lifecycle = engine.atom_lifecycle_manager.stop
+
+    async def paused_add(*args):
+        entered.set()
+        await release.wait()
+        return await add(*args)
+
+    async def paused_stop():
+        stopping.set()
+        await resume_stop.wait()
+        if slow_stage == "lifecycle":
+            await stop_lifecycle()
+
+    if slow_stage == "administration":
+        engine.memory_administration = SimpleNamespace(close=paused_stop)
+    else:
+        monkeypatch.setattr(engine.atom_lifecycle_manager, "stop", paused_stop)
+    monkeypatch.setattr(engine.hybrid_retriever, "add_memory", paused_add)
+    ordinary = asyncio.create_task(engine.add_memory("inflight fact"))
+    imported = shutdown = None
+    try:
+        await asyncio.wait_for(entered.wait(), 1)
+        entry = ImportEntry(0, "imported fact", session_id=SCOPE, persona_id="p")
+        imported = asyncio.create_task(
+            MemoryHandler(PageApiUtils())._import_entries(
+                engine, None, [entry], [], "skip"
+            )
+        )
+        await until(lambda: engine._memory_import_waiters == 1)
+        shutdown = asyncio.create_task(engine.quiesce_background_writes())
+        await asyncio.wait_for(stopping.wait(), 1)
+        assert engine._writes_closing and not shutdown.done()
+        release.set()
+        assert await asyncio.wait_for(ordinary, 1) > 0
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(imported, 1)
+        async with engine.db_connection.execute("SELECT text FROM documents") as cursor:
+            assert [row[0] for row in await cursor.fetchall()] == ["inflight fact"]
+        assert_admission_released(engine)
+        resume_stop.set()
+        await asyncio.wait_for(shutdown, 1)
+        assert not engine._pending_tasks
+    finally:
+        release.set()
+        resume_stop.set()
+        await asyncio.gather(
+            *(task for task in (ordinary, imported, shutdown) if task is not None),
             return_exceptions=True,
         )
 

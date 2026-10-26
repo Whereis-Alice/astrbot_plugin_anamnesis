@@ -130,6 +130,11 @@ async def memory_import_guard(engine, *, exclusive=True):
                         and not engine._memory_add_readers
                     )
                 )
+                # Shutdown can still be settling other services before it
+                # cancels tracked tasks. Waiting is not permission to begin a
+                # new import once shutdown has closed write admission.
+                if getattr(engine, "_writes_closing", False):
+                    raise asyncio.CancelledError("记忆引擎正在关闭，取消排队导入")
                 engine._memory_import_owner = current
             finally:
                 engine._memory_import_waiters -= 1

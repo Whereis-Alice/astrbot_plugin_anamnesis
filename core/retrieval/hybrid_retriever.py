@@ -111,11 +111,11 @@ class HybridRetriever:
         self.mmr_lambda = self.config.get("mmr_lambda", 0.7)  # 相关性 vs 多样性权衡
 
     async def _search_route(
-        self, route_name: str, search_coro
+        self, route_name: str, search: Callable[..., Awaitable[list]], *args
     ) -> tuple[list, Exception | None]:
         """Run one retrieval route and convert ordinary failures into route errors."""
         try:
-            return await search_coro, None
+            return await search(*args), None
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -199,10 +199,10 @@ class HybridRetriever:
                 (vector_results, vector_error),
             ) = await asyncio.gather(
                 self._search_route(
-                    "BM25", self.bm25_retriever.search(query, candidate_k, session_id, persona_id),
+                    "BM25", self.bm25_retriever.search, query, candidate_k, session_id, persona_id,
                 ),
                 self._search_route(
-                    "向量", self.vector_retriever.search(query, candidate_k, session_id, persona_id),
+                    "向量", self.vector_retriever.search, query, candidate_k, session_id, persona_id,
                 ),
             )
 

@@ -9,6 +9,8 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+from astrbot.api import logger
+
 from ..models.memory_atom import compute_decay_score
 from ..utils.number_utils import clamp_float, safe_float
 from .graph_keyword_retriever import GraphKeywordRetriever
@@ -61,10 +63,33 @@ class GraphRetriever:
         if not query or not query.strip():
             return []
 
-        keyword_results, vector_results = await asyncio.gather(
-            self.keyword_retriever.search(query, k, session_id, persona_id),
-            self.vector_retriever.search(query, k, session_id, persona_id),
-        )
+        async def search_route(route_name, retriever):
+            try:
+                return await retriever.search(query, k, session_id, persona_id)
+            except asyncio.CancelledError:
+                raise
+            except Exception as error:
+                logger.warning(
+                    f"图谱{route_name}检索失败，继续使用其余检索结果: {error}",
+                    exc_info=True,
+                )
+                return []
+
+        tasks = [
+            asyncio.create_task(search_route(name, retriever))
+            for name, retriever in (
+                ("关键词", self.keyword_retriever), ("向量", self.vector_retriever)
+            )
+        ]
+        try:
+            keyword_results, vector_results = await asyncio.gather(*tasks)
+        except BaseException:
+            # Also settle siblings when one channel cancels itself, before the
+            # parent can leave the request-local embedding scope.
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            raise
 
         if not keyword_results and not vector_results:
             return []
