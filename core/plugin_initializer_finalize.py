@@ -118,6 +118,7 @@ class InitializerFinalizeMixin:
                    for key, default in {"fusion_mode": "rrf", "fusion_bm25_weight": 0.5,
                                         "fusion_agreement_bonus": 0.25,
                                         "recall_candidate_multiplier": 3,
+                                        "max_query_chars": 2000,
                                         "vector_max_fetch_candidates": 8192}.items()},
                 "min_importance_for_retrieval": self.config_manager.get(
                     "recall_engine.min_importance_for_retrieval", 0.0

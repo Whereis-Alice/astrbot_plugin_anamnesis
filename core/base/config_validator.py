@@ -56,6 +56,10 @@ class RecallEngineConfig(BaseModel):
         le=600.0,
         description="自动记忆检索超时时间（秒），设为 0 表示不限时",
     )
+    max_query_chars: int = Field(
+        default=2000, ge=256, le=32000,
+        description="检索查询字符上限，按嵌入模型能力调整；自动召回超长时缩减查询副本",
+    )
     injection_max_chars: int = Field(
         default=6000, ge=0, le=100000,
         description="自动召回注入字符预算，0 表示不限；伪工具模式限制结果 JSON",

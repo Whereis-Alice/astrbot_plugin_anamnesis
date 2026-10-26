@@ -100,6 +100,10 @@
         "description": "Memory Retrieval Timeout (seconds)",
         "hint": "Maximum time to wait for automatic memory retrieval on each request. Default is 5 seconds; when exceeded, this turn skips memory injection without affecting the normal reply. Set to 0 for no timeout. Allowed range: 0-600."
       },
+      "max_query_chars": {
+        "description": "Retrieval Query Character Limit",
+        "hint": "Shared by automatic recall, temporal lookup, document/graph vectors, LLM recall tools and WebUI tests. Default 2000; raise to e.g. 8000 if supported by your embedding model. Automatic recall shortens only the search copy and prioritizes the current message. Original messages remain complete. Range: 256-32000. Reload the plugin after editing."
+      },
       "injection_max_chars": {
         "description": "Automatic Recall Character Budget",
         "hint": "Maximum characters per automatic memory injection including framing. Fake-tool mode limits the result JSON. Default 6000; 0 means unlimited. Stored memories remain complete. Range: 0-100000."

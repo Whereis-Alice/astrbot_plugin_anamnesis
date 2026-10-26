@@ -46,6 +46,7 @@ For very busy group chats, lower `context_window_size` or disable full group cap
 | Key | Default | Description |
 | --- | --- | --- |
 | `recall_engine.top_k` | `5` | Number of memories automatically recalled each turn |
+| `recall_engine.max_query_chars` | `2000` | Query character budget (`256–32000`; reload after editing). Raise to e.g. `8000` if supported by your embedding model. Automatic recall prioritizes the current message, retains both ends of long text and uses spare space for recent context. Stored messages and calendar parsing retain the original text. Document/graph vectors, temporal retrieval, LLM tools and WebUI recall tests share this budget. |
 | `recall_engine.search_timeout_seconds` | `5.0` | Maximum seconds to wait for automatic retrieval; a timeout skips injection for that turn without affecting the reply, and `0` disables the timeout (range `0-600`) |
 | `recall_engine.injection_max_chars` | `6000` | Total character budget for automatic memory injection, including framing; fake-tool mode limits the result JSON. `0` disables the limit (range `0-100000`) |
 | `recall_engine.injection_entry_max_chars` | `1200` | Display character limit per automatically recalled memory. `0` disables the limit (range `0-20000`) |

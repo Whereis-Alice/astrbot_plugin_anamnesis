@@ -123,7 +123,8 @@ textarea.input { line-height: 1.75; }
 .filter-bar, .graph-toolbar { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px; margin: 0 0 12px; padding: 0; border: 0; background: transparent; border-radius: 0; }
 .filter-bar:has(.toolbar-details[open]) .toolbar-details[open], .graph-toolbar:has(.toolbar-details[open]) .toolbar-details[open] { flex-basis: 100%; order: 2; border: 1px solid var(--border-color); }
 .filter-bar .toolbar-primary { align-self: flex-start; }
-.graph-page-body { display: flex; flex-direction: column; gap: 0; overflow: hidden; }
+.graph-page-body { display: flex; flex-direction: column; gap: 0; overflow-x: hidden; overflow-y: auto; }
+.graph-toolbar { flex-shrink: 0; }
 .graph-toolbar .toolbar-primary { max-width: 620px; }
 .stat-pills { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 0 0 12px; }
 .stat-pill { display: flex; align-items: baseline; gap: 7px; min-width: 0; padding: 0; border: 0; background: transparent; box-shadow: none; }
@@ -135,6 +136,7 @@ textarea.input { line-height: 1.75; }
 .graph-legend { gap: 12px; padding: 10px 3px 0; flex-shrink: 0; }
 .legend-chip { background: transparent; border: 0; padding: 0; gap: 5px; font-size: 10px; }
 .memory-page-body { display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+.memory-toolbar { max-height: clamp(88px, calc(100dvh - 270px), 300px); overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
 .table-container { min-height: 0; flex: 1; border: 1px solid var(--border-color); border-radius: 12px; overflow: hidden; background: var(--bg-card); box-shadow: var(--shadow-xs); }
 .table-scroll { min-height: 0; }
 .data-table { width: 100%; min-width: 0; table-layout: fixed; }
@@ -414,6 +416,15 @@ body { background: radial-gradient(ellipse at 95% 4%, color-mix(in srgb,var(--gl
   .admin-action > summary { padding: 12px; }
   .settings-field { padding: 14px 16px; grid-template-columns: 1fr; gap: 12px; }
   .prompt-editor-textarea { padding: 12px; font-size: 12px; }
+}
+@media (max-height: 600px) {
+  .sidebar-nav { overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
+  .sidebar-nav .nav-item { width: 100%; }
+  .sidebar-brand, .sidebar-footer, .sidebar-divider { flex-shrink: 0; }
+}
+@media (max-height: 320px) {
+  .memory-page-body { overflow-y: auto; }
+  .memory-page-body .table-container { flex-shrink: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; transition-duration: .01ms !important; }

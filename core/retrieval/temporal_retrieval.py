@@ -28,6 +28,7 @@ from ..recall_persona import (
     persona_sql_filter,
 )
 from .hybrid_retriever import HybridResult
+from .query_text import query_char_limit
 from .temporal_query import (
     TimeRange,
     memory_time_bounds,
@@ -555,8 +556,9 @@ async def search_with_time(
     """
     if mode not in ("auto", "semantic", "time", "hybrid"):
         raise ValueError("mode must be auto, semantic, time or hybrid")
-    if not isinstance(query, str) or len(query) > 2000:
-        raise ValueError("query must contain at most 2000 characters")
+    query_limit = query_char_limit(config_manager, engine=memory_engine)
+    if not isinstance(query, str) or len(query) > query_limit:
+        raise ValueError(f"query must contain at most {query_limit} characters")
     query = query.strip()
     enabled = bool(
         _option(config_manager, memory_engine, "temporal_retrieval_enabled", True)

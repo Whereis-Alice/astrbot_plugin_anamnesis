@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from ..faiss_async_persist import get_async_persister
 from ..recall_persona import NO_PERSONA, persona_matches
+from .query_text import MAX_SEARCH_QUERY_CHARS, normalize_query_char_limit
 
 query_embeddings = ContextVar("anamnesis_query_embeddings", default=None)
 
@@ -85,7 +86,8 @@ async def _native_search(storage, vector, fetch_k):
 
 
 async def retrieve_vectors(
-    db, query, k, filters, *, source_key="id", max_candidates=8192
+    db, query, k, filters, *, source_key="id", max_candidates=8192,
+    max_query_chars=MAX_SEARCH_QUERY_CHARS,
 ):
     """Widen kNN until enough distinct, active, correctly scoped hits exist.
 
@@ -95,7 +97,7 @@ async def retrieve_vectors(
     """
     if k <= 0:
         return []
-    query = query[:2000]
+    query = query[:normalize_query_char_limit(max_query_chars)]
     filters = filters or {}
     # Some host document stores implement equality with '= ?', which cannot
     # match SQL NULL. Load that persona selection without a host predicate,

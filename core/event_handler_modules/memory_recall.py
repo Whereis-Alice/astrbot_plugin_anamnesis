@@ -22,6 +22,7 @@ from ..base.constants import (
     MEMORY_INJECTION_HEADER,
 )
 from ..memory_scope import is_event_memory_allowed, resolve_memory_scope
+from ..retrieval.query_text import build_automatic_recall_query, query_char_limit
 from ..utils import (
     OperationContext,
     format_memories_for_fake_tool_call,
@@ -275,8 +276,11 @@ class MemoryRecall:
                 recall_session_id = resolve_memory_scope(self.config_manager, event)
                 recall_persona_id = persona_id if use_persona_filtering else None
 
-                # 使用原始用户输入作为召回关键字
-                query_for_search = actual_query
+                # 仅限制检索副本；原始消息继续用于存储、时间解析与请求正文。
+                query_limit = query_char_limit(self.config_manager)
+                query_for_search = build_automatic_recall_query(
+                    actual_query, max_chars=query_limit
+                )
 
                 # 上下文扩展：拼接最近2轮对话作为查询，提升检索精准度
                 if self.config_manager.get(
@@ -315,7 +319,9 @@ class MemoryRecall:
                                     context_parts.append(content.strip())
                             if context_parts:
                                 expanded = " | ".join(context_parts)
-                                query_for_search = expanded + " " + actual_query
+                                query_for_search = build_automatic_recall_query(
+                                    actual_query, expanded, max_chars=query_limit
+                                )
                                 logger.debug(
                                     f"[{session_id}] 上下文扩展查询: "
                                     f"{len(context_parts)}条历史消息 + 当前消息，"

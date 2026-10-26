@@ -10,6 +10,7 @@ import statistics
 import time
 from datetime import datetime, timezone
 
+from .query_text import MAX_SEARCH_QUERY_CHARS, query_char_limit
 from .temporal_retrieval import search_with_time
 
 
@@ -38,7 +39,7 @@ def ranking_metrics(actual_ids: list[int], expected_ids: list[int], k: int) -> d
     }
 
 
-def _validate_cases(cases, max_cases):
+def _validate_cases(cases, max_cases, max_query_chars=MAX_SEARCH_QUERY_CHARS):
     if not isinstance(cases, list) or not 1 <= len(cases) <= max_cases:
         raise ValueError(
             f"cases must contain 1 to {max_cases} independently labeled queries"
@@ -48,9 +49,9 @@ def _validate_cases(cases, max_cases):
         if not isinstance(case, dict):
             raise ValueError(f"case {index + 1} must be an object")  # noqa: TRY004 - validation API uses ValueError
         query = case.get("query", "")
-        if not isinstance(query, str) or len(query) > 2000:
+        if not isinstance(query, str) or len(query) > max_query_chars:
             raise ValueError(
-                f"case {index + 1}: query must contain at most 2000 characters"
+                f"case {index + 1}: query must contain at most {max_query_chars} characters"
             )
         expected = case.get("expected_ids")
         if (
@@ -104,7 +105,9 @@ async def evaluate_queries(
     if not math.isfinite(float(timeout_seconds)) or not 0 < timeout_seconds <= 120:
         raise ValueError("evaluation timeout_seconds must be 0 to 120")
     max_cases = max(1, min(int(max_cases), 200))
-    checked = _validate_cases(cases, max_cases)
+    checked = _validate_cases(
+        cases, max_cases, query_char_limit(config_manager, engine=memory_engine)
+    )
     reference = now or datetime.now(timezone.utc)
     if reference.tzinfo is None:
         raise ValueError("evaluation reference time must have an explicit timezone")

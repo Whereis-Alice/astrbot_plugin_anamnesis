@@ -456,6 +456,7 @@ async def test_complete_initialization_wires_graph_db_and_engine_config(
                     "atom_maintenance_interval_hours": 12.0,
                     "atom_forget_delay_days": 3.0,
                 },
+                "recall_engine": {"max_query_chars": 8000},
             }
         ),
         str(tmp_path),
@@ -475,6 +476,7 @@ async def test_complete_initialization_wires_graph_db_and_engine_config(
     assert init.memory_engine.config["graph_memory_enabled"] is True
     assert init.memory_engine.config["document_route_weight"] == 0.7
     assert init.memory_engine.config["graph_route_weight"] == 0.3
+    assert init.memory_engine.config["max_query_chars"] == 8000
     assert init.memory_engine.config["cross_route_bonus"] == 0.12
     assert init.memory_engine.config["graph_expansion_limit"] == 12
     assert init.memory_engine.config["graph_max_topics"] == 4

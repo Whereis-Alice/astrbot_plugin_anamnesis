@@ -139,8 +139,11 @@ async def with_budget(tool, event, operation):
 async def agentic_search(tool, event, query, k, include_source=False, *, speaker=None,
                          start_time=None, end_time=None, exclude_ids=None, cursor=None, mode="auto"):
     async def search(state):
-        if not isinstance(query, str) or len(query) > 2000:
-            raise ValueError("query must contain at most 2000 characters")
+        from ..retrieval.query_text import query_char_limit
+
+        query_limit = query_char_limit(tool.config_manager)
+        if not isinstance(query, str) or len(query) > query_limit:
+            raise ValueError(f"query must contain at most {query_limit} characters")
         scope, persona = await scoped_filters(tool, event)
         zone = resolve_context_timezone(tool.context, tool.config_manager, getattr(event, "unified_msg_origin", None))
         after, before = timestamp(start_time, timezone_name=zone), timestamp(end_time, timezone_name=zone)

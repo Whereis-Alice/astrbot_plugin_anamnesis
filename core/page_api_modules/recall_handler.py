@@ -11,6 +11,7 @@ from astrbot.api import logger
 from quart import request
 
 from ..retrieval.temporal_query import resolve_context_timezone
+from ..retrieval.query_text import query_char_limit
 from ..retrieval.temporal_retrieval import retrieval_time_bounds, search_with_time
 
 if TYPE_CHECKING:
@@ -46,9 +47,16 @@ class RecallHandler:
         payload = await request.get_json(silent=True) or {}
         if not isinstance(payload, dict):
             return self.utils.error("请求参数必须为 JSON 对象")
+        if config_manager is None:
+            config_manager = getattr(
+                getattr(memory_engine, "memory_administration", None), "config", None
+            )
+            if not hasattr(config_manager, "filtering_settings"):
+                config_manager = None
         query_text = payload.get("query", "")
-        if not isinstance(query_text, str) or len(query_text) > 2000:
-            return self.utils.error("查询必须为不超过 2000 字的文本")
+        query_limit = query_char_limit(config_manager, engine=memory_engine)
+        if not isinstance(query_text, str) or len(query_text) > query_limit:
+            return self.utils.error(f"查询必须为不超过 {query_limit} 字的文本")
         query_text = query_text.strip()
         if (
             not query_text
@@ -69,13 +77,6 @@ class RecallHandler:
             return self.utils.error("作用域和人格必须为文本或空")
         session_id = self.utils.optional_text(payload.get("session_id"))
         persona_id = self.utils.optional_text(payload.get("persona_id"))
-        if config_manager is None:
-            config_manager = getattr(
-                getattr(memory_engine, "memory_administration", None), "config", None
-            )
-            if not hasattr(config_manager, "filtering_settings"):
-                config_manager = None
-
         try:
             started = time.perf_counter()
             raw_timeout = (

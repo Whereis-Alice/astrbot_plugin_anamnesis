@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from ..recall_persona import is_null_persona_filter, persona_filter_requested
+from .query_text import query_char_limit
 from .vector_search import retrieve_vectors
 
 if TYPE_CHECKING:
@@ -202,17 +203,16 @@ class VectorRetriever:
 
         processed_query = query
 
-        # 防止 embedding API token 超限：截断过长的查询文本
-        # 大多数 embedding 模型限制在 8192 tokens 以内，按字符数保守截断
-        _MAX_QUERY_CHARS = 2000
-        if len(processed_query) > _MAX_QUERY_CHARS:
+        # 字符预算由召回配置控制，用户按嵌入模型的输入能力调整。
+        query_limit = query_char_limit(self.config)
+        if len(processed_query) > query_limit:
             from astrbot.api import logger as _logger
 
             _logger.warning(
                 f"[VectorRetriever] 查询文本过长 ({len(processed_query)} 字符)，"
-                f"截断至 {_MAX_QUERY_CHARS} 字符以避免 token 超限"
+                f"按配置截断至 {query_limit} 字符"
             )
-            processed_query = processed_query[:_MAX_QUERY_CHARS]
+            processed_query = processed_query[:query_limit]
 
         # 构建元数据过滤器
         metadata_filters = {}
@@ -226,6 +226,7 @@ class VectorRetriever:
         faiss_results = await retrieve_vectors(
             self.faiss_db, processed_query, k, metadata_filters,
             max_candidates=self.config.get("vector_max_fetch_candidates", 8192),
+            max_query_chars=query_limit,
         )
 
         # 转换为VectorResult格式

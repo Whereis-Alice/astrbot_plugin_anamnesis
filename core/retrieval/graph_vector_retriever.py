@@ -8,6 +8,7 @@ from typing import Any
 
 from ..recall_persona import is_null_persona_filter, persona_filter_requested
 from .vector_retriever import delete_faiss_documents_by_ids
+from .query_text import query_char_limit
 from .vector_search import retrieve_vectors
 
 
@@ -147,6 +148,7 @@ class GraphVectorRetriever:
             self.faiss_db, query, k, metadata_filters,
             source_key="source_memory_id",
             max_candidates=self.config.get("vector_max_fetch_candidates", 8192),
+            max_query_chars=query_char_limit(self.config),
         )
 
         results: list[GraphVectorResult] = []

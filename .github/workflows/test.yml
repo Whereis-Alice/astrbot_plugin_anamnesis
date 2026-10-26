@@ -91,6 +91,7 @@ jobs:
           npm run test:administration-browser
           npm run test:recall-time-browser
           npm run test:redesign-browser
+          npm run test:compact-browser
       - name: Upload browser evidence
         if: always()
         uses: actions/upload-artifact@v4
