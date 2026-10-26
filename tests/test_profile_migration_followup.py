@@ -14,7 +14,8 @@ from astrbot_plugin_anamnesis.storage.conversation_store import ConversationStor
 
 class Config:
     def __init__(self):
-        self.values = {"user_profile.enabled": True, "user_profile.scope_mode": "user"}
+        self.values = {"user_profile.enabled": True, "user_profile.scope_mode": "user",
+                       "user_profile.verify_real_world_facts": False}
 
     def get(self, key, default=None):
         return self.values.get(key, default)

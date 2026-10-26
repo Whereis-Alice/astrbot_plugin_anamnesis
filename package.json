@@ -1,6 +1,6 @@
 {
   "name": "astrbot-plugin-anamnesis-docs",
-  "version": "3.5.17",
+  "version": "3.5.18",
   "private": true,
   "type": "module",
   "scripts": {
@@ -14,6 +14,7 @@
     "docs:preview": "vitepress preview docs",
     "test:administration-browser": "node tests/browser/administration.spec.mjs",
     "test:profile-review-browser": "node tests/browser/profile-review.spec.mjs",
+    "test:profile-quarantine-browser": "node tests/browser/profile-quarantine.spec.mjs",
     "test:recall-time-browser": "node tests/browser/recall-time.spec.mjs"
   },
   "overrides": {

@@ -337,7 +337,7 @@
     },
     "user_profile": {
       "description": "User Profiles (Beta)",
-      "hint": "Keep explicit per-user facts outside top-k memory retrieval. When enabled, each successful summary makes one additional LLM extraction call.",
+      "hint": "Store explicit user facts separately from top-k retrieval. Off by default. Enabled summaries call the extraction LLM; candidates trigger one independent real-world context check by default.",
       "enabled": {
         "description": "Enable User Profiles",
         "hint": "When off, no profiles are extracted or injected."
@@ -351,7 +351,8 @@
         ]
       },
       "max_items": {
-        "description": "Maximum Facts per Profile Scope"
+        "description": "Maximum Facts per Profile Scope",
+        "hint": "Limit for normally maintained facts. Administrator-paused facts are retained separately as review records so capacity cleanup cannot delete or reactivate them."
       },
       "max_injection_chars": {
         "description": "Maximum Injection Characters"
@@ -361,7 +362,8 @@
         "hint": "Temporary status facts stop being injected after this many days; stable preferences remain."
       },
       "extraction_max_chars": {
-        "description": "Maximum Extraction Source Characters"
+        "description": "Maximum Extraction Source Characters",
+        "hint": "A contiguous suffix of whole messages, including other speakers for context; no joke, hypothetical or denial prefix is cut away."
       },
       "llm_max_retries": {
         "description": "Additional LLM Extraction Retries"
@@ -381,6 +383,14 @@
       "evidence_max_sources": {
         "description": "Evidence sources per fact",
         "hint": "Evidence sources per fact"
+      },
+      "verify_real_world_facts": {
+        "description": "Verify real-world profile facts independently",
+        "hint": "Enabled by default. Each candidate must be the user’s own statement about reality and entailed by the complete message. Uncertain, failed or timed-out checks do not write facts. At most one extra LLM call per batch without persona. Disabling retains source and obvious-context filtering but increases semantic error risk."
+      },
+      "verification_timeout": {
+        "description": "Profile context verification timeout (seconds)",
+        "hint": "Independent profile verification only; 1–180 seconds. Timed-out candidates are not stored. Does not change recall timeout."
       }
     },
     "agent_tools": {

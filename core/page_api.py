@@ -9,10 +9,11 @@
 
 from __future__ import annotations
 
+import sqlite3
 from typing import Any
 
 from astrbot.api import logger
-from quart import request
+from quart import g, request
 
 from .page_api_modules import (
     BackupHandler,
@@ -67,6 +68,7 @@ class PluginPageApi(AdministrationPageMixin):
         register = self.plugin.context.register_web_api
         self.register_administration_routes()
         register(f"{PAGE_API_PREFIX}/profiles/review", self.review_profile, ["POST"], "Anamnesis profile claim review")
+        register(f"{PAGE_API_PREFIX}/profiles/quarantine", self.quarantine_profile, ["POST"], "Anamnesis profile adoption hold")
         register(f"{PAGE_API_PREFIX}/profiles/alias", self.set_profile_alias, ["POST"], "Anamnesis profile display alias")
         register(f"{PAGE_API_PREFIX}/profiles/users", self.list_profile_users, ["GET"],
                  "Anamnesis Page profile directory")
@@ -420,6 +422,31 @@ class PluginPageApi(AdministrationPageMixin):
             return self.utils.ok(data) if data else self.utils.error("档案不存在或已经变化，请刷新")
         except (TypeError, ValueError) as exc:
             return self.utils.error(str(exc))
+
+    async def quarantine_profile(self):
+        """Pause/resume adoption with the authenticated administrator identity."""
+        _, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        manager = getattr(self.plugin, "user_profile_manager", None)
+        payload = await request.get_json(silent=True)
+        if manager is None or not isinstance(payload, dict):
+            return self.utils.error("档案管理器未就绪或参数无效")
+        actor = "webui:" + str(
+            getattr(g, "username", None) or getattr(g, "user", None) or "administrator"
+        )
+        try:
+            data = await manager.set_quarantine_for_web(
+                payload.get("profile_scope"), payload.get("profile_key"),
+                current_claim_id=payload.get("current_claim_id"),
+                expected_revision=payload.get("expected_revision"),
+                action=payload.get("action"), reason=payload.get("reason", ""),
+                actor=actor,
+            )
+            return self.utils.ok(data) if data else self.utils.error("档案不存在、参数无效或已经变化，请刷新")
+        except (sqlite3.Error, RuntimeError, TypeError, ValueError):
+            logger.exception("修改档案采用状态失败")
+            return self.utils.error("修改档案采用状态失败，请查看插件日志")
 
     async def set_profile_alias(self):
         _, error = await self._ensure_plugin_ready()

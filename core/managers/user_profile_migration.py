@@ -248,6 +248,10 @@ class UserProfileMigrationMixin:
 
     async def _session_claim_snapshot(self, row, claim, scope, evidence, context):
         snapshot = {**row, **json.loads(claim["snapshot"]), "profile_scope": scope}
+        # The administrator hold belongs to the current row. Historical claim
+        # snapshots cannot silently resume it while evidence changes scope.
+        for field in ("quarantined", "quarantine_reason", "quarantined_at"):
+            snapshot[field] = row.get(field)
         live = await self._live_evidence(evidence)
         snapshot.update(self._profile_source_projection(live), suppressed=int(not live))
         # Recent account labels in the old user scope may come from another
@@ -442,8 +446,8 @@ class UserProfileMigrationMixin:
             )
             if old is not None or new is not None:
                 await connection.execute(
-                    "INSERT INTO user_profile_transitions(profile_scope,profile_key,action,old_claim_id,new_claim_id,actor,created_at) "
-                    "VALUES(?,?,?,?,?,?,?)",
+                    "INSERT INTO user_profile_transitions(profile_scope,profile_key,action,old_claim_id,new_claim_id,actor,created_at,reason) "
+                    "VALUES(?,?,?,?,?,?,?,?)",
                     (
                         scope,
                         key,
@@ -452,6 +456,7 @@ class UserProfileMigrationMixin:
                         new,
                         item["actor"],
                         item["created_at"],
+                        item["reason"],
                     ),
                 )
 

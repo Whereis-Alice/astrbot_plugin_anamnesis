@@ -5,8 +5,7 @@ import time
 import pytest
 
 from tests.test_user_profile_ledger import event, fact
-
-pytest_plugins = ["tests.test_user_profile_ledger"]
+from tests.test_user_profile_ledger import manager as manager  # noqa: PLC0414
 
 
 @pytest.mark.asyncio

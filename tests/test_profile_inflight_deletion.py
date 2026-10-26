@@ -41,7 +41,7 @@ async def manager(tmp_path):
     store = ConversationStore(str(tmp_path / "profiles.db"))
     await store.initialize()
     result = UserProfileManager(
-        ConfigManager({"user_profile": {"enabled": True}}), SimpleNamespace(store=store)
+        ConfigManager({"user_profile": {"enabled": True, "verify_real_world_facts": False}}), SimpleNamespace(store=store)
     )
     try:
         yield result

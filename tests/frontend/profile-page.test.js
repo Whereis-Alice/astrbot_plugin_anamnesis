@@ -75,6 +75,67 @@ test("lifetime is explicit and suppressed facts never look active", () => {
   assert.equal(page.lifecycle({ expires_at: 200 }, 100), "temporary");
   assert.equal(page.lifecycle({ expires_at: 99 }, 100), "expired");
   assert.equal(page.lifecycle({ suppressed: true, expires_at: 200 }, 100), "suppressed");
+  assert.equal(page.lifecycle({ quarantined: true, suppressed: true, expires_at: 99 }, 100), "quarantined");
+});
+
+test("paused facts keep the original value, escaped reason and distinct resume action visible", () => {
+  const { page, state, elements } = setup({});
+  state.profile.user = user;
+  state.profile.items = [{ ...facts[0], quarantined: 1, quarantine_reason: "等待 <img> 核实", current_claim_id: 21, revision: 4,
+    adoption_history: [{ action: "quarantined", actor: "webui:<admin>", reason: "原文 <script>", created_at: 1700000000 }] }];
+  page.renderDetail();
+  const html = elements["profile-reader"].innerHTML;
+  assert.match(html, /profile-lifecycle quarantined/);
+  assert.match(html, /等待 &lt;img&gt; 核实/);
+  assert.match(html, /rice &amp; &lt;script&gt;alert/);
+  assert.match(html, /data-profile-quarantine="resume"/);
+  assert.match(html, /webui:&lt;admin&gt;/);
+  assert.match(html, /原文 &lt;script&gt;/);
+  assert.doesNotMatch(html, /<(img|script|admin)>/);
+  page.openItem(state.profile.items[0]);
+  assert.match(elements["peek-body"].innerHTML, /profile-adoption-control is-paused/);
+  assert.match(elements["peek-body"].innerHTML, /等待 &lt;img&gt; 核实/);
+});
+
+test("pause/resume require confirmation and send exact current claim/revision without JSON actor", async () => {
+  const posts = [], { page, peek } = setup({ async post(path, body, options) { posts.push({ path, body, options }); }, async get() { return { users: [], total: 0 }; } });
+  const item = { ...facts[0], current_claim_id: 22, revision: 7 };
+  peek.confirmed = false;
+  await page.quarantineItem(item, "pause", "待核实");
+  assert.equal(posts.length, 0);
+  peek.confirmed = true;
+  await page.quarantineItem(item, "pause", "  待核实  ");
+  assert.deepEqual(posts[0], { path: "profiles/quarantine", body: { profile_scope: "scope:A", profile_key: "favorite_food", current_claim_id: 22, expected_revision: 7, action: "pause", reason: "待核实" }, options: { retries: 0 } });
+  await page.quarantineItem({ ...item, quarantined: 1, revision: 8 }, "resume", "old reason");
+  assert.equal(posts[1].body.reason, "");
+  assert.equal(posts[1].body.action, "resume");
+  assert.equal(posts[1].body.expected_revision, 8);
+  assert.equal(Object.hasOwn(posts[1].body, "actor"), false);
+});
+
+test("an old pause response cannot close a newer editor and duplicate clicks issue one mutation", async () => {
+  let started, finish, posts = 0, closes = 0;
+  const posting = new Promise(resolve => { started = resolve; });
+  const { page, peek } = setup({ post() { posts++; started(); return new Promise(resolve => { finish = resolve; }); }, async get() { return { users: [], total: 0 }; } });
+  peek.close = () => { closes++; };
+  const item = { ...facts[0], current_claim_id: 22, revision: 7 };
+  const pausing = page.quarantineItem(item, "pause");
+  await posting;
+  await page.quarantineItem(item, "pause");
+  assert.equal(posts, 1);
+  page.openItem(facts[1]);
+  finish({}); await pausing;
+  assert.equal(closes, 0);
+  assert.equal(page._quarantining, false);
+});
+
+test("failed pause leaves the original fact and releases its action guard", async () => {
+  const { page, state } = setup({ async post() { throw Error("stale revision"); } });
+  state.profile.items = [{ ...facts[0], current_claim_id: 22, revision: 7 }];
+  await page.quarantineItem(state.profile.items[0], "pause");
+  assert.equal(state.profile.items[0].quarantined, undefined);
+  assert.equal(state.profile.items[0].revision, 7);
+  assert.equal(page._quarantining, false);
 });
 test("saving and confirmed deletion keep the exact original scope/key", async () => {
   const posts = [], { page, peek, elements } = setup({ async get(path) { return path === "profiles/users" ? directory : detail; }, async post(path, body, options) { posts.push({ path, body, options }); return { count: 1 }; } });

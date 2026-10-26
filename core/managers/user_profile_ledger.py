@@ -101,10 +101,10 @@ class UserProfileLedgerMixin:
         return True
 
     async def _transition(self, connection: Any, scope: str, key: str, action: str,
-                          old_claim: int | None, new_claim: int | None, actor: str) -> None:
+                          old_claim: int | None, new_claim: int | None, actor: str, *, reason: str = "") -> None:
         await connection.execute(
-            "INSERT INTO user_profile_transitions(profile_scope,profile_key,action,old_claim_id,new_claim_id,actor,created_at) VALUES(?,?,?,?,?,?,?)",
-            (scope, key, action, old_claim, new_claim, actor, time.time()))
+            "INSERT INTO user_profile_transitions(profile_scope,profile_key,action,old_claim_id,new_claim_id,actor,created_at,reason) VALUES(?,?,?,?,?,?,?,?)",
+            (scope, key, action, old_claim, new_claim, actor, time.time(), reason))
 
     async def _prune_ledger(self, connection: Any, scope: str, key: str) -> None:
         limit = self._ledger_limit("history_max_versions", 20, 100)
@@ -135,6 +135,15 @@ class UserProfileLedgerMixin:
                              authority: str, *, revision: int = 1, manual: bool = False) -> None:
         row = {**snapshot, "current_claim_id": claim, "authority": authority,
                "manual_override": int(manual), "revision": revision}
+        # Claim replacement, evidence refresh and ordinary manual edits cannot
+        # resume an administrator hold. Only the separate hold API changes it.
+        async with connection.execute(
+            "SELECT quarantined,quarantine_reason,quarantined_at FROM user_profiles "
+            "WHERE profile_scope=? AND profile_key=?",
+            (snapshot["profile_scope"], snapshot["profile_key"])) as cursor:
+            existing = await cursor.fetchone()
+        if existing:
+            row.update(dict(existing))
         # snapshot keys originate in our persisted row or normalized writer.
         async with connection.execute("PRAGMA table_info(user_profiles)") as cursor:
             columns = {record[1] for record in await cursor.fetchall()}
@@ -301,6 +310,8 @@ class UserProfileLedgerMixin:
             item["active"] = item["evidence_id"] in live_ids
             current_evidence.setdefault(item["claim_id"], []).append(item)
         for row in rows:
+            row["quarantined"] = int(bool(row.get("quarantined")))
+            row["quarantine_reason"] = row.get("quarantine_reason") or ""
             claim = row.get("current_claim_id")
             if not claim:
                 row.update(evidence=[], pending=[], history=[])
@@ -312,9 +323,17 @@ class UserProfileLedgerMixin:
             row.update(self._profile_source_projection(live))
             row["live_evidence_count"] = len(live)
             row["suppressed"] = int(not live)
+            row["adopted"] = bool(live) and not row["quarantined"] and (
+                row["expires_at"] is None or row["expires_at"] > time.time())
             row["pending"], row["history"] = [], []
             if not include_history:
                 continue
+            async with connection.execute(
+                "SELECT action,actor,reason,created_at FROM user_profile_transitions "
+                "WHERE profile_scope=? AND profile_key=? AND action IN ('quarantined','resumed') "
+                "ORDER BY transition_id DESC LIMIT ?",
+                (row["profile_scope"], row["profile_key"], self._ledger_limit("history_max_versions", 20, 100))) as cursor:
+                row["adoption_history"] = [dict(record) for record in await cursor.fetchall()]
             async with connection.execute(
                 "SELECT claim_id,value,authority,state,created_at,updated_at,snapshot FROM user_profile_claims "
                 "WHERE profile_scope=? AND profile_key=? AND claim_id<>? ORDER BY claim_id DESC LIMIT ?",

@@ -87,6 +87,7 @@ jobs:
           npm run test:bridge-browser
           npm run test:browser
           npm run test:profile-review-browser
+          npm run test:profile-quarantine-browser
           npm run test:administration-browser
           npm run test:recall-time-browser
       - name: Upload browser evidence

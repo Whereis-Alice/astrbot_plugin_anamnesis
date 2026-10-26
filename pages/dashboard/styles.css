@@ -1944,3 +1944,11 @@ body {
 .bridge-feedback { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 24px; background: var(--bg-card); color: var(--text-secondary); border-bottom: 1px solid var(--border-color); font-size: 13px; overflow-wrap: anywhere; }
 .bridge-feedback > span { min-width: 0; }
 .bridge-feedback > button { flex-shrink: 0; }
+.profile-adoption-control{margin:12px 0;padding:12px;border:1px solid var(--border-normal);border-radius:12px;min-width:0}
+.profile-adoption-control summary{cursor:pointer;font-weight:600}
+.profile-adoption-control textarea{width:100%;margin:6px 0 10px;box-sizing:border-box;resize:vertical}
+.profile-adoption-control.is-paused{border-color:#d99e4b;background:rgba(217,158,75,.08)}
+.profile-quarantine-reason{margin:10px 0;white-space:pre-wrap;overflow-wrap:anywhere}
+.profile-lifecycle.quarantined{color:#eab968;background:rgba(217,158,75,.12)}
+.profile-fact-card.quarantined{border-color:rgba(217,158,75,.55)}
+.profile-adoption-history small{overflow-wrap:anywhere}

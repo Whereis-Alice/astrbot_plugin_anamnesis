@@ -40,6 +40,8 @@
 
 ## Recent capabilities
 
+**3.5.18** independently verifies real-world profile context by default, separating jokes, fictional relationships, roleplay, quotations and denials from personal facts. Pause adoption of an old incorrect fact from its detail panel while preserving text and review history.
+
 **3.5.0** adds profile review, verbatim evidence and manual priority, date-range retrieval, and an Administration page for recovery, correction rollback, import jobs, independent query evaluation and optional events. See [the update guide](docs/en/memorix-adaptations-3.5.0.md) for defaults and usage.
 
 | Recoverable memory | Controlled boundaries | Online maintenance |

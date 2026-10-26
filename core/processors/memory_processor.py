@@ -17,6 +17,7 @@ from ..models.conversation_models import Message
 from .identity_anchor import IdentityAnchor
 from .memory_processor_build import MemoryProcessorBuildMixin
 from .memory_processor_parse import MemoryProcessorParseMixin
+from .memory_semantics import MEMORY_CONTEXT_RULES
 
 # 后备提示词文件的进程内缓存：{绝对路径: (mtime, 文件内容)}
 # PromptManager 不可用时会退化到直接读盘，而 _load_prompts_fallback 位于
@@ -661,6 +662,9 @@ class MemoryProcessor(MemoryProcessorParseMixin, MemoryProcessorBuildMixin):
 
             # 构建 system_prompt，嵌入人格提示
             system_prompt = await self._build_system_prompt_with_persona(persona_id)
+            # Apply after custom/persona templates so stored prompt overrides
+            # receive the same context rules as newly installed templates.
+            system_prompt += MEMORY_CONTEXT_RULES
             logger.debug(f"[MemoryProcessor] System Prompt: {system_prompt[:200]}...")
 
             llm_response_text = await self._call_llm_with_retry(

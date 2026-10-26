@@ -10,6 +10,7 @@ from astrbot.api import logger
 
 from ..models.memory_atom import MemoryAtom
 from .atom_classifier import classify_atoms
+from .memory_semantics import MEMORY_CONTEXT_RULES
 
 
 class MemoryProcessorBuildMixin:
@@ -136,6 +137,7 @@ class MemoryProcessorBuildMixin:
             "信息无损的记忆摘要。保留所有关键事实与具体细节，去重并消除相互矛盾，"
             "避免泛化和丢失专有名词。只输出 JSON，不要输出任何其他内容。"
         )
+        system_prompt += MEMORY_CONTEXT_RULES
         prompt = (
             f"以下是一组需要合并的记忆（共 {len(items)} 条）：\n"
             f"{json.dumps(items, ensure_ascii=False, indent=2)}\n\n"

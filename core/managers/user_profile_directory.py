@@ -92,9 +92,10 @@ class UserProfileDirectoryMixin:
         async with connection.execute(
             f"""SELECT identity, MAX(platform) AS platform, MAX(sender_id) AS sender_id,
                 MAX(updated_at) AS updated_at, COUNT(*) AS fact_count,
-                SUM(suppressed=0 AND (expires_at IS NULL OR expires_at>?)) AS active_fact_count,
+                SUM(suppressed=0 AND quarantined=0 AND (expires_at IS NULL OR expires_at>?)) AS active_fact_count,
                 SUM(expires_at IS NOT NULL AND expires_at<=?) AS expired_fact_count,
                 SUM(suppressed<>0) AS suppressed_fact_count,
+                SUM(quarantined<>0) AS quarantined_fact_count,
                 COUNT(DISTINCT profile_scope) AS scope_count
                 FROM user_profiles WHERE identity IN
                     (SELECT DISTINCT identity FROM user_profiles p{where})
@@ -112,16 +113,17 @@ class UserProfileDirectoryMixin:
                 rows = [dict(row) for row in await cursor.fetchall()]
             facts = await self._enrich_profile_rows(rows, include_history=False)
             counts = {identity: {"active_fact_count": 0, "expired_fact_count": 0,
-                                 "suppressed_fact_count": 0} for identity in identities}
+                                 "suppressed_fact_count": 0, "quarantined_fact_count": 0} for identity in identities}
             by_identity = {identity: [] for identity in identities}
             now = time.time()
             for fact in facts:
                 by_identity[fact["identity"]].append(fact)
                 summary = counts[fact["identity"]]
                 expired = fact["expires_at"] is not None and fact["expires_at"] <= now
-                summary["active_fact_count"] += int(not fact["suppressed"] and not expired)
+                summary["active_fact_count"] += int(not fact["suppressed"] and not fact["quarantined"] and not expired)
                 summary["expired_fact_count"] += int(expired)
                 summary["suppressed_fact_count"] += int(bool(fact["suppressed"]))
+                summary["quarantined_fact_count"] += int(bool(fact["quarantined"]))
             for user in users:
                 user.update(counts[user["identity"]])
             placeholders = ",".join("?" for _ in identities)
@@ -159,7 +161,7 @@ class UserProfileDirectoryMixin:
                                                      or row["updated_at"], row["updated_at"])) if grouped else {}
                 preview, seen = [], set()
                 for row in sorted(owned, key=lambda row: (category_order.get(row["category"], 10), -row["updated_at"], row["profile_key"])):
-                    if row["suppressed"] or row["expires_at"] is not None and row["expires_at"] <= now:
+                    if row["quarantined"] or row["suppressed"] or row["expires_at"] is not None and row["expires_at"] <= now:
                         continue
                     signature = (row["category"], row["display_label"], row["value"])
                     if signature in seen:

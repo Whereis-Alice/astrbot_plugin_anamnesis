@@ -141,17 +141,21 @@ The write tool is powerful and depends on model discipline. Start with active re
 
 ## User profiles (Beta)
 
-Profiles live separately in `conversations.db` and bypass top-k ranking. When enabled, each successful conversation summary triggers an extra LLM call to extract explicit facts from the current sender's own messages. The profile is injected as temporary context even if normal retrieval is disabled or times out. By default, profiles are separated by platform, user identity, and the `unified_msg_origin` chat origin, so separate groups and private chats do not share facts. Within the same chat, `/new` and `/reset` clear short-term context but not that chat's profile or long-term memories. “Session” here means chat origin, not a new conversation record created by `/new`.
+Profiles live separately in `conversations.db` and bypass top-k ranking. When enabled, each successful conversation summary triggers an extra LLM extraction call; candidates then undergo one independent context check by default. The profile is injected as temporary context even if normal retrieval is disabled or times out. By default, profiles are separated by platform, user identity, and the `unified_msg_origin` chat origin, so separate groups and private chats do not share facts. Within the same chat, `/new` and `/reset` clear short-term context but not that chat's profile or long-term memories. “Session” here means chat origin, not a new conversation record created by `/new`.
 
 | Key | Default | Description |
 | --- | --- | --- |
 | `user_profile.enabled` | `false` | Off means no extraction, injection, or extra LLM call |
 | `user_profile.scope_mode` | `session` | `session` separates chat origins; `user` shares within one platform and identity. Chats in `filtering_settings.isolated_sessions` always remain separate |
-| `user_profile.max_items` | `40` | Maximum facts per profile scope |
+| `user_profile.max_items` | `40` | Ordinary maintained facts per scope; paused review records are retained separately |
 | `user_profile.max_injection_chars` | `3000` | Per-request profile injection limit |
 | `user_profile.volatile_ttl_days` | `7` | Lifetime of temporary status facts |
 | `user_profile.extraction_max_chars` | `12000` | Maximum source text per extraction |
 | `user_profile.llm_max_retries` | `1` | Additional LLM extraction retries |
+| `user_profile.verify_real_world_facts` | `true` | Independently check authored self-statements, real-world context and entailment; uncertainty or failure prevents writes |
+| `user_profile.verification_timeout` | `45` | Independent verification timeout in seconds, 1–180; separate from recall timeout |
+
+Since 3.5.18, candidates trigger one additional independent batch check without persona. Whole messages preserve jokes, hypotheses, quotations and denials. Calling a fictional character “my wife” does not imply real marriage; explicit real-world marriage statements can still qualify. Failed, incomplete or timed-out checks skip unverified candidates. Disabling verification reduces calls but increases semantic error risk; source attribution and obvious-context checks remain. Existing facts are retained; use “Pause adoption” in a fact's details to stop injection while preserving review history.
 
 The Dashboard “User profiles” page uses a compact table for facts, recent group/user labels, and update times. Filter by scope, source chat, and key, then click a row to inspect and edit value, category, confidence, and expiry or delete one exact item. It is intended for administrators with plugin-page access. New extraction events record the latest group ID, group name, and user nickname; old rows receive these labels on the next related message, while a historical group name that was never stored remains unavailable and the session ID is retained. Existing facts remain visible, editable, and deletable when extraction is off. On first read in the matching chat, 3.2.0 user-scoped facts migrate to their recorded `source_session_id` chat only; switching back to `user` mode does not merge them back automatically.
 

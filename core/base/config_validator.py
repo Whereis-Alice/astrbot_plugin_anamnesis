@@ -217,6 +217,12 @@ class UserProfileConfig(BaseModel):
     volatile_ttl_days: int = Field(default=7, ge=1, le=3650)
     extraction_max_chars: int = Field(default=12000, ge=1000, le=50000)
     llm_max_retries: int = Field(default=1, ge=0, le=3)
+    verify_real_world_facts: bool = Field(
+        default=True, description="独立核验本人现实自述，拒绝玩笑、引用和推断"
+    )
+    verification_timeout: float = Field(
+        default=45.0, ge=1.0, le=180.0, description="档案语境核验超时秒数"
+    )
     manual_override_enabled: bool = True
     review_changes: bool = True
     history_max_versions: int = Field(default=20, ge=2, le=100)

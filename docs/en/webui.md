@@ -1,5 +1,7 @@
 # WebUI
 
+Since 3.5.18, a profile fact's details offer “Pause adoption”. Pause an incorrect interpretation and record a reason while retaining text, evidence and review history. Paused facts are excluded from injection and active previews until an administrator explicitly confirms resuming. Editing or automatic extraction cannot release the hold. Actions bind to the current scope, key, claim ID and revision; refresh stale details. Normal memory summaries are separate data and should be edited or archived separately when incorrect.
+
 3.5.0 adds profile review, evidence and history, date-range debugging, and an Administration page for recovery, correction rollback, import jobs, independent evaluation and optional events. See [the update guide](/en/memorix-adaptations-3.5.0).
 
 Anamnesis uses AstrBot official Plugin Pages for its dashboard. No extra web server is required.

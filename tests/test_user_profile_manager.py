@@ -45,7 +45,7 @@ def _fact(key="washer_runtime", value="洗衣机运行 35 分钟", **kwargs):
 async def profile_manager(tmp_path):
     store = ConversationStore(str(tmp_path / "conversations.db"))
     await store.initialize()
-    config = ConfigManager({"user_profile": {"enabled": True}})
+    config = ConfigManager({"user_profile": {"enabled": True, "verify_real_world_facts": False}})
     manager = UserProfileManager(config, SimpleNamespace(store=store))
     try:
         yield manager
@@ -370,7 +370,7 @@ async def test_expired_status_and_unverified_claims_are_not_injected(profile_man
 
 
 @pytest.mark.asyncio
-async def test_group_extraction_uses_only_current_sender(profile_manager):
+async def test_group_extraction_only_current_sender_can_supply_evidence(profile_manager):
     alice = _event("alice")
     seen_prompt = None
 
@@ -397,8 +397,10 @@ async def test_group_extraction_uses_only_current_sender(profile_manager):
         == 1
     )
     assert "洗衣机运行 35 分钟" in seen_prompt
-    assert "secret-bob" not in seen_prompt
-    assert "超级权限" not in seen_prompt
+    assert "secret-bob" in seen_prompt and "超级权限" in seen_prompt
+    assert '"sender_id": "bob"' in seen_prompt
+    assert '"evidence_allowed": false' in seen_prompt
+    assert (await profile_manager.get_profile(alice))[0]["value"] == "洗衣机运行 35 分钟"
 
 
 @pytest.mark.asyncio
