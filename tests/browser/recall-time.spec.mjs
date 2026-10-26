@@ -11,7 +11,7 @@ mkdirSync(output, { recursive: true });
 const server = spawn(process.env.PYTHON || "python", ["tests/browser/serve.py", "--port", "8770"], { stdio: "ignore", windowsHide: true });
 const base = "http://127.0.0.1:8770";
 for (let i = 0; i < 50; i++) { try { await fetch(base); break; } catch { await new Promise(resolve => setTimeout(resolve, 100)); } }
-const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE_PATH || "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe", headless: true });
+const browser = await chromium.launch({ executablePath: process.env.CHROMIUM_EXECUTABLE_PATH || (process.platform === "win32" ? "C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe" : undefined), headless: true });
 const page = await browser.newPage({ viewport: { width: 1400, height: 950 } });
 const errors = [], checks = [];
 page.on("pageerror", error => errors.push(error.message));
