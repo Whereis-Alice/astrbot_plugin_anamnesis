@@ -291,7 +291,14 @@ import {
   /* ================================================================
      Graph Page (依赖 graph-ui.js)
      ================================================================ */
-  async function fetchGraphStats() {
+  let graphStatsRequest = null;
+  function fetchGraphStats() {
+    if (graphStatsRequest) return graphStatsRequest;
+    graphStatsRequest = loadGraphStats().finally(() => { graphStatsRequest = null; });
+    return graphStatsRequest;
+  }
+
+  async function loadGraphStats() {
     try {
       const data = await api.get("stats");
 
@@ -310,31 +317,40 @@ import {
   /* ================================================================
      Initialization
      ================================================================ */
-  async function init() {
+  let contextUnsubscribe;
+  async function connect(reload = false) {
+    const feedback = document.getElementById("bridge-feedback");
+    const message = document.getElementById("bridge-message");
+    const retry = document.getElementById("bridge-retry");
+    feedback.classList.remove("hidden");
+    message.textContent = window.t("bridge.connecting");
+    retry.disabled = true;
+    try {
+      const context = await api.ready();
+      contextUnsubscribe?.();
+      if (typeof api.bridge?.onContext === "function") {
+        contextUnsubscribe = api.bridge.onContext((ctx) => {
+          if (ctx && typeof ctx.isDark === "boolean") applyTheme(ctx.isDark ? "dark" : "light");
+          if (ctx?.locale) updateLanguageMenu();
+        });
+      }
+      applyTheme(getInitialTheme(context));
+      feedback.classList.add("hidden");
+      if (reload) switchPage(state.page);
+    } catch (error) {
+      message.textContent = error.message || window.t("bridge.timeout");
+    } finally {
+      retry.disabled = false;
+    }
+  }
+
+  function init() {
     hydrateIcons();
     initMotionField();
-    const context = await api.ready();
-
-    if (api.bridge && typeof api.bridge.onContext === "function") {
-      api.bridge.onContext((ctx) => {
-        if (ctx && typeof ctx.isDark === "boolean") {
-          const newTheme = ctx.isDark ? "dark" : "light";
-          const currentTheme = document.documentElement.getAttribute("data-theme") || "light";
-          if (newTheme !== currentTheme) {
-            applyTheme(newTheme);
-          }
-        }
-
-        if (ctx && ctx.locale) {
-          updateLanguageMenu();
-        }
-      });
-    }
-
-    const initialTheme = getInitialTheme(context);
-    applyTheme(initialTheme);
+    applyTheme(getInitialTheme(api.getContext()));
 
     initSidebar();
+    document.getElementById("bridge-retry").addEventListener("click", () => connect(true));
 
     memoryPage.initEventListeners();
     recallPage.initEventListeners();
@@ -353,7 +369,7 @@ import {
     });
     window.addEventListener("languagechange", refreshDynamicI18n);
 
-    fetchGraphStats();
+    connect();
     switchPage("graph");
   }
 
@@ -433,5 +449,12 @@ import {
   };
 
   // 启动应用
-  init();
+  function start() {
+    try { init(); } catch (error) {
+      console.error("[Anamnesis] Dashboard initialization failed:", error);
+      showToast(error.message || window.t("misc.requestFailed"), true);
+    }
+  }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", start, { once: true });
+  else start();
 })();

@@ -2,7 +2,7 @@
 
 This release adapts mechanisms from Memorix 1.4.0 within Anamnesis's existing identity, scope, persona and lifecycle boundaries.
 
-Use **3.5.16** for all earlier fixes plus consistent event-time and current-source recall, recovery completion under full or lowered storage budgets, isolation of corrupt source items, and strict field validation for profile extraction and editing. The features and defaults below still apply.
+Use **3.5.17** for fixed host SDK loading, working sidebar navigation and automatic graph loading; readable contact cards with names, accounts, recent groups and editable details; and robust administration logs and profile input validation. The features and defaults below still apply.
 
 Profiles remain disabled by default. Enabled profiles retain explicit self-report and verbatim-evidence validation. Manual edits have independent priority; changed automatic values enter review by default. The directory shows current values, proposals, history and multiple original evidence sources. Version checks protect edits and review actions. Administrator display aliases never merge accounts.
 

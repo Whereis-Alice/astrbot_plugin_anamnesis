@@ -20,6 +20,10 @@ class AdministrationCapacityError(ValueError):
     """A bounded administration write could not reserve more content bytes."""
 
 
+class AdministrationRecordError(ValueError):
+    """Saved recovery evidence is malformed and cannot authorize a mutation."""
+
+
 class AdministrationStore:
     def __init__(self, db_path: str, config: dict | None = None):
         self.db_path, self.config = db_path, config or {}
@@ -142,13 +146,28 @@ class AdministrationStore:
             return dict(row)
 
     @staticmethod
-    def decode(row):
+    def decode(row, *, tolerate_corruption=False):
         if row is None:
             return None
         data = dict(row)
+        corrupt_fields = []
         for key in ("payload", "result", "members"):
             if key in data:
-                data[key] = json.loads(data[key])
+                expected_type = list if key == "members" else dict
+                try:
+                    decoded = json.loads(data[key])
+                except (ValueError, TypeError):
+                    decoded = None
+                if not isinstance(decoded, expected_type):
+                    if not tolerate_corruption:
+                        raise AdministrationRecordError(f"管理日志 {key} 字段损坏，原始记录已保留待核验")
+                    corrupt_fields.append(key)
+                    decoded = expected_type()
+                data[key] = decoded
+        if corrupt_fields:
+            # Only the read projection is bounded to an object/list. Callers
+            # must reject this explicit marker before using recovery evidence.
+            data["corrupt_fields"] = corrupt_fields
         return data
 
     async def create(self, operation_id, kind, actor, payload, *, status="pending", keep_days=30, max_records=500):
@@ -162,9 +181,9 @@ class AdministrationStore:
             await db.execute("INSERT INTO memory_admin_operations(id,kind,actor,status,payload,created_at,updated_at,expires_at) VALUES(?,?,?,?,?,?,?,?)",
                              (operation_id, kind, actor, status, raw_payload, now, now, now + keep_days*86400))
 
-    async def get(self, operation_id):
+    async def get(self, operation_id, *, tolerate_corruption=False):
         async with self.connection() as db:
-            return self.decode(await (await db.execute("SELECT * FROM memory_admin_operations WHERE id=?", (operation_id,))).fetchone())
+            return self.decode(await (await db.execute("SELECT * FROM memory_admin_operations WHERE id=?", (operation_id,))).fetchone(), tolerate_corruption=tolerate_corruption)
 
     async def update(self, operation_id, *, status=None, result=None, payload=None, expected_status=None):
         async with self.connection(write=True) as db:
@@ -192,7 +211,7 @@ class AdministrationStore:
         async with self.connection() as db:
             where, args = ("WHERE kind=?", [kind]) if kind else ("", [])
             rows = await (await db.execute(f"SELECT * FROM memory_admin_operations {where} ORDER BY created_at DESC LIMIT ?", (*args, max(1, min(500, limit))))).fetchall()
-            return [self.decode(row) for row in rows]
+            return [self.decode(row, tolerate_corruption=True) for row in rows]
 
     async def list_unresolved_corrections(self, *, after_id: str | None = None, limit: int = 100) -> list[dict]:
         """Return one recovery page without keeping a connection across repairs.
@@ -210,7 +229,7 @@ class AdministrationStore:
                 f"SELECT * FROM memory_admin_operations WHERE {where} ORDER BY id LIMIT ?",
                 (*args, max(1, min(100, limit))),
             )).fetchall()
-        return [self.decode(row) for row in rows]
+        return [self.decode(row, tolerate_corruption=True) for row in rows]
 
     async def put_item(self, operation_id, item_key, payload, *, status="pending", result=None):
         raw_payload = json.dumps(payload, ensure_ascii=False, allow_nan=False)
@@ -236,7 +255,7 @@ class AdministrationStore:
     async def items(self, operation_id):
         async with self.connection() as db:
             rows = await (await db.execute("SELECT * FROM memory_admin_items WHERE operation_id=? ORDER BY item_key", (operation_id,))).fetchall()
-            return [self.decode(row) for row in rows]
+            return [self.decode(row, tolerate_corruption=True) for row in rows]
 
     async def remove(self, operation_id):
         async with self.connection(write=True) as db:

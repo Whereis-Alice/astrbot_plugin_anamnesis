@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><title>Official bridge navigation regression</title>
+<style>body{margin:0}iframe{width:100vw;height:100vh;border:0;display:block}</style>
+<script>
+const mode = new URLSearchParams(location.search).get('mode') || 'normal';
+window.navFixtureCalls = [];
+window.fixtureConnect = () => document.querySelector('iframe').contentWindow.postMessage({
+  channel:'astrbot-plugin-page',kind:'context',context:{isDark:true,locale:'zh-CN',pluginName:'astrbot_plugin_anamnesis',pageName:'dashboard'}
+}, '*');
+window.addEventListener('message', event => {
+  if(event.source !== document.querySelector('iframe')?.contentWindow || event.data?.channel !== 'astrbot-plugin-page') return;
+  const message = event.data;
+  if(message.kind === 'ready') {if(mode !== 'delayed') window.fixtureConnect(); return;}
+  if(message.kind !== 'request') return;
+  window.navFixtureCalls.push(message);
+  let data = {};
+  if(message.endpoint === 'page/stats') data = {total_memories:7,graph_nodes:2,graph_edges:1,sessions:{a:3,b:4}};
+  if(message.endpoint === 'page/graph/overview') data = {enabled:true,mode:'overview',summary:{node_type_breakdown:{topic:1,person:1}},snapshot:{nodes:[{id:1,type:'person',label:'测试用户',weight:1},{id:2,type:'topic',label:'阅读',weight:1}],edges:[{source:1,target:2,type:'likes',weight:1}],memories:[],entries:[]}};
+  if(message.endpoint === 'page/memories') data = {items:[],total:0,has_more:false};
+  if(message.endpoint === 'page/profiles/users') data = {users:[],total:0,limit:30,offset:0,has_more:false,scope_mode:'session',profile_enabled:true};
+  if(message.endpoint === 'page/prompts') data = {prompts:[],categories:[]};
+  if(message.endpoint === 'page/config') data = {sections:[],config:{},reload_required:true};
+  event.source.postMessage({channel:message.channel,kind:'response',requestId:message.requestId,ok:true,data}, '*');
+});
+</script>
+<iframe title="Plugin page" sandbox="allow-scripts allow-downloads"></iframe>
+<script>document.querySelector('iframe').src = '/pages/dashboard/index.html?bridge=' + encodeURIComponent(mode);</script>
+</html>

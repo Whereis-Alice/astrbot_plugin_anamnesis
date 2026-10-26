@@ -113,8 +113,10 @@ class UserProfileDirectoryMixin:
             facts = await self._enrich_profile_rows(rows, include_history=False)
             counts = {identity: {"active_fact_count": 0, "expired_fact_count": 0,
                                  "suppressed_fact_count": 0} for identity in identities}
+            by_identity = {identity: [] for identity in identities}
             now = time.time()
             for fact in facts:
+                by_identity[fact["identity"]].append(fact)
                 summary = counts[fact["identity"]]
                 expired = fact["expires_at"] is not None and fact["expires_at"] <= now
                 summary["active_fact_count"] += int(not fact["suppressed"] and not expired)
@@ -122,43 +124,60 @@ class UserProfileDirectoryMixin:
                 summary["suppressed_fact_count"] += int(bool(fact["suppressed"]))
             for user in users:
                 user.update(counts[user["identity"]])
-        for user in users:
+            placeholders = ",".join("?" for _ in identities)
             async with connection.execute(
-                "SELECT COALESCE(context_sender_name, source_sender_name), "
-                "COALESCE(context_session_id, source_session_id) FROM user_profiles "
-                "WHERE identity=? ORDER BY COALESCE(context_updated_at, updated_at) DESC, "
-                "updated_at DESC LIMIT 1", (user["identity"],),
+                f"SELECT identity,alias FROM user_profile_aliases WHERE identity IN ({placeholders})", identities
             ) as cursor:
-                latest = await cursor.fetchone()
+                aliases = dict(await cursor.fetchall())
             async with connection.execute(
-                "SELECT CASE WHEN context_group_id IS NOT NULL THEN context_group_name "
-                "ELSE COALESCE(context_group_name, source_group_name) END, "
-                "COALESCE(context_group_id, source_group_id) FROM user_profiles "
-                "WHERE identity=? AND (COALESCE(context_group_name, source_group_name) IS NOT NULL "
-                "OR COALESCE(context_group_id, source_group_id) IS NOT NULL) "
-                "ORDER BY COALESCE(context_group_updated_at, context_updated_at, updated_at) DESC, "
-                "updated_at DESC LIMIT 1",
-                (user["identity"],),
-            ) as cursor:
-                group = await cursor.fetchone()
-            user.update(sender_name=latest[0] if latest else None,
-                        last_session_id=latest[1] if latest else None,
-                        last_group_name=group[0] if group else None,
-                        last_group_id=group[1] if group else None)
-            async with connection.execute("SELECT alias FROM user_profile_aliases WHERE identity=?", (user["identity"],)) as cursor:
-                alias = await cursor.fetchone()
-            async with connection.execute(
-                "SELECT COUNT(*) FROM user_profile_claims c JOIN user_profiles p "
+                "SELECT p.identity,COUNT(*) FROM user_profile_claims c JOIN user_profiles p "
                 "ON p.profile_scope=c.profile_scope AND p.profile_key=c.profile_key "
-                "WHERE p.identity=? AND c.state='pending'", (user["identity"],)) as cursor:
-                pending = (await cursor.fetchone())[0]
+                f"WHERE p.identity IN ({placeholders}) AND c.state='pending' GROUP BY p.identity", identities,
+            ) as cursor:
+                pending_counts = dict(await cursor.fetchall())
             async with connection.execute(
-                "SELECT DISTINCT e.source_context FROM user_profile_evidence e JOIN user_profile_claims c "
-                "ON c.claim_id=e.claim_id JOIN user_profiles p ON p.profile_scope=c.profile_scope AND p.profile_key=c.profile_key "
-                "WHERE p.identity=? ORDER BY e.created_at DESC LIMIT 30", (user["identity"],)) as cursor:
+                "SELECT identity,source_context FROM (SELECT p.identity,e.source_context,"
+                "ROW_NUMBER() OVER(PARTITION BY p.identity ORDER BY MAX(e.created_at) DESC,e.source_context) AS rank "
+                "FROM user_profile_evidence e JOIN user_profile_claims c ON c.claim_id=e.claim_id "
+                "JOIN user_profiles p ON p.profile_scope=c.profile_scope AND p.profile_key=c.profile_key "
+                f"WHERE p.identity IN ({placeholders}) GROUP BY p.identity,e.source_context) WHERE rank<=30", identities,
+            ) as cursor:
                 contexts = await cursor.fetchall()
-            names = {name for context in contexts if (name := json.loads(context[0]).get("source_sender_name"))}
-            user.update(manual_alias=alias[0] if alias else None, pending_count=pending, observed_names=sorted(names))
+            names = {identity: set() for identity in identities}
+            for identity, context in contexts:
+                name = json.loads(context).get("source_sender_name")
+                if name:
+                    names[identity].add(name)
+            category_order = {name: index for index, name in enumerate(
+                ("identity", "preference", "constraint", "task_preference", "status"))}
+            for user in users:
+                owned = by_identity[user["identity"]]
+                latest = max(owned, key=lambda row: (row.get("context_updated_at") or row["updated_at"], row["updated_at"]))
+                grouped = [row for row in owned if row.get("context_group_name") or row.get("source_group_name")
+                           or row.get("context_group_id") or row.get("source_group_id")]
+                group = max(grouped, key=lambda row: (row.get("context_group_updated_at") or row.get("context_updated_at")
+                                                     or row["updated_at"], row["updated_at"])) if grouped else {}
+                preview, seen = [], set()
+                for row in sorted(owned, key=lambda row: (category_order.get(row["category"], 10), -row["updated_at"], row["profile_key"])):
+                    if row["suppressed"] or row["expires_at"] is not None and row["expires_at"] <= now:
+                        continue
+                    signature = (row["category"], row["display_label"], row["value"])
+                    if signature in seen:
+                        continue
+                    seen.add(signature)
+                    preview.append({field: row[field] for field in ("profile_key", "display_label", "category", "value")})
+                    if len(preview) == 3:
+                        break
+                user.update(
+                    sender_name=latest.get("context_sender_name") or latest.get("source_sender_name"),
+                    last_session_id=latest.get("context_session_id") or latest.get("source_session_id"),
+                    last_seen_at=latest.get("context_updated_at") or latest["updated_at"],
+                    last_group_name=group.get("context_group_name") if group.get("context_group_id") is not None
+                    else group.get("context_group_name") or group.get("source_group_name"),
+                    last_group_id=group.get("context_group_id") or group.get("source_group_id"),
+                    manual_alias=aliases.get(user["identity"]), pending_count=pending_counts.get(user["identity"], 0),
+                    observed_names=sorted(names[user["identity"]]), fact_preview=preview,
+                )
         result.update(users=users, has_more=offset + len(users) < result["total"])
         return result
 

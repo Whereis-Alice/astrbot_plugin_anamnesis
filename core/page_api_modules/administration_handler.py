@@ -6,6 +6,7 @@ import time
 
 from quart import g, request
 
+from ...storage.administration_store import AdministrationRecordError
 from ..managers.memory_administration import MemoryAdministration
 
 
@@ -52,9 +53,17 @@ class AdministrationPageMixin:
             operation_id = str(payload.get("operation_id") or request.args.get("operation_id") or "")
             if action == "list":
                 data = await service.store.list(limit=100)
+                for row in data:
+                    if row["kind"] == "correction" and not row.get("corrupt_fields"):
+                        try:
+                            service._validate_correction_log(row)
+                        except AdministrationRecordError:
+                            row["corrupt_fields"] = ["correction_log"]
                 result = [{key: value for key, value in row.items() if key in ("id", "kind", "status", "created_at", "expires_at", "revision")} | {
                     "result": {key: value for key, value in row["result"].items() if key != "after"},
-                    "expired": row["expires_at"] <= time.time()} for row in data]
+                    "expired": row["expires_at"] <= time.time(),
+                    **({"corrupt_fields": row["corrupt_fields"]} if row.get("corrupt_fields") else {}),
+                } for row in data]
             elif action == "detail":
                 operation = await service._owned(operation_id, actor, allow_expired=True)
                 result = {key: value for key, value in operation.items() if key not in ("token_hash", "token_expires", "token_actor")}

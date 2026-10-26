@@ -59,3 +59,40 @@ jobs:
       - name: Run frontend tests
         working-directory: AstrBot/data/plugins/astrbot_plugin_anamnesis
         run: npm run test:frontend
+
+  browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Anamnesis
+        uses: actions/checkout@v5
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          cache: npm
+      - name: Install browser dependencies
+        run: |
+          npm ci
+          npx playwright-core install --with-deps chromium
+      - name: Verify generated dashboard and browser interactions
+        env:
+          DASHBOARD_ARTIFACT_DIR: ${{ runner.temp }}/anamnesis-browser
+        run: |
+          npm run dashboard:check
+          npm run test:bridge-browser
+          npm run test:browser
+          npm run test:profile-review-browser
+          npm run test:administration-browser
+          npm run test:recall-time-browser
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-browser-evidence
+          path: ${{ runner.temp }}/anamnesis-browser
+          if-no-files-found: ignore

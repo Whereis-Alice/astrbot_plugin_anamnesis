@@ -27,12 +27,14 @@ function fixtureBridge() {
   const manualAliases = {alpha:'周末游戏队友'};
   const user = person => ({ identity:`opaque:qq:${person}`, platform:'qq', sender_id:person, sender_name:`测试用户 ${person}`,
     manual_alias:manualAliases[person],observed_names:[`测试用户 ${person}`],pending_count:1,
-    last_group_id:'C', last_group_name:groupNames.C, fact_count: rows.filter(row => row.identity.endsWith(person)).length, scope_count:2 });
-  window.profileFixturePosts = []; window.fixtureFail = new Set();
+    last_group_id:'C', last_group_name:groupNames.C, last_seen_at:1791039600, fact_count: rows.filter(row => row.identity.endsWith(person)).length, scope_count:2,
+    fact_preview:rows.filter(row=>row.identity.endsWith(person)&&!row.suppressed&&(!row.expires_at||row.expires_at>Date.now()/1000)).slice(0,3) });
+  window.profileFixturePosts = []; window.profileFixtureGets = []; window.fixtureFail = new Set();
   const sections = [{key:'user_profile',title:'用户档案',hint:'长期个人档案',fields:[{path:'user_profile.enabled',label:'启用用户档案',hint:'提取用户的稳定偏好和近期状态',type:'bool',value:true,default:true},{path:'user_profile.scope',label:'隔离范围',hint:'按聊天隔离事实，同一用户仅合并展示',type:'string',value:'session',options:['session','user'],option_labels:['按聊天','按用户']}]},{key:'retrieval',title:'记忆检索',fields:[{path:'retrieval.timeout',label:'检索超时（秒）',hint:'等待检索的最长时间',type:'float',value:5,min:0,max:120},{path:'identity.sessions',label:'独立会话',hint:'JSON 数组',type:'list',value:[]}]}];
   window.AstrBotPluginPage = {
     ready: async () => ({ isDark:true,locale:'zh-CN' }), getContext: () => ({isDark:true,locale:'zh-CN'}),
     apiGet: async (path, params = {}) => {
+      window.profileFixtureGets.push({path,params});
       if(window.fixtureFail.has(path)) throw Error(`Synthetic failure: ${path}`);
       if(path === 'page/profiles/users') {const users = people.map(user); return {users,total:users.length,limit:30,offset:0,has_more:false,profile_enabled:true,scope_mode:'session'};}
       if(path === 'page/profiles') {const items = rows.filter(row => row.identity === params.identity); return {items,total:items.length,limit:500,offset:0,has_more:false,profile_enabled:true,scope_mode:'session'};}
@@ -60,6 +62,9 @@ async function until(predicate) {const deadline=performance.now()+15000;while(!p
 window.addEventListener('unhandledrejection',event=>{results.textContent=`FAIL fixture: ${event.reason?.message || event.reason}`;});
 await until(()=>frame.contentDocument?.getElementById('gs-total')?.textContent==='0');
 frame.contentWindow.setLanguage('zh',{persist:false});frame.contentDocument.querySelector('[data-page="profiles"]').click();
+await until(()=>frame.contentDocument.querySelectorAll('.profile-user').length===3);
+window.fixtureInitialDetailReads=frame.contentWindow.profileFixtureGets.filter(item=>item.path==='page/profiles').length;
+frame.contentDocument.querySelector('[data-profile-user="0"]').click();
 await until(()=>frame.contentDocument.querySelectorAll('.profile-fact-card').length===11);
 await frame.contentDocument.fonts.ready;
 const nextFrame=()=>new Promise(resolve=>frame.contentWindow.requestAnimationFrame(()=>frame.contentWindow.requestAnimationFrame(resolve)));

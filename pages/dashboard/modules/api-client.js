@@ -4,9 +4,21 @@
  */
 
 export class ApiClient {
-  constructor() {
-    this.bridge = window.AstrBotPluginPage;
+  constructor({ readyTimeoutMs = 8000 } = {}) {
     this._context = null;
+    this._readyPromise = null;
+    this._readyBridge = null;
+    this._readyGeneration = 0;
+    this.readyTimeoutMs = readyTimeoutMs;
+  }
+
+  get bridge() {
+    // AstrBot injects its SDK at the end of the body, after plugin scripts.
+    // Never cache an absent SDK while the document is still being parsed.
+    return [window.AstrBotPluginPage, window.AstrBotPluginView].find(
+      bridge => bridge && typeof bridge.ready === "function" &&
+        typeof bridge.apiGet === "function" && typeof bridge.apiPost === "function",
+    );
   }
 
   /**
@@ -14,15 +26,40 @@ export class ApiClient {
    * @returns {Promise<Object>} Bridge 上下文
    */
   async ready() {
-    if (!this.bridge) {
-      throw new Error(window.t ? window.t("bridge.error") : "Bridge not available");
+    if (this._readyPromise && (!this._readyBridge || this._readyBridge === this.bridge)) {
+      return this._readyPromise;
     }
+    this._readyBridge = null;
+    const generation = ++this._readyGeneration;
+    let timeout;
+    let poll;
+    this._readyPromise = new Promise((resolve, reject) => {
+      timeout = setTimeout(() => reject(new Error(window.t ? window.t("bridge.timeout") : "AstrBot connection timed out")), this.readyTimeoutMs);
+      const discover = () => {
+        const bridge = this.bridge;
+        if (!bridge) {
+          poll = setTimeout(discover, 50);
+          return;
+        }
+        if (generation === this._readyGeneration) this._readyBridge = bridge;
+        Promise.resolve().then(() => bridge.ready()).then(resolve, reject);
+      };
+      discover();
+    });
+    const pending = this._readyPromise;
     try {
-      this._context = await this.bridge.ready();
-      return this._context;
+      const context = await pending;
+      if (generation === this._readyGeneration) this._context = context;
+      return context;
     } catch (e) {
-      console.error("Bridge ready failed:", e);
-      return {};
+      if (generation === this._readyGeneration) {
+        this._readyPromise = null;
+        this._readyBridge = null;
+      }
+      throw e;
+    } finally {
+      clearTimeout(timeout);
+      clearTimeout(poll);
     }
   }
 
@@ -31,7 +68,7 @@ export class ApiClient {
    * @returns {Object} 上下文对象
    */
   getContext() {
-    return this._context || this.bridge?.getContext() || {};
+    return this.bridge?.getContext?.() || this._context || {};
   }
 
   /**
@@ -71,9 +108,12 @@ export class ApiClient {
     // 超时重试会造成重复创建，默认不重试，调用方显式传 retries 才重试
     const retries = options.retries ?? (method === "GET" ? 2 : 0);
 
-    if (!this.bridge) {
-      throw new Error(window.t ? window.t("bridge.error") : "Bridge not available");
-    }
+    let bridge;
+    do {
+      bridge = this.bridge;
+      await this.ready();
+    } while (bridge !== this.bridge);
+    if (!bridge) throw new Error(window.t ? window.t("bridge.error") : "Bridge not available");
 
     let lastError;
     for (let attempt = 0; attempt <= retries; attempt++) {
@@ -86,12 +126,12 @@ export class ApiClient {
             const qs = path.substring(qi + 1);
             const params = {};
             new URLSearchParams(qs).forEach((v, k) => { params[k] = v; });
-            return await this.bridge.apiGet(this.buildEndpoint(base), params);
+            return await bridge.apiGet(this.buildEndpoint(base), params);
           }
-          return await this.bridge.apiGet(this.buildEndpoint(path), {});
+          return await bridge.apiGet(this.buildEndpoint(path), {});
         }
         // POST
-        return await this.bridge.apiPost(this.buildEndpoint(path), body || {});
+        return await bridge.apiPost(this.buildEndpoint(path), body || {});
       } catch (e) {
         lastError = e;
         if (attempt === retries) throw e;

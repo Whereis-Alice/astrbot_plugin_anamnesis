@@ -60,8 +60,12 @@
 
   async function requestGraph(path, options) {
     options = options || {};
-    var bridge = window.AstrBotPluginPage;
+    if (typeof window.lmApiRequest === "function") {
+      return unwrapGraphData(await window.lmApiRequest(path, options));
+    }
+    var bridge = window.AstrBotPluginPage || window.AstrBotPluginView;
     if (!bridge) throw new Error(window.t("graph.bridgeError"));
+    if (typeof bridge.ready === "function") await bridge.ready();
 
     var method = (options.method || "GET").toUpperCase();
     if (method === "GET") {
@@ -550,5 +554,9 @@
   function typeLabel(t) { return NODE_TYPE_LABELS[t] || t || window.t("graph.nodeUnknown"); }
   function relationLabel(t) { return String(t || "related").replace(/_/g, " ").replace(/\b\w/g, function(c) { return c.toUpperCase(); }); }
 
-  document.addEventListener("DOMContentLoaded", init);
+  if (!document.readyState || document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init);
+  } else {
+    init();
+  }
 })();

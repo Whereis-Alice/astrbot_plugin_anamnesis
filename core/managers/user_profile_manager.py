@@ -49,6 +49,13 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
             return None
         return text[:max_length] or None
 
+    @staticmethod
+    def _normalize_web_profile_selector(scope: Any, key: Any) -> tuple[str, str] | None:
+        if not isinstance(scope, str) or not isinstance(key, str):
+            return None
+        scope, key = scope.strip(), key.strip().casefold()
+        return (scope, key) if scope and _KEY_PATTERN.fullmatch(key) else None
+
     def _event_source_context(self, event: Any) -> dict[str, str | None]:
         """Resolve the latest labels available on an AstrBot event."""
         session_id = self._clean_context_value(
@@ -330,15 +337,22 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
         updates: dict[str, Any],
     ) -> dict[str, Any] | None:
         """Update one exact profile row selected in the administrator WebUI."""
-        scope = str(profile_scope or "").strip()
-        key = str(profile_key or "").strip().casefold()
-        if not scope or not _KEY_PATTERN.fullmatch(key) or not isinstance(updates, dict):
+        selector = self._normalize_web_profile_selector(profile_scope, profile_key)
+        if selector is None or not isinstance(updates, dict):
+            return None
+        scope, key = selector
+        expected = updates.get("expected_revision")
+        if expected is not None and not self._valid_profile_review_integer(expected):
             return None
 
         assignments: list[str] = []
         params: list[Any] = []
         if "display_label" in updates:
-            label = self._clean_context_value(updates["display_label"], max_length=80)
+            label = updates["display_label"]
+            if label is not None and not isinstance(label, str):
+                return None
+            if label is not None:
+                label = _CONTROL_PATTERN.sub(" ", label).strip()[:80] or None
             assignments.append("display_label = ?")
             params.append(label)
         if "value" in updates:
@@ -395,9 +409,6 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
         if connection is None:
             return None
         now = time.time()
-        expected = updates.get("expected_revision")
-        if expected is not None and (isinstance(expected, bool) or not isinstance(expected, int)):
-            return None
         async with self.store._write_lock:
             try:
                 async with connection.execute("SELECT * FROM user_profiles WHERE profile_scope=? AND profile_key=?", (scope, key)) as cursor:
@@ -420,10 +431,10 @@ class UserProfileManager(UserProfileLedgerMixin, UserProfileDirectoryMixin, User
 
     async def delete_for_web(self, profile_scope: str, profile_key: str) -> int:
         """Delete one exact profile row selected in the administrator WebUI."""
-        scope = str(profile_scope or "").strip()
-        key = str(profile_key or "").strip().casefold()
-        if not scope or not _KEY_PATTERN.fullmatch(key) or not await self._ensure_schema():
+        selector = self._normalize_web_profile_selector(profile_scope, profile_key)
+        if selector is None or not await self._ensure_schema():
             return 0
+        scope, key = selector
         connection = self.store.connection
         if connection is None:
             return 0

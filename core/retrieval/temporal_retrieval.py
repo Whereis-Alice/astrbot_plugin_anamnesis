@@ -331,6 +331,10 @@ async def direct_time_candidates(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_atoms'"
         ) as cursor:
             has_atoms = await cursor.fetchone() is not None
+        has_atom_event_time = False
+        if has_atoms and getattr(engine, "atom_enabled", True):
+            async with connection.execute("PRAGMA table_info(memory_atoms)") as cursor:
+                has_atom_event_time = any(row[1] == "event_time" for row in await cursor.fetchall())
         if has_atoms and getattr(engine, "atom_enabled", True):
             live_clause = f"""(
               EXISTS (SELECT 1 FROM memory_atoms a WHERE a.parent_memory_id=timed.id
@@ -341,16 +345,30 @@ async def direct_time_candidates(
               OR (NOT EXISTS (SELECT 1 FROM memory_atoms a WHERE a.parent_memory_id=timed.id)
                   AND COALESCE(json_extract(m,'$.atom_types'),'') IN ('','[]'))
             )"""
-            statement = statement.replace(
-                "ORDER BY", "AND " + live_clause + " ORDER BY", 1
-            )
+            admission = live_clause
+            admission_values = [time.time()]
+            if has_atom_event_time:
+                # Dated facts belong to the independent event-time route.
+                # A parent's recent recording time must not consume the
+                # fallback pool and displace genuinely undated memories.
+                admission += f""" AND NOT EXISTS (
+                  SELECT 1 FROM memory_atoms a WHERE a.parent_memory_id=timed.id
+                    AND a.status='active' AND CAST(a.expires_at AS REAL)>?
+                    AND CAST(a.expires_at AS REAL)<1e308
+                    AND typeof(a.event_time) IN ('real','integer')
+                    AND a.event_time>=0 AND a.event_time<1e11
+                    AND (a.session_id IS NULL OR json_extract(m,'$.session_id') IS NULL
+                         OR a.session_id=json_extract(m,'$.session_id'))
+                    AND {atom_persona_sql_match("a.persona_id", "json_extract(m,'$.persona_id')")})"""
+                admission_values.append(time.time())
+            statement = statement.replace("ORDER BY", "AND " + admission + " ORDER BY", 1)
             # The lifecycle predicate is inserted after all other filters and
             # before LIMIT. Expired rows cannot consume the candidate quota.
-            values.insert(-1, time.time())
+            values[-1:-1] = admission_values
         async with connection.execute(statement, values) as cursor:
             rows = await cursor.fetchall()
         atom_rows = []
-        if has_atoms and getattr(engine, "atom_enabled", True):
+        if has_atom_event_time and getattr(engine, "atom_enabled", True):
             # Actual event times may live on facts rather than the parent
             # window: a message written today can describe last week's event.
             atom_conditions = [

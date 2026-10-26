@@ -358,6 +358,8 @@ class PluginPageApi(AdministrationPageMixin):
         payload = await request.get_json(silent=True) or {}
         if not isinstance(payload, dict):
             return self.utils.error("请求内容必须是 JSON 对象")
+        if not isinstance(payload.get("profile_scope"), str) or not isinstance(payload.get("profile_key"), str):
+            return self.utils.error("profile_scope 和 profile_key 必须是字符串")
         scope = self.utils.optional_text(payload.get("profile_scope"))
         key = self.utils.optional_text(payload.get("profile_key"))
         if not scope or not key:
@@ -382,6 +384,8 @@ class PluginPageApi(AdministrationPageMixin):
         payload = await request.get_json(silent=True) or {}
         if not isinstance(payload, dict):
             return self.utils.error("请求内容必须是 JSON 对象")
+        if not isinstance(payload.get("profile_scope"), str) or not isinstance(payload.get("profile_key"), str):
+            return self.utils.error("profile_scope 和 profile_key 必须是字符串")
         scope = self.utils.optional_text(payload.get("profile_scope"))
         key = self.utils.optional_text(payload.get("profile_key"))
         if not scope or not key:

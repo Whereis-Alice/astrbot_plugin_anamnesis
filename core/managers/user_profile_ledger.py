@@ -18,6 +18,10 @@ _PROFILE_SOURCE_KEYS = (
 
 
 class UserProfileLedgerMixin:
+    @staticmethod
+    def _valid_profile_review_integer(value: Any) -> bool:
+        return not isinstance(value, bool) and isinstance(value, int) and 1 <= value <= 2**63 - 1
+
     def _ledger_limit(self, name: str, default: int, maximum: int) -> int:
         try:
             return max(1, min(maximum, int(self.config_manager.get(f"user_profile.{name}", default))))
@@ -337,8 +341,14 @@ class UserProfileLedgerMixin:
         An obsolete revision refuses the action. A Boolean supplied by the LLM
         never enters this API; authorization is the administrator Web handler.
         """
-        if action not in {"accept", "reject", "unlock"} or isinstance(expected_revision, bool) or not isinstance(expected_revision, int):
+        selector = self._normalize_web_profile_selector(profile_scope, profile_key)
+        if (
+            selector is None or not isinstance(action, str) or action not in {"accept", "reject", "unlock"}
+            or not self._valid_profile_review_integer(expected_revision)
+            or (action != "unlock" or claim_id is not None) and not self._valid_profile_review_integer(claim_id)
+        ):
             return None
+        profile_scope, profile_key = selector
         if not await self._ensure_schema() or self.store.connection is None:
             return None
         connection = self.store.connection
@@ -353,8 +363,6 @@ class UserProfileLedgerMixin:
                     await connection.execute("UPDATE user_profiles SET manual_override=0,revision=revision+1 WHERE profile_scope=? AND profile_key=?", (profile_scope, profile_key))
                     await self._transition(connection, profile_scope, profile_key, "unlocked", current["current_claim_id"], current["current_claim_id"], "administrator")
                 else:
-                    if isinstance(claim_id, bool) or not isinstance(claim_id, int):
-                        return None
                     async with connection.execute("SELECT * FROM user_profile_claims WHERE claim_id=? AND profile_scope=? AND profile_key=? AND state='pending'", (claim_id, profile_scope, profile_key)) as cursor:
                         candidate = await cursor.fetchone()
                     if not candidate:

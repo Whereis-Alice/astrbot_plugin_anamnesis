@@ -22,6 +22,23 @@ try {
   await page.goto(base + "/tests/browser/profile-layout.html");
   await page.waitForFunction(() => window.fixtureReady === true);
   const frame = page.frames().find(item => item.parentFrame()); assert.ok(frame);
+  assert.equal(await page.evaluate(() => window.fixtureInitialDetailReads), 0);
+  await frame.locator('#profile-person-close').click();
+  await frame.waitForFunction(() => document.getElementById('profile-reader').classList.contains('hidden'));
+  for (const width of [1280, 1024, 390]) {
+    await page.locator('#preview').evaluate((element, value) => { element.style.width = `${value}px`; }, width);
+    const card = frame.locator('.profile-user').first();
+    const bounds = await card.boundingBox();
+    assert.ok(bounds.width > 250 && bounds.height > 280);
+    assert.equal(await card.locator('.profile-preview-value').count(), 3);
+    assert.equal(await frame.locator('.profile-user').count(), 3);
+    assert.equal(await frame.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1), true);
+    if (width === 1280 || width === 390) await page.locator('#preview').screenshot({ path: join(output, `profile-contacts-${width}.png`) });
+  }
+  await page.locator('#preview').evaluate(element => { element.style.width = '1280px'; });
+  await frame.locator('[data-profile-user="0"]').click();
+  await frame.waitForFunction(() => !document.getElementById('profile-reader').classList.contains('hidden'));
+  checks.push('PASS spacious contacts show real previews and load full profiles only on click');
   const proposal = frame.locator('[data-profile-review="accept"]').first();
   await proposal.click();
   assert.equal(await frame.locator('#peek-panel').getAttribute('aria-hidden'), 'false');
@@ -76,13 +93,19 @@ try {
 
   await frame.locator('[data-profile-user="0"]').click();
   await frame.locator('[data-profile-edit="1"]').click();
+  assert.equal(await frame.locator('#profile-edit-label').inputValue(), '喜欢的游戏');
+  await frame.locator('#profile-edit-label').fill('我常玩的游戏');
   await frame.locator('#profile-edit-value').fill('人工确认后的值');
+  await page.locator('#preview').screenshot({ path: join(output, 'profile-title-editor.png') });
   await frame.locator('#profile-editor-save').click();
   await frame.waitForFunction(() => window.profileFixturePosts.some(item => item.path === 'page/profiles/update'));
   const update = await frame.evaluate(() => window.profileFixturePosts.find(item => item.path === 'page/profiles/update'));
   assert.equal(update.body.expected_revision, 4);
   assert.equal(update.body.profile_scope, 'profile:alpha:session:B');
-  checks.push('PASS profile edits carry the refreshed revision and original scope');
+  assert.equal(update.body.profile_key, 'favorite_game_1');
+  assert.equal(update.body.display_label, '我常玩的游戏');
+  await frame.locator('.profile-fact-heading h5').filter({ hasText: '我常玩的游戏' }).waitFor();
+  checks.push('PASS editable profile titles save exact scope/key/revision and refresh the heading');
   assert.deepEqual(errors, []);
   writeFileSync(join(output, 'profile-review-results.txt'), checks.join('\n') + '\n');
   console.log(checks.join('\n')); console.log(`Artifacts: ${output}`);

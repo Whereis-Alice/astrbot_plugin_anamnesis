@@ -55,11 +55,11 @@ async def test_shutdown_settles_confirmation_preparation(administration, monkeyp
     entered, release, cleaned = asyncio.Event(), asyncio.Event(), asyncio.Event()
     get = administration.store.get
 
-    async def slow_get(operation_id):
+    async def slow_get(operation_id, **kwargs):
         entered.set()
         try:
             await release.wait()
-            return await get(operation_id)
+            return await get(operation_id, **kwargs)
         finally:
             await asyncio.sleep(0)
             cleaned.set()

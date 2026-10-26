@@ -17,6 +17,7 @@ from astrbot.api import logger
 
 from ...storage.administration_store import (
     AdministrationCapacityError,
+    AdministrationRecordError,
     AdministrationStore,
 )
 from ...storage.projection_outbox import ProjectionOutbox
@@ -36,6 +37,20 @@ def fingerprint(record: dict | None) -> str:
         metadata.pop(key, None)
     data = {"text": record.get("text"), "metadata": metadata, "source_messages": record.get("source_messages", [])}
     return hashlib.sha256(json.dumps(data, sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
+
+
+def valid_snapshot(record) -> bool:
+    return (
+        isinstance(record, dict)
+        and isinstance(record.get("text"), str)
+        and isinstance(record.get("metadata"), dict)
+        and isinstance(record.get("source_messages"), list)
+        and all(isinstance(source, dict) for source in record["source_messages"])
+    )
+
+
+def valid_memory_id(value) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
 class MemoryAdministration(AdministrationJobsMixin):
@@ -66,6 +81,14 @@ class MemoryAdministration(AdministrationJobsMixin):
                     # which records still match the unresolved-status filter.
                     after_id = operations[-1]["id"]
                     for operation in operations:
+                        try:
+                            self._validate_correction_log(operation)
+                        except AdministrationRecordError:
+                            # A broken journal cannot authorize reconciliation.
+                            # Change only its phase, retaining every original byte.
+                            await self.store.update(operation["id"], status="needs_review")
+                            logger.warning("纠正操作 %s 的日志损坏，已保留记录等待人工核验", operation["id"])
+                            continue
                         await self._reconcile_correction(operation)
                 self._initialized = True
 
@@ -154,13 +177,49 @@ class MemoryAdministration(AdministrationJobsMixin):
 
     async def _owned(self, operation_id, actor, kind=None, *, allow_expired=False):
         await self.initialize()
-        operation = await self.store.get(operation_id)
+        operation = await self.store.get(operation_id, tolerate_corruption=True)
         admin = actor.startswith("webui:")
         if operation is None or (operation["actor"] != actor and not admin) or (kind and operation["kind"] != kind):
             raise ValueError("操作不存在或不属于当前管理员")
+        if operation.get("corrupt_fields"):
+            raise AdministrationRecordError("管理日志损坏，原始记录已保留待核验")
         if not allow_expired and operation["expires_at"] <= time.time():
             raise ValueError("恢复或确认期限已过")
+        if operation["kind"] == "correction":
+            self._validate_correction_log(operation)
         return operation
+
+    @staticmethod
+    def _validate_correction_log(operation):
+        payload, result = operation.get("payload"), operation.get("result")
+        if (operation.get("corrupt_fields") or not isinstance(payload, dict)
+                or not isinstance(result, dict) or not valid_memory_id(payload.get("memory_id"))
+                or not valid_snapshot(payload.get("before"))
+                or fingerprint(payload["before"]) != payload.get("fingerprint")
+                or not isinstance(payload.get("content"), str) or not payload["content"].strip()
+                or not isinstance(payload.get("key_facts"), list)
+                or any(not isinstance(fact, str) for fact in payload["key_facts"])
+                or not isinstance(payload.get("before_atom_lifecycle"), list)
+                or any(not isinstance(atom, dict) for atom in payload["before_atom_lifecycle"])):
+            raise AdministrationRecordError("纠正日志或恢复快照损坏，原始记录已保留待核验")
+        if operation["status"] in {"prepared_commit", "completed", "rollback_prepared", "rolled_back"} and (
+                    not valid_memory_id(result.get("old_memory_id"))
+                    or result["old_memory_id"] != payload["memory_id"]
+                    or not valid_memory_id(result.get("new_memory_id"))
+                    or not valid_snapshot(result.get("after"))
+                    or fingerprint(result["after"]) != result.get("fingerprint")):
+            raise AdministrationRecordError("纠正提交快照损坏，原始记录已保留待核验")
+        if operation["status"] in {"rollback_prepared", "rolled_back"} and not valid_memory_id(result.get("rollback_memory_id")):
+            raise AdministrationRecordError("纠正回滚日志损坏，原始记录已保留待核验")
+        if operation["status"] == "rollback_prepared" and not isinstance(result.get("rollback_fingerprint"), str):
+            raise AdministrationRecordError("纠正回滚日志损坏，原始记录已保留待核验")
+        if operation["status"] == "needs_review" and (
+                result.get("requires_manual_review") is not True
+                or not isinstance(result.get("candidate_ids"), list)
+                or any(not valid_memory_id(value) for value in result["candidate_ids"])):
+            # A journal quarantined without rewriting its broken content must
+            # stay quarantined on subsequent starts; never infer a fresh claim.
+            raise AdministrationRecordError("纠正核验日志损坏，原始记录已保留待核验")
 
     async def remove_operation(self, operation_id, *, actor="webui"):
         """Check and remove under the guard shared with correction execution."""
@@ -192,15 +251,21 @@ class MemoryAdministration(AdministrationJobsMixin):
         operation = await self._owned(operation_id, actor, "delete", allow_expired=purge)
         restored, conflicts = [], []
         for item in await self.store.items(operation_id):
+            memory_id, data = int(item["item_key"]), item["payload"]
+            if item["status"] == "purged":
+                continue
+            if (item.get("corrupt_fields") or not isinstance(data, dict)
+                    or not valid_snapshot(data.get("before"))
+                    or any(data.get(key) is not None and not valid_snapshot(data[key]) for key in ("after", "tagged"))):
+                conflicts.append(memory_id)
+                logger.warning("恢复操作 %s 的记忆 %s 快照损坏，已保留原始日志待核验", operation_id, memory_id)
+                continue
             if item["status"] == "restored":
                 if purge:
                     await self.store.put_item(operation_id, item["item_key"], {}, status="purged")
                 else:
                     restored.append(int(item["item_key"]))
                 continue
-            if item["status"] == "purged":
-                continue
-            memory_id, data = int(item["item_key"]), item["payload"]
             try:
                 current = await self.snapshot(memory_id)
             except json.JSONDecodeError:

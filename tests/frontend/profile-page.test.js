@@ -9,7 +9,7 @@ function element() {
     classList: { add: name => classes.add(name), remove: name => classes.delete(name), toggle: (name, yes) => yes ? classes.add(name) : classes.delete(name), contains: name => classes.has(name) } };
 }
 function setup(api) {
-  const ids = ["profile-refresh", "profile-status", "profile-scope-note", "profile-users", "profile-reader", "profile-pagination-info", "profile-prev", "profile-next", "peek-badge", "peek-title", "peek-body", "profile-editor-form", "profile-editor-delete", "profile-editor-source", "profile-edit-value", "profile-edit-category", "profile-edit-confidence", "profile-edit-expires", "profile-editor-save", "profile-editor-feedback"];
+  const ids = ["profile-refresh", "profile-status", "profile-scope-note", "profile-users", "profile-reader", "profile-pagination-info", "profile-prev", "profile-next", "peek-badge", "peek-title", "peek-body", "profile-editor-form", "profile-editor-delete", "profile-editor-source", "profile-edit-label", "profile-edit-value", "profile-edit-category", "profile-edit-confidence", "profile-edit-expires", "profile-editor-save", "profile-editor-feedback"];
   const elements = Object.fromEntries(ids.map(id => [id, element()]));
   globalThis.document = { getElementById: id => elements[id] || null };
   globalThis.window = { t: (key, ...args) => `${key}:${args.join("|")}` };
@@ -27,6 +27,9 @@ test("directory paginates users; one identity reads separate exact scopes with e
   const calls = [], { page, state, elements } = setup({ async get(path, params) { calls.push({ path, params }); return path === "profiles/users" ? directory : detail; } });
   state.profile.limit = 1; state.profile.query = "Alice"; state.profile.sessionId = "chat-A";
   await page.fetch();
+  assert.deepEqual(calls, [{ path: "profiles/users", params: { limit: "1", offset: "0", q: "Alice", session_id: "chat-A" } }]);
+  assert.equal(elements["profile-reader"].classList.contains("hidden"), true);
+  await page.selectUser(user, true);
   assert.deepEqual(calls, [{ path: "profiles/users", params: { limit: "1", offset: "0", q: "Alice", session_id: "chat-A" } }, { path: "profiles", params: { identity: user.identity, limit: "500", offset: "0" } }]);
   assert.equal((elements["profile-users"].innerHTML.match(/data-profile-user=/g) || []).length, 1);
   assert.match(elements["profile-users"].innerHTML, /Alice &lt;img&gt;/);
@@ -38,6 +41,26 @@ test("directory paginates users; one identity reads separate exact scopes with e
   assert.doesNotMatch(elements["profile-reader"].innerHTML, /<script>/);
   assert.equal(elements["profile-next"].disabled, false);
   assert.match(elements["profile-reader"].innerHTML, /data-source-memory="42"/);
+});
+
+test("contact cards show real previews and last seen; returning hides details without another request", async () => {
+  const calls = [], person = { ...user, last_seen_at: 1700000000, fact_preview: [facts[0]], pending_count: 2 };
+  const { page, state, elements } = setup({ async get(path) { calls.push(path); return path === "profiles/users" ? { ...directory, users: [person] } : detail; } });
+  await page.fetch();
+  assert.deepEqual(calls, ["profiles/users"]);
+  const cards = elements["profile-users"].innerHTML;
+  assert.match(cards, /profile-user-heading/);
+  assert.match(cards, /rice &amp; &lt;script&gt;/);
+  assert.match(cards, /profile\.contact\.lastSeen/);
+  assert.match(cards, /aria-controls="profile-reader"/);
+  assert.doesNotMatch(cards, /scope:A|scope:B|画像|句交谈/);
+  await page.selectUser(person);
+  assert.equal(state.profile.readerOpen, true);
+  assert.equal(elements["profile-reader"].classList.contains("hidden"), false);
+  page.closeUser();
+  assert.equal(state.profile.readerOpen, false);
+  assert.equal(elements["profile-reader"].classList.contains("hidden"), true);
+  assert.deepEqual(calls, ["profiles/users", "profiles"]);
 });
 test("fact continuation uses identity and loaded offset without splitting the user directory", async () => {
   const calls = [], { page, state } = setup({ async get(path, params) { calls.push(params); return params.offset === "0" ? detail : { items: [{ ...facts[0], profile_key: "hobbies" }], total: 3, has_more: false }; } });
@@ -60,10 +83,30 @@ test("saving and confirmed deletion keep the exact original scope/key", async ()
   elements["profile-edit-value"].value = "new value"; elements["profile-edit-category"].value = "preference";
   elements["profile-edit-confidence"].value = "0.85";
   await page.saveItem(facts[0]);
-  assert.deepEqual(posts[0], { path: "profiles/update", body: { profile_scope: "scope:A", profile_key: "favorite_food", value: "new value", category: "preference", confidence: .85, expires_at: null }, options: { retries: 0 } });
+  assert.deepEqual(posts[0], { path: "profiles/update", body: { profile_scope: "scope:A", profile_key: "favorite_food", value: "new value", category: "preference", confidence: .85, expires_at: null, display_label: "" }, options: { retries: 0 } });
   peek.confirmed = false; await page.deleteItem("scope:B", "preferred_nickname"); assert.equal(posts.length, 1);
   peek.confirmed = true; await page.deleteItem("scope:B", "preferred_nickname");
   assert.deepEqual(posts[1].body, { profile_scope: "scope:B", profile_key: "preferred_nickname" });
+});
+
+test("profile title editing escapes initial text and sends explicit labels or omits unavailable fields", async () => {
+  for (const label of ["  我常玩的游戏  ", "", undefined]) {
+    const posts = [], { page, elements } = setup({ async post(_path, body) { posts.push(body); }, async get() { return { users: [], total: 0 }; } });
+    const item = { ...facts[0], display_label: 'Title <img> "quoted"', revision: 7 };
+    page.openItem(item);
+    assert.match(elements["peek-body"].innerHTML, /Title &lt;img&gt; &quot;quoted&quot;/);
+    assert.match(elements["peek-body"].innerHTML, /id="profile-edit-label"[^>]+maxlength="80"/);
+    elements["profile-edit-label"].value = label;
+    elements["profile-edit-value"].value = "updated game preference";
+    elements["profile-edit-category"].value = "preference";
+    elements["profile-edit-confidence"].value = "0.95";
+    await page.saveItem(item);
+    assert.equal(posts[0].profile_scope, item.profile_scope);
+    assert.equal(posts[0].profile_key, item.profile_key);
+    assert.equal(posts[0].expected_revision, 7);
+    if (label === undefined) assert.equal(Object.hasOwn(posts[0], "display_label"), false);
+    else assert.equal(posts[0].display_label, label.trim());
+  }
 });
 test("a slow previous identity response cannot replace the new user's facts", async () => {
   let resolveA;

@@ -68,6 +68,10 @@
 
       <!-- Main Content -->
       <main class="main-content">
+        <div id="bridge-feedback" class="bridge-feedback hidden" role="status">
+          <span id="bridge-message"></span>
+          <button id="bridge-retry" type="button" class="btn btn-secondary btn-sm" data-i18n="bridge.retry">重新连接</button>
+        </div>
         <section class="page" id="page-administration"><header class="page-header"><div class="page-heading"><span class="page-title" data-i18n="nav.administration">管理工作台</span></div><button id="administration-refresh" class="btn btn-secondary btn-sm" type="button" data-i18n="common.refresh">刷新</button></header><div class="page-body" id="administration-content"></div></section>
 
         <!-- Page: Graph -->
@@ -331,14 +335,18 @@
             </div>
           </header>
           <div class="page-body profiles-page-body">
-            <div class="profile-scope-note hidden" id="profile-scope-note"></div>
             <div class="profile-workspace">
               <aside class="profile-directory" aria-label="Users" data-i18n-aria="profile.users">
                 <div class="profile-directory-filters">
                   <label for="profile-query" data-i18n="profile.searchUsers">Find a user</label>
                   <input type="search" id="profile-query" class="input" data-i18n-placeholder="profile.searchPh" placeholder="Name, user ID or recent group…" />
-                  <label for="profile-session" data-i18n="profile.sourceSession">Source session</label>
-                  <input type="search" id="profile-session" class="input" data-i18n-placeholder="profile.sessionPh" placeholder="Optional source session…" />
+                  <span id="profile-user-total"></span>
+                  <details class="profile-directory-options">
+                    <summary data-i18n="profile.contact.filters">筛选与隔离设置</summary>
+                    <label for="profile-session" data-i18n="profile.sourceSession">Source session</label>
+                    <input type="search" id="profile-session" class="input" data-i18n-placeholder="profile.sessionPh" placeholder="Optional source session…" />
+                    <div class="profile-scope-note hidden" id="profile-scope-note"></div>
+                  </details>
                 </div>
                 <div id="profile-users" class="profile-users"><div class="table-empty" data-i18n="common.loading">Loading…</div></div>
                 <div class="profile-directory-pagination">
@@ -387,7 +395,7 @@
     <!-- Toast -->
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script src="./assets/graph.min.js"></script>
-    <script src="./assets/app.min.js"></script>
+    <script defer src="./assets/graph.min.js"></script>
+    <script defer src="./assets/app.min.js"></script>
   </body>
 </html>

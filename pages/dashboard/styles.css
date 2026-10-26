@@ -1940,3 +1940,7 @@ body {
   padding-top: var(--space-4);
   border-top: 1px solid var(--border-color);
 }
+/* Connection feedback stays outside page routing so navigation remains usable. */
+.bridge-feedback { flex-shrink: 0; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 24px; background: var(--bg-card); color: var(--text-secondary); border-bottom: 1px solid var(--border-color); font-size: 13px; overflow-wrap: anywhere; }
+.bridge-feedback > span { min-width: 0; }
+.bridge-feedback > button { flex-shrink: 0; }

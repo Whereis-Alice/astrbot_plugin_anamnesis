@@ -546,7 +546,18 @@
     "theme.lightToast":   { zh: "已切换到浅色模式", en: "Light mode enabled", ru: "Светлая тема включена" },
 
     /* ---- Bridge Error ---- */
-    "bridge.error":       { zh: "当前页面必须运行在 AstrBot 官方插件 Page 内", en: "This page must run inside an AstrBot plugin page", ru: "Страница должна работать внутри страницы плагина AstrBot" },
+    "bridge.error":       { zh: "未找到 AstrBot 接口，请从 AstrBot 插件页面打开", en: "AstrBot interface is missing. Open this page from AstrBot Plugins.", ru: "Интерфейс AstrBot не найден. Откройте страницу из списка плагинов AstrBot." },
+    "bridge.timeout":     { zh: "连接 AstrBot 超时，请重新连接或刷新插件页面", en: "AstrBot connection timed out. Reconnect or refresh the plugin page.", ru: "Время подключения к AstrBot истекло. Повторите подключение или обновите страницу." },
+    "bridge.connecting":  { zh: "正在连接 AstrBot…", en: "Connecting to AstrBot…", ru: "Подключение к AstrBot…" },
+    "bridge.retry":       { zh: "重新连接", en: "Reconnect", ru: "Подключиться снова" },
+    "profile.contact.open": { zh: "展开档案", en: "Open profile", ru: "Открыть профиль" },
+    "profile.title": { zh: "标题 / 标签（可选）", en: "Title / label (optional)", ru: "Название / метка (необязательно)" },
+    "profile.titleHint": { zh: "留空使用通用标题", en: "Leave blank to use the default title", ru: "Оставьте пустым для стандартного названия" },
+    "profile.contact.close": { zh: "返回人物列表", en: "Back to people", ru: "К списку пользователей" },
+    "profile.contact.lastSeen": { zh: "最近见面", en: "Last seen", ru: "Последняя встреча" },
+    "profile.contact.emptyPreview": { zh: "暂无有效档案，展开查看已保存的资料", en: "No active facts. Open to view saved records.", ru: "Нет актуальных фактов. Откройте сохранённые записи." },
+    "profile.contact.people": { zh: "{0} 位用户", en: "{0} people", ru: "Пользователей: {0}" },
+    "profile.contact.filters": { zh: "筛选与隔离设置", en: "Source and isolation filters", ru: "Фильтры источника и изоляции" },
 
     /* ---- Misc ---- */
     "misc.requestFailed": { zh: "请求失败", en: "Request failed", ru: "Ошибка запроса" },
@@ -677,7 +688,7 @@
 
   function getBridgeLocale() {
     try {
-      const bridge = window.AstrBotPluginPage;
+      const bridge = window.AstrBotPluginPage || window.AstrBotPluginView;
       if (bridge) {
         const ctx = bridge.getContext();
         if (ctx && ctx.locale) {
@@ -717,7 +728,7 @@
 
   function listenBridgeLocale() {
     try {
-      const bridge = window.AstrBotPluginPage;
+      const bridge = window.AstrBotPluginPage || window.AstrBotPluginView;
       if (!bridge || typeof bridge.onContext !== "function") return;
       bridge.onContext(function (ctx) {
         if (!ctx || !ctx.locale) return;
