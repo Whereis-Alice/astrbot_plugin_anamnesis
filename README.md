@@ -94,3 +94,12 @@ flowchart LR
 [完整文档](docs/) · [版本发布](https://github.com/Whereis-Alice/astrbot_plugin_anamnesis/releases) · [更新记录](CHANGELOG.md) · [上游历史](CHANGELOG_upstream.md) · [问题反馈](https://github.com/Whereis-Alice/astrbot_plugin_anamnesis/issues)
 
 Anamnesis 使用 [AGPL-3.0 许可证](LICENSE)发布。
+
+
+### WebUI 阅读工作区（3.6.0）
+
+导航默认显示窄图标栏，点击左上方按钮可展开；手机端为抽屉导航。
+右上角可切换明暗主题，主题和桌面侧栏选择会保留。点击「专注」隐藏侧栏及辅助工具，点击「退出专注」恢复。
+搜索保持可见，筛选、范围定位、导入导出与维护操作在对应展开区中。
+用户档案先显示联系人与最近群聊，点击后进入完整阅读页，通过「返回人物列表」切换用户；来源与历史按需展开。
+半透明面板、渐变和局部荧光不覆盖正文；系统开启减少动态效果时会减少界面动画。

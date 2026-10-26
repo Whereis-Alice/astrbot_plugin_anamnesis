@@ -101,14 +101,9 @@ def test_dashboard_prefers_persona_summary_for_display() -> None:
     assert "detail.summary || detail.text" in utils
 
 
-def test_graph_toolbar_has_intermediate_desktop_breakpoints() -> None:
-    css = (DASHBOARD / "art-direction.css").read_text(encoding="utf-8")
-
-    assert "@media (min-width: 769px) and (max-width: 1600px)" in css
-    assert "grid-column: 1 / -1" in css
-    assert "#graph-query-input" in css
-    assert "#graph-memory-id" in css
-
+# Graph toolbar sizing is covered by tests/browser/redesign.spec.mjs: it opens
+# the actual scope controls at 390/768/1024/1280px and verifies reachability and
+# overflow. The former CSS-string check described the replaced grid layout.
 
 def test_summary_prompts_keep_persona_voice_and_single_summary_output() -> None:
     """内置提示词保留人格化主观视角要求，且只要求输出一份 summary。

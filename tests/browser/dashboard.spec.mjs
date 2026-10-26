@@ -41,9 +41,11 @@ try {
   const update = await frame.evaluate(() => window.profileFixturePosts.find(post => post.path === 'page/profiles/update'));
   assert.equal(update.body.profile_scope, 'profile:alpha:session:B'); assert.equal(update.body.profile_key, 'favorite_game_1');
   await frame.locator('.profile-fact-card').filter({hasText:'浏览器测试修改'}).waitFor(); passes.push('PASS edit: saved the exact scope/key and refreshed full text');
+  if (await frame.locator('#profile-person-close').isVisible()) await frame.locator('#profile-person-close').click();
   await frame.locator('[data-profile-user="1"]').focus(); await page.keyboard.press('Enter');
   await frame.waitForFunction(() => document.querySelector('#profile-reader h2')?.textContent === '测试用户 beta');
   assert.equal(await frame.locator('.profile-fact-card').count(), 2); passes.push('PASS keyboard: user buttons switch identity with Enter');
+  if (await frame.locator('#profile-person-close').isVisible()) await frame.locator('#profile-person-close').click();
   await frame.locator('[data-profile-user="0"]').click(); await frame.locator('.profile-fact-card').nth(10).waitFor();
   await frame.locator('.profile-fact-source').first().locator('summary').click();
   await frame.locator('.profile-fact-source').first().locator('[data-source-memory]').click();
@@ -76,6 +78,7 @@ try {
   await frame.locator('#profile-reader h2').scrollIntoViewIfNeeded();
   await page.locator('#preview').screenshot({path:join(output,'profiles-desktop.png')});
   await page.locator('#width').selectOption('390'); await page.waitForFunction(() => document.getElementById('preview').style.width === '390px');
+  if (await frame.locator('#profile-person-close').isVisible()) await frame.locator('#profile-person-close').click();
   await frame.locator('[data-profile-user="0"]').click();
   await frame.locator('#profile-reader h2').scrollIntoViewIfNeeded();
   await page.locator('#preview').screenshot({path:join(output,'profiles-mobile.png')});

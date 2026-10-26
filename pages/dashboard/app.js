@@ -13,6 +13,7 @@ import {
   ProfilePage,
   SettingsPage,
   AdministrationPage,
+  WorkspaceShell,
   esc,
   statusPill,
   nodeBadge,
@@ -33,6 +34,7 @@ import {
   };
   const THEME_KEY = STORAGE.key("theme");
   const LANG_KEY = STORAGE.langKey;
+  const SIDEBAR_KEY = STORAGE.key("sidebar-expanded");
 
   /* ================================================================
      State
@@ -73,6 +75,7 @@ import {
   const profilePage = new ProfilePage(state, api, peekPanel);
   const settingsPage = new SettingsPage(state, api);
   const administrationPage = new AdministrationPage(state, api, peekPanel);
+  const workspaceShell = new WorkspaceShell(SIDEBAR_KEY);
 
   function hydrateIcons() {
     if (!window.lucide || typeof window.lucide.createIcons !== "function") return;
@@ -84,25 +87,11 @@ import {
     });
   }
 
-  function initMotionField() {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-
-    let frame = 0;
-    document.addEventListener("pointermove", (event) => {
-      if (frame) return;
-      frame = window.requestAnimationFrame(() => {
-        const x = (event.clientX / Math.max(window.innerWidth, 1) - 0.5) * 12;
-        const y = (event.clientY / Math.max(window.innerHeight, 1) - 0.5) * 12;
-        document.documentElement.style.setProperty("--field-x", x.toFixed(2) + "px");
-        document.documentElement.style.setProperty("--field-y", y.toFixed(2) + "px");
-        frame = 0;
-      });
-    }, { passive: true });
-  }
-
   /* ================================================================
      Theme Management
      ================================================================ */
+  let selectedTheme = null;
+
   function applyTheme(theme) {
     document.documentElement.setAttribute("data-theme", theme);
     const darkIcon = document.getElementById("theme-icon-dark");
@@ -114,25 +103,27 @@ import {
   }
 
   function getInitialTheme(context) {
-    if (context && typeof context.isDark === "boolean") {
-      return context.isDark ? "dark" : "light";
-    }
-
+    if (selectedTheme) return selectedTheme;
     try {
       const saved = localStorage.getItem(THEME_KEY);
       if (saved === "dark" || saved === "light") {
+        selectedTheme = saved;
         return saved;
       }
     } catch (e) {
       console.warn("[Anamnesis] Failed to read theme from localStorage:", e);
     }
 
+    if (context && typeof context.isDark === "boolean") {
+      return context.isDark ? "dark" : "light";
+    }
     return "light";
   }
 
   function toggleTheme() {
     const current = document.documentElement.getAttribute("data-theme") || "light";
     const next = current === "light" ? "dark" : "light";
+    selectedTheme = next;
 
     try {
       localStorage.setItem(THEME_KEY, next);
@@ -166,6 +157,7 @@ import {
      ================================================================ */
   function switchPage(name) {
     state.page = name;
+    workspaceShell.setPage(name);
 
     document.querySelectorAll(".nav-item[data-page]").forEach(item => {
       item.classList.toggle("active", item.dataset.page === name);
@@ -330,7 +322,7 @@ import {
       contextUnsubscribe?.();
       if (typeof api.bridge?.onContext === "function") {
         contextUnsubscribe = api.bridge.onContext((ctx) => {
-          if (ctx && typeof ctx.isDark === "boolean") applyTheme(ctx.isDark ? "dark" : "light");
+          if (ctx && typeof ctx.isDark === "boolean") applyTheme(getInitialTheme(ctx));
           if (ctx?.locale) updateLanguageMenu();
         });
       }
@@ -346,9 +338,9 @@ import {
 
   function init() {
     hydrateIcons();
-    initMotionField();
     applyTheme(getInitialTheme(api.getContext()));
 
+    workspaceShell.init();
     initSidebar();
     document.getElementById("bridge-retry").addEventListener("click", () => connect(true));
 

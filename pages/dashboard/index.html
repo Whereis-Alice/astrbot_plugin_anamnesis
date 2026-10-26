@@ -9,16 +9,16 @@
     <script src="./assets/base.min.js"></script>
   </head>
   <body>
-    <div id="app">
+    <div id="app" class="workspace-shell">
       <!-- Sidebar -->
-      <aside class="sidebar">
+      <aside class="sidebar" id="workspace-sidebar" data-i18n-aria="shell.navigation" aria-label="Workspace navigation">
         <div class="sidebar-brand" aria-label="Anamnesis">
-          <span class="brand-mark">AN</span>
+          <img class="brand-avatar" width="34" height="34" alt="Anamnesis" src="data:image/png;base64,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" />
           <span class="brand-name"><strong>Anam</strong><strong>nesis</strong></span>
         </div>
-        <div class="sidebar-coordinate" aria-hidden="true">SYSTEM / 02</div>
+        <button type="button" class="workspace-control sidebar-close" id="sidebar-close" data-i18n-aria="shell.closeNavigation" aria-label="Close navigation"><i data-lucide="x" aria-hidden="true"></i></button>
         <nav class="sidebar-nav">
-          <button class="nav-item" data-page="administration"><i data-lucide="database" aria-hidden="true"></i><span data-i18n="nav.administration">管理工作台</span></button>
+          <button class="nav-item" data-page="administration" data-i18n-aria="nav.administration"><i data-lucide="layout-dashboard" aria-hidden="true"></i><span data-i18n="nav.administration">管理工作台</span></button>
           <button class="nav-item active" data-page="graph" data-i18n-aria="nav.graph">
             <i data-lucide="network" aria-hidden="true"></i>
             <span data-i18n="nav.graph">Knowledge Graph</span>
@@ -47,11 +47,6 @@
         </nav>
         <div class="sidebar-divider"></div>
         <div class="sidebar-footer">
-          <button class="nav-item" id="theme-toggle" data-i18n-aria="header.theme">
-            <i data-lucide="moon" id="theme-icon-dark" aria-hidden="true"></i>
-            <i data-lucide="sun" id="theme-icon-light" class="hidden" aria-hidden="true"></i>
-            <span data-i18n="header.theme">Theme</span>
-          </button>
           <details class="lang-menu" id="lang-menu">
           <summary class="nav-item" id="lang-toggle" data-i18n-aria="header.lang">
             <i data-lucide="languages" aria-hidden="true"></i>
@@ -65,21 +60,36 @@
           </details>
         </div>
       </aside>
+      <button type="button" class="sidebar-backdrop" id="sidebar-backdrop" tabindex="-1" data-i18n-aria="shell.closeNavigation" aria-label="Close navigation" hidden></button>
 
       <!-- Main Content -->
-      <main class="main-content">
+      <main class="main-content" id="workspace-main">
+        <header class="workbench-bar">
+          <button type="button" class="workspace-control" id="sidebar-toggle" aria-controls="workspace-sidebar" aria-expanded="false" data-i18n-aria="shell.expandSidebar" aria-label="Expand sidebar" data-focus-hide><i data-lucide="layout-dashboard" aria-hidden="true"></i></button>
+          <div class="workbench-breadcrumb">
+            <span class="workbench-product">Anamnesis</span>
+            <span class="workbench-separator" aria-hidden="true">/</span>
+            <span id="workbench-page-title" data-i18n="nav.graph">Knowledge Graph</span>
+          </div>
+          <div class="workbench-controls">
+            <button type="button" class="workspace-control" id="theme-toggle" data-i18n-aria="header.theme" data-i18n-title="header.theme" aria-label="Theme" title="Theme" data-focus-hide>
+              <i data-lucide="moon" id="theme-icon-dark" aria-hidden="true"></i>
+              <i data-lucide="sun" id="theme-icon-light" class="hidden" aria-hidden="true"></i>
+            </button>
+            <button type="button" class="workspace-control focus-toggle" id="focus-toggle" aria-pressed="false" data-i18n-title="shell.focus" title="Focus on reading"><i data-lucide="focus" aria-hidden="true"></i><span id="focus-toggle-label" data-i18n="shell.focus">Focus</span></button>
+          </div>
+        </header>
         <div id="bridge-feedback" class="bridge-feedback hidden" role="status">
           <span id="bridge-message"></span>
           <button id="bridge-retry" type="button" class="btn btn-secondary btn-sm" data-i18n="bridge.retry">重新连接</button>
         </div>
-        <section class="page" id="page-administration"><header class="page-header"><div class="page-heading"><span class="page-title" data-i18n="nav.administration">管理工作台</span></div><button id="administration-refresh" class="btn btn-secondary btn-sm" type="button" data-i18n="common.refresh">刷新</button></header><div class="page-body" id="administration-content"></div></section>
+        <section class="page" id="page-administration"><header class="page-header module-toolbar"><div class="page-heading"><span class="page-title" data-i18n="nav.administration">管理工作台</span></div><button id="administration-refresh" class="btn btn-secondary btn-sm" type="button" data-i18n="common.refresh">刷新</button></header><div class="page-body" id="administration-content"></div></section>
 
         <!-- Page: Graph -->
         <section class="page active" id="page-graph">
-          <header class="page-header">
+          <header class="page-header module-toolbar">
             <div class="page-heading"><span class="page-index">01</span><span class="page-title" data-i18n="nav.graph">Knowledge Graph</span></div>
             <div class="page-actions">
-              <input type="text" id="graph-session-filter" class="input input-sm" data-i18n-placeholder="graph.sessionPh" placeholder="Session ID" style="width:180px" />
               <button class="btn btn-secondary btn-sm" id="graph-overview-btn" data-i18n-aria="graph.overviewBtn">
                 <i data-lucide="layout-dashboard" aria-hidden="true"></i>
                 <span data-i18n="graph.overviewBtn">Overview</span>
@@ -87,6 +97,20 @@
             </div>
           </header>
           <div class="page-body graph-page-body">
+            <div class="graph-toolbar">
+              <div class="toolbar-primary">
+                <input type="search" id="graph-query-input" class="input" data-i18n-placeholder="graph.queryPh" data-i18n-aria="graph.queryPh" aria-label="Search the graph" placeholder="Search entities, topics, or memories..." />
+                <button class="btn btn-primary btn-sm" id="graph-search-btn"><i data-lucide="search" aria-hidden="true"></i><span data-i18n="graph.searchBtn">Search</span></button>
+              </div>
+              <details class="toolbar-details" data-focus-hide>
+                <summary><i data-lucide="settings-2" aria-hidden="true"></i><span data-i18n="shell.graphFocus">Scope &amp; focus</span></summary>
+                <div class="toolbar-details-body">
+                  <input type="text" id="graph-session-filter" class="input input-sm" data-i18n-placeholder="graph.sessionPh" data-i18n-aria="graph.sessionPh" aria-label="Session ID" placeholder="Session ID" />
+                  <input type="text" id="graph-memory-id" class="input input-sm" data-i18n-placeholder="graph.memoryIdPh" data-i18n-aria="graph.memoryIdPh" aria-label="Memory ID" placeholder="Memory ID" />
+                  <button class="btn btn-secondary btn-sm" id="graph-focus-btn"><i data-lucide="focus" aria-hidden="true"></i><span data-i18n="graph.focusBtn">Focus</span></button>
+                </div>
+              </details>
+            </div>
             <div class="stat-pills" id="graph-stat-pills">
               <div class="stat-pill"><div class="stat-pill-value" id="gs-total">--</div><div class="stat-pill-label" data-i18n="stats.total">memories</div></div>
               <div class="stat-pill"><div class="stat-pill-value" id="gs-nodes">--</div><div class="stat-pill-label" data-i18n="graph.nodes">nodes</div></div>
@@ -99,29 +123,22 @@
               <div id="graph-canvas" class="graph-canvas"></div>
             </div>
             <div class="graph-legend" id="graph-legend"></div>
-            <div class="graph-toolbar">
-              <input type="text" id="graph-query-input" class="input" data-i18n-placeholder="graph.queryPh" placeholder="Search entities, topics, or memories..." />
-              <input type="text" id="graph-memory-id" class="input input-sm" data-i18n-placeholder="graph.memoryIdPh" placeholder="Memory ID" style="width:120px" />
-              <button class="btn btn-primary btn-sm" id="graph-search-btn">
-                <i data-lucide="search" aria-hidden="true"></i>
-                <span data-i18n="graph.searchBtn">Search</span>
-              </button>
-              <button class="btn btn-secondary btn-sm" id="graph-focus-btn">
-                <i data-lucide="focus" aria-hidden="true"></i>
-                <span data-i18n="graph.focusBtn">Focus</span>
-              </button>
-            </div>
           </div>
         </section>
 
         <!-- Page: Memory -->
         <section class="page" id="page-memory">
-          <header class="page-header">
+          <header class="page-header module-toolbar">
             <div class="page-heading"><span class="page-index">02</span><span class="page-title" data-i18n="nav.memory">Memories</span></div>
           </header>
           <div class="page-body memory-page-body">
-            <div class="filter-bar">
-              <input type="text" id="mem-keyword" class="input" data-i18n-placeholder="filter.keyword" placeholder="Search by keyword or memory ID..." />
+            <div class="filter-bar memory-toolbar">
+              <div class="toolbar-primary">
+                <input type="search" id="mem-keyword" class="input" data-i18n-placeholder="filter.keyword" data-i18n-aria="filter.keyword" aria-label="Search memories" placeholder="Search by keyword or memory ID..." />
+              </div>
+              <details class="toolbar-details" id="mem-toolbar-filters" data-focus-hide>
+                <summary><i data-lucide="settings-2" aria-hidden="true"></i><span data-i18n="shell.filters">Filters</span></summary>
+                <div class="toolbar-details-body">
               <input type="text" id="mem-session" class="input" data-i18n-placeholder="filter.sessionId" placeholder="Session ID" style="max-width:200px" />
               <select id="mem-status" class="select input">
                 <option value="all" data-i18n="filter.statusAll">All Status</option>
@@ -154,6 +171,11 @@
                 <option value="50" data-i18n="common.perPage50">50 per page</option>
                 <option value="100" data-i18n="common.perPage100">100 per page</option>
               </select>
+                </div>
+              </details>
+              <details class="toolbar-details" id="mem-toolbar-transfer" data-focus-hide>
+                <summary><i data-lucide="download" aria-hidden="true"></i><span data-i18n="shell.transfer">Import / export</span></summary>
+                <div class="toolbar-details-body">
               <select id="mem-transfer-format" class="select input" style="width:auto" data-i18n-title="transfer.formatTitle">
                 <option value="json">JSON</option>
                 <option value="csv">CSV</option>
@@ -171,6 +193,11 @@
                 <span data-i18n="transfer.import">Import</span>
               </button>
               <input type="file" id="mem-import-file" accept=".json,.csv,application/json,text/csv" hidden />
+                </div>
+              </details>
+              <details class="toolbar-details" id="mem-toolbar-selection" data-focus-hide>
+                <summary><i data-lucide="square-pen" aria-hidden="true"></i><span data-i18n="shell.batchActions">Selection actions</span></summary>
+                <div class="toolbar-details-body">
               <button class="btn btn-sm btn-secondary" id="mem-batch-edit" disabled data-i18n-title="batchEdit.title">
                 <i data-lucide="pencil" aria-hidden="true"></i>
                 <span id="mem-batch-edit-label" data-i18n="batchEdit.button">Batch edit</span>
@@ -179,6 +206,8 @@
                 <i data-lucide="trash-2" aria-hidden="true"></i>
                 <span id="mem-delete-selected-label" data-i18n="delete.selected">Delete selected</span>
               </button>
+                </div>
+              </details>
             </div>
             <div class="table-container">
               <div class="table-scroll" id="memories-scroll">
@@ -212,26 +241,33 @@
 
         <!-- Page: Recall Test -->
         <section class="page" id="page-recall">
-          <header class="page-header">
+          <header class="page-header module-toolbar">
             <div class="page-heading"><span class="page-index">03</span><span class="page-title" data-i18n="nav.recall">Recall Test</span></div>
           </header>
           <div class="page-body">
             <div class="recall-form-section">
-              <textarea id="recall-query" class="input textarea" rows="3" data-i18n-placeholder="recall.queryPh" placeholder="Enter a query to test the dual-route four-mode hybrid retrieval engine..."></textarea>
-              <div class="recall-form-row">
+              <div class="toolbar-primary recall-primary">
+                <textarea id="recall-query" class="input textarea" rows="2" data-i18n-placeholder="recall.queryPh" data-i18n-aria="recall.queryPh" aria-label="Recall query" placeholder="Enter a query to test memory retrieval..."></textarea>
+                <button class="btn btn-primary" id="recall-search-btn"><i data-lucide="scan-search" aria-hidden="true"></i><span data-i18n="recall.searchBtn">Run Recall</span></button>
+              </div>
+              <details class="toolbar-details recall-options" data-focus-hide>
+                <summary><i data-lucide="settings-2" aria-hidden="true"></i><span data-i18n="shell.recallOptions">Retrieval options</span></summary>
+                <div class="toolbar-details-body" id="recall-advanced">
+                  <div class="recall-form-row">
                 <div class="recall-form-field" style="max-width:200px">
-                  <label class="recall-form-label" data-i18n="recall.kLabel">Results (k)</label>
+                  <label class="recall-form-label" for="recall-k" data-i18n="recall.kLabel">Results (k)</label>
                   <div class="slider-group">
                     <input type="range" id="recall-k" min="1" max="50" value="5" />
                     <span class="slider-value" id="recall-k-value">5</span>
                   </div>
                 </div>
                 <div class="recall-form-field" style="max-width:280px">
-                  <label class="recall-form-label" data-i18n="recall.sessionLabel">Session ID (optional)</label>
+                  <label class="recall-form-label" for="recall-session" data-i18n="recall.sessionLabel">Session ID (optional)</label>
                   <input type="text" id="recall-session" class="input input-sm" data-i18n-placeholder="recall.sessionPh" placeholder="Filter by session..." />
                 </div>
-                <button class="btn btn-primary" id="recall-search-btn"><i data-lucide="scan-search" aria-hidden="true"></i><span data-i18n="recall.searchBtn">Run Recall</span></button>
-              </div>
+                  </div>
+                </div>
+              </details>
             </div>
             <div class="recall-results-header hidden" id="recall-stats">
               <span id="recall-count-text">0 results</span>
@@ -243,7 +279,7 @@
 
         <!-- Page: System -->
         <section class="page" id="page-system">
-          <header class="page-header">
+          <header class="page-header module-toolbar">
             <div class="page-heading"><span class="page-index">04</span><span class="page-title" data-i18n="nav.system">System Overview</span></div>
           </header>
           <div class="page-body">
@@ -270,8 +306,9 @@
               <div class="system-panel-title" data-i18n="system.activeSessions">Active Sessions</div>
               <div class="session-list" id="session-list"></div>
             </div>
-            <div class="system-panel mb-6">
-              <div class="system-panel-title" data-i18n="system.consolidationTitle">Memory Consolidation</div>
+            <details class="system-panel workspace-disclosure mb-6" data-focus-hide>
+              <summary class="system-panel-title" data-i18n="system.consolidationTitle">Memory Consolidation</summary>
+              <div class="workspace-disclosure-body">
               <div class="consolidation-meta" id="consolidation-meta"></div>
               <div class="stat-pills" style="margin-top:10px">
                 <div class="stat-pill"><div class="stat-pill-value" id="cons-consolidated">--</div><div class="stat-pill-label" data-i18n="system.consolidatedCount">consolidated</div></div>
@@ -282,17 +319,18 @@
                 <span data-i18n="system.consolidationRun">Run Now</span>
               </button>
               <span class="text-tertiary" id="cons-run-result" style="margin-left:10px;font-size:12px"></span>
-            </div>
-            <div class="system-panel">
-              <div class="system-panel-title" data-i18n="system.versionBackups">Version Backups</div>
-              <div class="backup-list" id="backup-list"></div>
-            </div>
+              </div>
+            </details>
+            <details class="system-panel workspace-disclosure" data-focus-hide>
+              <summary class="system-panel-title" data-i18n="system.versionBackups">Version Backups</summary>
+              <div class="workspace-disclosure-body backup-list" id="backup-list"></div>
+            </details>
           </div>
         </section>
 
         <!-- Page: Prompts -->
         <section class="page" id="page-prompts">
-          <header class="page-header">
+          <header class="page-header module-toolbar">
             <div class="page-heading"><span class="page-index">05</span><span class="page-title" data-i18n="nav.prompts">Prompt Management</span></div>
           </header>
           <div class="page-body">
@@ -304,14 +342,17 @@
                 <span class="prompt-editor-title" id="prompt-editor-title"></span>
                 <span class="prompt-editor-status" id="prompt-editor-status"></span>
               </div>
-              <div class="prompt-editor-vars-row">
+              <details class="toolbar-details prompt-editor-reference" data-focus-hide>
+                <summary><i data-lucide="braces" aria-hidden="true"></i><span data-i18n="shell.editorReference">Variable reference</span></summary>
+                <div class="toolbar-details-body prompt-editor-vars-row">
                 <span class="prompt-editor-vars-label" data-i18n="prompt.variables">Variables</span>
                 <span id="prompt-editor-vars"></span>
-              </div>
+                </div>
+              </details>
               <textarea id="prompt-editor-textarea" class="input textarea prompt-editor-textarea" rows="20" spellcheck="false"></textarea>
               <div class="prompt-editor-actions">
                 <button class="btn btn-secondary" id="prompt-cancel-btn"><i data-lucide="x" aria-hidden="true"></i><span data-i18n="common.cancel">Cancel</span></button>
-                <button class="btn btn-danger btn-sm" id="prompt-reset-btn"><i data-lucide="rotate-ccw" aria-hidden="true"></i><span data-i18n="prompt.reset">Reset to Default</span></button>
+                <button class="btn btn-danger btn-sm" id="prompt-reset-btn" data-focus-hide><i data-lucide="rotate-ccw" aria-hidden="true"></i><span data-i18n="prompt.reset">Reset to Default</span></button>
                 <button class="btn btn-primary" id="prompt-save-btn"><i data-lucide="save" aria-hidden="true"></i><span data-i18n="common.save">Save</span></button>
               </div>
             </div>
@@ -320,17 +361,13 @@
 
         <!-- Page: User Profiles -->
         <section class="page" id="page-profiles">
-          <header class="page-header">
+          <header class="page-header module-toolbar">
             <div class="page-heading"><span class="page-index">06</span><span class="page-title" data-i18n="nav.profiles">User Profiles</span></div>
             <div class="page-actions">
               <span class="profile-status" id="profile-status"></span>
               <button class="btn btn-secondary btn-sm" id="profile-refresh" data-i18n-title="profile.refreshTitle">
                 <i data-lucide="refresh-cw" aria-hidden="true"></i>
                 <span data-i18n="common.refresh">Refresh</span>
-              </button>
-              <button class="btn btn-ghost btn-sm" id="profile-reset" data-i18n-title="profile.resetTitle">
-                <i data-lucide="rotate-ccw" aria-hidden="true"></i>
-                <span data-i18n="profile.reset">Reset filters</span>
               </button>
             </div>
           </header>
@@ -341,11 +378,12 @@
                   <label for="profile-query" data-i18n="profile.searchUsers">Find a user</label>
                   <input type="search" id="profile-query" class="input" data-i18n-placeholder="profile.searchPh" placeholder="Name, user ID or recent group…" />
                   <span id="profile-user-total"></span>
-                  <details class="profile-directory-options">
+                  <details class="profile-directory-options" data-focus-hide>
                     <summary data-i18n="profile.contact.filters">筛选与隔离设置</summary>
                     <label for="profile-session" data-i18n="profile.sourceSession">Source session</label>
                     <input type="search" id="profile-session" class="input" data-i18n-placeholder="profile.sessionPh" placeholder="Optional source session…" />
                     <div class="profile-scope-note hidden" id="profile-scope-note"></div>
+                    <button class="btn btn-ghost btn-sm" id="profile-reset" data-i18n-title="profile.resetTitle"><i data-lucide="rotate-ccw" aria-hidden="true"></i><span data-i18n="profile.reset">Reset filters</span></button>
                   </details>
                 </div>
                 <div id="profile-users" class="profile-users"><div class="table-empty" data-i18n="common.loading">Loading…</div></div>
@@ -362,14 +400,19 @@
           </div>
         </section>
         <section class="page" id="page-settings">
-          <header class="page-header">
+          <header class="page-header module-toolbar">
             <div class="page-heading"><span class="page-index">07</span><span class="page-title" data-i18n="nav.settings">Settings</span></div>
             <div class="page-actions"><button class="btn btn-secondary btn-sm" id="settings-refresh"><i data-lucide="refresh-cw" aria-hidden="true"></i><span data-i18n="common.refresh">Refresh</span></button><button class="btn btn-primary btn-sm" id="settings-save" disabled><i data-lucide="save" aria-hidden="true"></i><span data-i18n="common.save">Save</span></button></div>
           </header>
           <div class="page-body settings-page-body">
-            <p class="settings-reload-note" data-i18n="settings.reloadHint">Save here, then reload the plugin in AstrBot to apply changes.</p>
-            <p class="settings-host-note" data-i18n="settings.hostHint">AstrBot → Plugins → Anamnesis → Settings remains available.</p>
             <div class="filter-bar settings-filter-bar"><input id="settings-search" class="input" type="search" data-i18n-placeholder="settings.searchPh" placeholder="Search settings…"><button type="button" class="btn btn-ghost" id="settings-common" aria-pressed="false" data-i18n="settings.common">Common settings</button><span id="settings-dirty" role="status"></span></div>
+            <details class="toolbar-details settings-help" data-focus-hide>
+              <summary><i data-lucide="settings-2" aria-hidden="true"></i><span data-i18n="shell.help">About these settings</span></summary>
+              <div class="toolbar-details-body">
+                <p class="settings-reload-note" data-i18n="settings.reloadHint">Save here, then reload the plugin in AstrBot to apply changes.</p>
+                <p class="settings-host-note" data-i18n="settings.hostHint">AstrBot → Plugins → Anamnesis → Settings remains available.</p>
+              </div>
+            </details>
             <div id="settings-feedback" class="inline-feedback hidden" role="status"></div>
             <div id="settings-sections"></div>
           </div>

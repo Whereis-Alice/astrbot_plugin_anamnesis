@@ -231,7 +231,7 @@ export class PeekPanel {
     }
 
     // 元数据网格
-    html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.metadata") + '</div>';
+    html += '<details class="peek-section" id="memory-metadata"><summary class="peek-section-title">' + window.t("detail.metadata") + '</summary>';
     html += '<div class="memory-detail-meta-grid">';
     html += metaItem(window.t("detail.status"), statusPill(status), true);
     html += metaItem(window.t("detail.type"), '<span class="type-tag">' + esc(type) + '</span>', true);
@@ -241,7 +241,7 @@ export class PeekPanel {
     html += metaItem(window.t("detail.created"), created);
     html += metaItem(window.t("detail.updated"), updated);
     html += metaItem(window.t("detail.origin"), originLabel(origin));
-    html += '</div></div>';
+    html += '</div></details>';
 
     // 来源记忆（整合产生）
     if (consolidatedFrom.length) {
@@ -267,13 +267,13 @@ export class PeekPanel {
 
     // 编辑历史
     if (editHistory.length) {
-      html += '<div class="peek-section"><div class="peek-section-title">' + window.t("detail.editHistory") + '</div><div class="edit-history-list">';
+      html += '<details class="peek-section"><summary class="peek-section-title">' + window.t("detail.editHistory") + '</summary><div class="edit-history-list">';
       editHistory.forEach(h => {
         const time = h.timestamp ? new Date(h.timestamp * 1000).toLocaleString() : (h.time || "--");
         html += '<div class="edit-history-item"><span class="edit-history-time">' + esc(time) + '</span>';
         html += '<span class="edit-history-desc">' + esc(h.description || h.field + ": " + h.old_value + " → " + h.new_value) + '</span></div>';
       });
-      html += '</div></div>';
+      html += '</div></details>';
     }
 
     const peekBody = document.getElementById("peek-body");

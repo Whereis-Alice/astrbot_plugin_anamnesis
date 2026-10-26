@@ -145,7 +145,7 @@
   Renderer.prototype.resize = function() {
     var rect = this.canvas.parentElement.getBoundingClientRect();
     var w = Math.max(1, Math.floor(rect.width || this.canvas.parentElement.clientWidth || 1));
-    var h = Math.max(320, Math.floor(rect.height || this.canvas.parentElement.clientHeight || 320));
+    var h = Math.max(1, Math.floor(rect.height || this.canvas.parentElement.clientHeight || 320));
     this.dpr = Math.min(window.devicePixelRatio || 1, CFG.DPR_MAX);
     this.width = w;
     this.height = h;
@@ -170,7 +170,12 @@
 
     bctx.fillStyle = themeColor("--graph-surface", dark ? "#11130f" : "#f8fbfa");
     bctx.fillRect(0, 0, w, h);
-    bctx.fillStyle = dark ? "rgba(183,243,74,0.13)" : "rgba(40,92,94,0.12)";
+    var halo = bctx.createRadialGradient(w * .18, h * .2, 0, w * .18, h * .2, Math.max(w, h) * .8);
+    halo.addColorStop(0, dark ? "rgba(67,168,162,.07)" : "rgba(93,161,170,.04)");
+    halo.addColorStop(1, "rgba(110,125,206,0)");
+    bctx.fillStyle = halo;
+    bctx.fillRect(0, 0, w, h);
+    bctx.fillStyle = dark ? "rgba(149,178,222,0.11)" : "rgba(83,108,149,0.1)";
     for (var x = 0; x <= w; x += step) {
       for (var y = 0; y <= h; y += step) {
         bctx.beginPath();
@@ -179,7 +184,7 @@
       }
     }
     var majorStep = step * 5;
-    bctx.strokeStyle = dark ? "rgba(183,243,74,0.055)" : "rgba(40,92,94,0.05)";
+    bctx.strokeStyle = dark ? "rgba(149,178,222,0.035)" : "rgba(83,108,149,0.035)";
     bctx.lineWidth = 1;
     for (var mx = 0; mx <= w; mx += majorStep) {
       bctx.beginPath();
@@ -208,19 +213,12 @@
       this._rebuildBackgroundCache(dark, step);
     }
     if (this._bgCanvas) {
-      ctx.drawImage(this._bgCanvas, ox, oy);
+      ctx.drawImage(this._bgCanvas, ox - step, oy - step);
     } else {
       ctx.fillStyle = themeColor("--graph-surface", dark ? "#11130f" : "#f8fbfa");
       ctx.fillRect(0, 0, this.width, this.height);
     }
 
-    if (animateDecorations) {
-      ctx.save();
-      var scanY = (Date.now() * 0.018) % Math.max(this.height, 1);
-      ctx.fillStyle = dark ? "rgba(183,243,74,0.13)" : "rgba(42,167,157,0.1)";
-      ctx.fillRect(0, scanY, this.width, 1);
-      ctx.restore();
-    }
   };
 
   Renderer.prototype.worldToScreen = function(wx, wy) {
@@ -670,6 +668,7 @@
 
     var prominent = dn.degree >= 5 || dn.memoryCount >= 4 || dn.labelScore >= 15;
     var labelVisible = dn.isHovered || dn.isSelected || dn.isCenter ||
+      (!dn.hasFocus && scale > 0.35 && this._drawnNodes.length <= 40) ||
       (!dn.hasFocus && scale > 0.64 && prominent) ||
       (!dn.hasFocus && scale > 1.18 && dn.degree >= 3);
     if (!labelVisible || dn.isMuted) {
@@ -693,6 +692,12 @@
       labelWidth = ctx.measureText(label).width;
       if (Object.keys(this._labelWidthCache).length > 3000) this._labelWidthCache = {};
       this._labelWidthCache[widthKey] = labelWidth;
+    }
+    // Prefer the other side of the node near the right edge, then keep the
+    // label within the canvas when its text fits the viewport.
+    if (labelWidth + 16 <= this.width) {
+      if (labelX + labelWidth > this.width - 8) labelX = x - r - 7 * scale - labelWidth;
+      labelX = clamp(labelX, 8, this.width - labelWidth - 8);
     }
     var labelHeight = fontSize + 4;
     var box = {

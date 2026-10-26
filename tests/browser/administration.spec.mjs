@@ -61,6 +61,7 @@ try {
     checks.push(`PASS ${width}px: no horizontal overflow`);
   }
   await page.locator("#preview").evaluate(element => element.style.width = "1024px");
+  await frame.locator(".admin-action").filter({has:frame.locator("#admin-memory-id")}).locator(":scope > summary").click();
   await frame.locator("#admin-memory-id").fill("7");
   await frame.locator("#admin-instruction").fill("纠正为喜欢茶");
   await frame.locator("#admin-preview").click();

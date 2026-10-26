@@ -71,7 +71,6 @@
 .settings-field-control .input { width: 100%; min-width: 0; }
 .settings-field-control textarea { resize: vertical; font-family: monospace; line-height: 1.55; }
 .settings-toggle { width: 22px; height: 22px; accent-color: var(--accent, #7a9e60); cursor: pointer; }
-.sidebar-nav .nav-item[data-page="settings"]::after { content: "07"; }
 .settings-field-error { display: block; margin-top: 6px; color: var(--danger, #e06b67); font-size: 11px; }
 .recall-route-scores { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .recall-route-score { font-size: 11px; padding: 4px 8px; border-radius: 5px; border: 1px solid var(--border-color); color: var(--text-secondary); }

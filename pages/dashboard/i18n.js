@@ -9,6 +9,23 @@
   let urlLanguageOverride = false;
 
   const MSG = {
+    "shell.navigation": {"zh": "工作区导航", "en": "Workspace navigation", "ru": "Навигация"},
+    "shell.openNavigation": {"zh": "打开导航", "en": "Open navigation", "ru": "Открыть навигацию"},
+    "shell.closeNavigation": {"zh": "关闭导航", "en": "Close navigation", "ru": "Закрыть навигацию"},
+    "shell.expandSidebar": {"zh": "展开侧栏", "en": "Expand sidebar", "ru": "Развернуть панель"},
+    "shell.collapseSidebar": {"zh": "收起侧栏", "en": "Collapse sidebar", "ru": "Свернуть панель"},
+    "shell.workspace": {"zh": "记忆档案馆", "en": "Memory archive", "ru": "Архив памяти"},
+    "shell.focus": {"zh": "专注", "en": "Focus", "ru": "Фокус"},
+    "shell.exitFocus": {"zh": "退出专注", "en": "Exit focus", "ru": "Выйти из фокуса"},
+    "shell.filters": {"zh": "筛选", "en": "Filters", "ru": "Фильтры"},
+    "shell.transfer": {"zh": "导入与导出", "en": "Import / export", "ru": "Импорт / экспорт"},
+    "shell.batchActions": {"zh": "批量操作", "en": "Selection actions", "ru": "Действия с выбором"},
+    "shell.graphFocus": {"zh": "范围与定位", "en": "Scope & focus", "ru": "Область и фокус"},
+    "shell.recallOptions": {"zh": "检索选项", "en": "Recall options", "ru": "Параметры поиска"},
+    "shell.maintenance": {"zh": "维护工具", "en": "Maintenance", "ru": "Обслуживание"},
+    "shell.editorReference": {"zh": "模板说明与变量", "en": "Template reference", "ru": "Справка по шаблону"},
+    "shell.help": {"zh": "使用说明", "en": "Help", "ru": "Справка"},
+    "shell.profileTools": {"zh": "筛选与资料设置", "en": "Filters & profile settings", "ru": "Фильтры и настройки"},
     "nav.administration": {"zh":"管理工作台","en":"Administration","ru":"Управление"},
     "profile.ledger.pendingCount": {"zh": "{0} 条待确认变化", "en": "{0} proposed changes", "ru": "Предложено изменений: {0}"},
     "profile.ledger.alias": {"zh": "管理员备注名", "en": "Administrator label", "ru": "Имя для администратора"},

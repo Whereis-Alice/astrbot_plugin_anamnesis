@@ -4,6 +4,7 @@ import { ProfilePage } from "../../pages/dashboard/modules/profile-page.js";
 function element() {
   const classes = new Set();
   return { innerHTML: "", textContent: "", value: "", disabled: false, listeners: {}, focus() {},
+    querySelector() { return null; },
     replaceChildren(...nodes) { this.children = nodes; },
     addEventListener(type, handler) { this.listeners[type] = handler; },
     classList: { add: name => classes.add(name), remove: name => classes.delete(name), toggle: (name, yes) => yes ? classes.add(name) : classes.delete(name), contains: name => classes.has(name) } };

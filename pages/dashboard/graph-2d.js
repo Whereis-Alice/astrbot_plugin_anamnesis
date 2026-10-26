@@ -764,7 +764,7 @@
   };
 
   function relationColor(type) {
-    var palette = ["#2a9e96", "#c58c2a", "#df6d62", "#78a94b", "#74868a"];
+    var palette = ["#52978f", "#bd9860", "#b98192", "#7383b5", "#8a97a8"];
     var h = String(type || "related").split("").reduce(function(a, c) { return a * 31 + c.charCodeAt(0); }, 7);
     return palette[Math.abs(h) % palette.length];
   }

@@ -19,7 +19,7 @@ const used = [...new Set(sources().flatMap(path => [...read(path).matchAll(/data
 for (const name of used) if (!icons[name]) throw new Error(`Missing local icon ${name}: add its Lucide icon data to vendor/lucide-icons.json`);
 const subset = `/*! Lucide icon subset; ISC, see vendor/LUCIDE_LICENSE. */\nwindow.AnamIcons=${JSON.stringify(Object.fromEntries(used.map(name => [name, icons[name]])))};\n${read("vendor/lucide-runtime.js")}`;
 const graphFiles = ["graph-shared.js", "graph-layout-core.js", "graph-renderer.js", "graph-interaction.js", "graph-2d.js", "graph-ui.js"];
-const css = await transform(["styles.css", "art-direction.css", "workflows.css", "administration.css"].map(read).join("\n"), { loader: "css", minify: true });
+const css = await transform(["styles.css", "workflows.css", "administration.css", "art-direction.css"].map(read).join("\n"), { loader: "css", minify: true });
 const base = await transform(subset + "\n;\n" + read("i18n.js"), { loader: "js", target: "es2020", minify: true, legalComments: "inline" });
 const graph = await transform(graphFiles.map(name => read(name) + "\n;").join("\n"), { loader: "js", target: "es2020", minify: true });
 const app = await build({ absWorkingDir: dashboard, entryPoints: ["app.js"], bundle: true, minify: true, format: "iife", platform: "browser", target: "es2020", write: false, legalComments: "inline" });

@@ -1,9 +1,10 @@
 {
   "name": "astrbot-plugin-anamnesis-docs",
-  "version": "3.5.18",
+  "version": "3.6.0",
   "private": true,
   "type": "module",
   "scripts": {
+    "test:redesign-browser": "node tests/browser/redesign.spec.mjs",
     "test:frontend": "node --test --test-concurrency=1 tests/frontend/*.test.js",
     "dashboard:build": "node scripts/build_dashboard.mjs",
     "dashboard:check": "node scripts/build_dashboard.mjs --check",

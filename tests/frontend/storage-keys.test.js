@@ -15,7 +15,7 @@ const PREFIX = "anamnesis:";
 const LANG_KEY = PREFIX + "lang";
 const THEME_KEY = PREFIX + "theme";
 /* 前端允许使用的全部 storage key；新增 key 必须同步更新这里。 */
-const ALLOWED_KEYS = [LANG_KEY, THEME_KEY];
+const ALLOWED_KEYS = [LANG_KEY, THEME_KEY, PREFIX + "sidebar-expanded"];
 
 function setGlobal(name, value) {
   Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
@@ -149,6 +149,6 @@ test("pages/ keeps no upstream lmem namespace or brand residue", () => {
 });
 
 test("index.html renders the Anamnesis logotype", () => {
-  assert.match(indexHtml, /<span class="brand-mark">AN<\/span>/);
+  assert.match(indexHtml, /<img class="brand-avatar"[^>]*alt="Anamnesis"[^>]*src="data:image\/png;base64,/);
   assert.match(indexHtml, /<strong>Anam<\/strong><strong>nesis<\/strong>/);
 });

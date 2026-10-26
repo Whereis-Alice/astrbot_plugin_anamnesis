@@ -52,8 +52,8 @@
   };
 
   var TYPE_COLORS = {
-    topic: "#78a94b", person: "#2a9e96", fact: "#c58c2a",
-    summary: "#df6d62", other: "#74868a",
+    topic: "#7383b5", person: "#52978f", fact: "#bd9860",
+    summary: "#b98192", other: "#8a97a8",
   };
 
   function isDark() {

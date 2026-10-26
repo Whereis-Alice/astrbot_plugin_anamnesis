@@ -20,6 +20,7 @@ try {
   await page.waitForFunction(() => window.fixtureReady === true);
   const frame = page.frames().find(frame => frame.parentFrame());
   await frame.locator('[data-page="recall"]').click();
+  await frame.locator(".recall-options > summary").click();
   await frame.locator("#recall-mode").selectOption("time");
   await frame.locator("#recall-start-time").fill("2026-10-01T00:00:00");
   await frame.locator("#recall-end-time").fill("2026-10-02T00:00:00");
