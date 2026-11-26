@@ -17,7 +17,8 @@ from astrbot.api import logger
 from ...storage.alias_store import AliasStore
 from ...storage.atom_store import AtomStore
 from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
-from ..memory_transfer import memory_import_key
+from ..memory_groups import MEMORY_GROUP_SQL
+from ..memory_transfer import MAX_IMPORT_ENTRIES, memory_import_key
 from ..models.memory_atom import AtomStatus, DecayType
 from ..processors.atom_classifier import classify_atoms
 from ..retrieval.hybrid_retriever import HybridResult
@@ -389,9 +390,11 @@ class MemoryEngineCrudMixin:
         return value if isinstance(value, list) else []
 
     async def get_memory_transfer_records(
-        self, memory_ids: list[int] | None = None
+        self, memory_ids: list[int] | None = None, *, group: str | None = None
     ) -> list[dict[str, Any]]:
         """Return portable memory records without retrieval-index internals."""
+        if memory_ids is not None and group is not None:
+            raise ValueError("请选择按群导出或导出指定的记忆 ID")
         if self.db_connection is None:
             return []
 
@@ -433,6 +436,19 @@ class MemoryEngineCrudMixin:
             await connection.execute("PRAGMA query_only=ON")
             await connection.execute("BEGIN")
             try:
+                if group is not None:
+                    async with connection.execute(
+                        f"SELECT id FROM documents WHERE {MEMORY_GROUP_SQL} = ? "
+                        "ORDER BY id LIMIT ?",
+                        (group, MAX_IMPORT_ENTRIES + 1),
+                    ) as cursor:
+                        group_ids = await cursor.fetchall()
+                    if len(group_ids) > MAX_IMPORT_ENTRIES:
+                        raise ValueError(
+                            f"单次最多导出 {MAX_IMPORT_ENTRIES} 条记忆，请选择部分记忆"
+                        )
+                    normalized_ids = [row["id"] for row in group_ids]
+
                 if normalized_ids is None:
                     rows = await _fetch_rows(connection, None)
                 else:

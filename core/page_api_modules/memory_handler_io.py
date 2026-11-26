@@ -19,6 +19,7 @@ from ..managers.memory_mutation import (
     memory_mutation_task,
     settle_memory_mutation_task,
 )
+from ..memory_groups import parse_group_key
 from ..memory_source import restore_source_messages
 from ..memory_transfer import (
     MAX_IMPORT_ENTRIES,
@@ -35,7 +36,7 @@ class MemoryHandlerIoMixin:
     """MemoryHandler 拆分模块：MemoryHandlerIoMixin"""
 
     async def export_memories(self, memory_engine) -> dict[str, Any]:
-        """Export all or selected memories as portable JSON/CSV content."""
+        """Export selected memories, a group, or the library as portable JSON/CSV."""
         payload = await request.get_json(silent=True)
         if payload is not None and not isinstance(payload, dict):
             return self.utils.error("请求参数必须是 JSON 对象")
@@ -45,6 +46,11 @@ class MemoryHandlerIoMixin:
             return self.utils.error("导出格式仅支持 JSON 或 CSV")
 
         raw_ids = payload.get("memory_ids")
+        group = payload.get("group")
+        if "group" in payload and parse_group_key(group) is None:
+            return self.utils.error("group 必须是有效的群来源标识")
+        if group is not None and raw_ids is not None:
+            return self.utils.error("请选择按群导出或导出指定的记忆 ID")
         memory_ids: list[int] | None = None
         if raw_ids is not None:
             if not isinstance(raw_ids, list):
@@ -63,7 +69,13 @@ class MemoryHandlerIoMixin:
             except (TypeError, ValueError):
                 return self.utils.error("memory_ids 必须是 SQLite 范围内的正整数列表")
 
-        records = await memory_engine.get_memory_transfer_records(memory_ids)
+        if group is not None:
+            try:
+                records = await memory_engine.get_memory_transfer_records(group=group)
+            except ValueError as exc:
+                return self.utils.error(str(exc))
+        else:
+            records = await memory_engine.get_memory_transfer_records(memory_ids)
         if len(records) > MAX_IMPORT_ENTRIES:
             return self.utils.error(
                 f"单次最多导出 {MAX_IMPORT_ENTRIES} 条记忆，请选择部分记忆"

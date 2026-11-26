@@ -236,11 +236,11 @@ class AdministrationJobsMixin:
             raise ValueError("导入分块数量为空或超过预算")
         return entries
 
-    def _launch_job(self, operation_id):
+    def _launch_job(self, operation_id, *, runner=None):
         self._assert_jobs_open()
         if operation_id in self._jobs and not self._jobs[operation_id].done():
             return
-        task = asyncio.create_task(self._run_job(operation_id))
+        task = asyncio.create_task((runner or self._run_job)(operation_id))
         self._jobs[operation_id] = task
 
         def finished(done):

@@ -9,6 +9,7 @@ from difflib import SequenceMatcher
 import aiosqlite
 
 from ...storage.sqlite_utils import configure_sqlite_connection, sqlite_connect_kwargs
+from ..memory_groups import merge_group_metadata
 from .memory_mutation import memory_mutation_guard, serialize_memory_mutation
 
 
@@ -116,6 +117,10 @@ class MemoryEngineOperationsMixin:
                         continue
                     if any(old_meta.get(key) != metadata.get(key) for key in ("source_session_id", "source_revision")):
                         continue
+                    group_metadata = merge_group_metadata((metadata, old_meta))
+                    if (group_metadata == {"source_group": None}
+                            and metadata.get("source_group") != old_meta.get("source_group")):
+                        continue
                     if not self._dedup_same_source_window(old_meta, metadata):
                         continue
                     if old_meta.get("session_id") != kwargs.get("session_id") or old_meta.get("persona_id") != kwargs.get("persona_id"):
@@ -147,6 +152,7 @@ class MemoryEngineOperationsMixin:
                     patch = {"source_windows": windows[-50:], "dedup_count": int(old_meta.get("dedup_count", 0)) + 1,
                              "last_reinforced_at": time.time(),
                              "importance": max(float(old_meta.get("importance", .5)), float(kwargs.get("importance", .5)))}
+                    patch.update(group_metadata)
                     source_ids = list(old_meta.get("source_message_ids") or [])
                     for source_id in metadata.get("source_message_ids") or []:
                         if source_id not in source_ids:

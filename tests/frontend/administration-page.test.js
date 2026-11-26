@@ -53,6 +53,24 @@ test("expired completed correction exposes cleanup without rollback", () => {
   assert.match(elements["admin-records"].innerHTML, /data-admin-action="remove"/);
   assert.doesNotMatch(elements["admin-records"].innerHTML, /data-admin-action="rollback"/);
 });
+test("only terminal permanent deletion records can be removed and clear their tracked progress", async () => {
+  const posts = [];
+  const { page, elements } = setup({ async post(path, body) { posts.push({ path, body }); } });
+  let reset = false;
+  page.deletion = { operationId: "done", reset() { reset = true; } };
+  page.fetch = async () => {};
+  page.records = [
+    { id: "running", kind: "permanent_delete", status: "running", created_at: 1 },
+    { id: "done", kind: "permanent_delete", status: "completed", created_at: 1 },
+  ];
+  page.render();
+  const html = elements["admin-records"].innerHTML;
+  assert.match(html, /data-admin-action="remove" data-operation-id="done"/);
+  assert.doesNotMatch(html, /data-admin-action="(?:restore|purge)"|data-admin-action="remove" data-operation-id="running"/);
+  await page.action("remove", "done");
+  assert.deepEqual(posts, [{ path: "operations/remove", body: { operation_id: "done" } }]);
+  assert.equal(reset, true);
+});
 test("unexpired completed correction retains recovery snapshot protection", () => {
   const { page, elements } = setup();
   page.records = [{ id: "retained", kind: "correction", status: "completed", expired: false, created_at: 1 }];

@@ -12,6 +12,7 @@ from astrbot.api.event import AstrMessageEvent
 from astrbot.api.platform import MessageType
 from astrbot.api.provider import LLMResponse
 
+from ..memory_groups import group_metadata_from_messages
 from ..memory_scope import is_event_memory_allowed, resolve_memory_scope
 from ..memory_source import serialize_source_messages
 from ..utils import get_persona_id
@@ -519,6 +520,7 @@ class MemoryReflection:
                         "message_count": end_index - start_index,
                     }
                     metadata["source_session_id"] = session_id
+                    metadata.update(group_metadata_from_messages(history_messages))
                     source_message_ids = [
                         message.get("id") if isinstance(message, dict) else getattr(message, "id", None)
                         for message in history_messages

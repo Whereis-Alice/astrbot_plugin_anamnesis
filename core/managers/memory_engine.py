@@ -21,6 +21,7 @@ from ...storage.sqlite_utils import (
 )
 from ..managers.atom_lifecycle_manager import AtomLifecycleManager
 from ..managers.graph_memory_manager import GraphMemoryManager
+from ..memory_groups import MEMORY_GROUP_SQL
 from ..processors.graph_extractor import GraphExtractor
 from ..processors.text_processor import TextProcessor
 from ..retrieval.atom_retriever import AtomRetriever
@@ -580,6 +581,15 @@ class MemoryEngine(MemoryEngineOperationsMixin, MemoryEngineEvidenceMixin, Memor
                 COALESCE(CAST(json_extract(metadata, '$.create_time') AS REAL), 0) DESC,
                 id DESC
             )
+        """)
+            await self.db_connection.execute(f"""
+            CREATE INDEX IF NOT EXISTS idx_doc_memory_group
+            ON documents(
+                {MEMORY_GROUP_SQL},
+                COALESCE(CAST(json_extract(metadata, '$.create_time') AS REAL), 0) DESC,
+                id DESC
+            )
+            WHERE {MEMORY_GROUP_SQL} IS NOT NULL
         """)
             await self.db_connection.execute("""
             CREATE INDEX IF NOT EXISTS idx_documents_doc_id

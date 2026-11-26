@@ -620,6 +620,84 @@ class TestListMemories:
             result = await api_not_ready.list_memories()
         assert result["status"] == "error"
 
+    @pytest.mark.asyncio
+    async def test_group_directory_and_filter_use_source_provenance(self, api, tmp_path):
+        db_path = tmp_path / "group-memories.db"
+        primary = "qq-one:GroupMessage:456"
+        archive = "qq-two:GroupMessage:456"
+        async with aiosqlite.connect(db_path) as db:
+            await db.execute(
+                "CREATE TABLE documents (id INTEGER PRIMARY KEY, doc_id, text, "
+                "metadata, created_at, updated_at)"
+            )
+            metadata_rows = [
+                {"session_id": "livingmemory:global", "source_session_id": "qq-one:GroupMessage:123_456"},
+                {"session_id": "livingmemory:user:qq:456", "source_window": {"session_id": primary}},
+                {"session_id": primary, "source_session_id": "qq-one:FriendMessage:456"},
+                {"session_id": archive, "status": "archived"},
+                {"session_id": "legacy", "source_group": primary, "source_group_name": "旧群名"},
+                {"session_id": "legacy", "source_group": primary, "source_group_name": "星空群"},
+                {"session_id": primary, "source_group": None},
+                {"session_id": "456"},
+                {"session_id": "custom:GroupMessage:room_456:channel"},
+                {"session_id": "custom:GroupMessage:887_456", "source_group": "custom:GroupMessage:887_456"},
+                {"source_group": "invalid:GroupMessage:" + "x" * 512},
+                {"source_group": "invalid:GroupMessage:\u3000room"},
+                {"source_group": "invalid\t:GroupMessage:room"},
+            ]
+            await db.executemany(
+                "INSERT INTO documents (id, doc_id, text, metadata) VALUES (?, ?, ?, ?)",
+                [(i, str(i), f"memory {i}", json.dumps(metadata))
+                 for i, metadata in enumerate(metadata_rows, 1)],
+            )
+            await db.commit()
+        api.plugin.initializer.memory_engine.db_path = str(db_path)
+
+        with _patch_page_request(_mock_page_request(args={"q": "QQ-ONE", "limit": "1"})):
+            result = await api.list_memory_groups()
+        assert result["data"] == {"items": [{
+            "id": primary,
+            "group_id": "456",
+            "platform_id": "qq-one",
+            "group_name": "星空群",
+            "count": 4,
+        }], "has_more": False}
+
+        with _patch_page_request(_mock_page_request(args={"q": "星空群"})):
+            named = await api.list_memory_groups()
+        assert named["data"] == result["data"]
+        with _patch_page_request(_mock_page_request(args={"q": "%"})):
+            literal = await api.list_memory_groups()
+        assert literal["data"] == {"items": [], "has_more": False}
+
+        with _patch_page_request(_mock_page_request(args={"limit": "1"})):
+            first = await api.list_memory_groups()
+        with _patch_page_request(_mock_page_request(args={"limit": "1", "offset": "1"})):
+            second = await api.list_memory_groups()
+        assert first["data"]["has_more"] is True
+        assert first["data"]["items"][0]["id"] == primary
+        assert second["data"]["items"][0]["id"] == "custom:GroupMessage:887_456"
+        with _patch_page_request(_mock_page_request(args={"q": "invalid"})):
+            malformed = await api.list_memory_groups()
+        assert malformed["data"] == {"items": [], "has_more": False}
+
+        with _patch_page_request(_mock_page_request(args={"group": primary, "sort": "id_asc"})):
+            memories = await api.list_memories()
+        assert memories["data"]["filters"]["group"] == primary
+        assert memories["data"]["total"] == 4
+        assert [row["id"] for row in memories["data"]["items"]] == [1, 2, 5, 6]
+
+        with _patch_page_request(_mock_page_request(args={"group": archive, "status": "active"})):
+            active = await api.list_memories()
+        assert active["data"]["total"] == 0
+        with _patch_page_request(_mock_page_request(args={"group": primary, "session_id": "legacy"})):
+            scoped = await api.list_memories()
+        assert {row["id"] for row in scoped["data"]["items"]} == {5, 6}
+
+        with _patch_page_request(_mock_page_request(args={"group": "qq-one:FriendMessage:456"})):
+            invalid = await api.list_memories()
+        assert invalid["status"] == "error"
+
 
 class TestUpdateMemory:
     @pytest.mark.asyncio
@@ -1293,12 +1371,15 @@ class TestRouteRegistration:
         plugin = FakePlugin()
         api = PluginPageApi(plugin)
         api.register_routes()
-        assert len(plugin._api_routes) == 45
+        assert len(plugin._api_routes) == 48
 
         paths = {route for route, _, _, _ in plugin._api_routes}
         prefix = PAGE_API_PREFIX
         assert f"{prefix}/stats" in paths
         assert f"{prefix}/memories" in paths
+        assert f"{prefix}/memories/groups" in paths
+        assert f"{prefix}/operations/delete/start" in paths
+        assert f"{prefix}/operations/delete/status" in paths
         assert f"{prefix}/memories/update" in paths
         assert f"{prefix}/memories/resummarize" in paths
         assert f"{prefix}/memories/export" in paths

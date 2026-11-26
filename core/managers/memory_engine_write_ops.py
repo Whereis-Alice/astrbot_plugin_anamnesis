@@ -971,6 +971,23 @@ class MemoryEngineWriteOpsMixin:
             )
             return False
 
+        original_documents = payload.get("document_ids")
+        if "document_ids" in payload:
+            if not isinstance(original_documents, dict):
+                await self._advance_write_op(
+                    op_id, "unrepairable", status="failed", error="invalid document UUIDs for batch delete repair",
+                )
+                return False
+            placeholders = ",".join("?" for _ in memory_ids)
+            async with self.db_connection.execute(
+                f"SELECT id,doc_id FROM documents WHERE id IN ({placeholders})", memory_ids,
+            ) as cursor:
+                reused = {
+                    row[0] for row in await cursor.fetchall()
+                    if str(row[0]) not in original_documents or row[1] != original_documents[str(row[0])]
+                }
+            memory_ids = [memory_id for memory_id in memory_ids if memory_id not in reused]
+
         await self._delete_document_indexes_for_batch(memory_ids)
         await self._delete_graph_and_atoms_for_batch(memory_ids)
         await self._advance_write_op(

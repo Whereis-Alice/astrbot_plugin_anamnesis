@@ -25,6 +25,14 @@ AstrBot `4.24.2` or later is recommended. Older versions can still run the plugi
 | System status | Review active, archived, and deleted counts plus graph, atom, importance, and session statistics |
 | Prompt management | Browse prompts by category, edit overrides, identify customized templates, and restore or load defaults |
 
+## Manage memories by group
+
+1. Open the group picker on the Memory page and search by group name or ID. Choose the group on the relevant platform. The group filter works alongside keyword, status, and type. Older records without a group name show the group ID.
+2. Select the memories you want to process. Selection stays while paging and clears when you change the filters. Confirm the selection count and deletion mode before submitting. Each batch accepts up to 2,000 memories.
+3. The progress panel shows the number of items processed, removed, and failed. Moving memories to Recovery Center archives them. Undo the batch from the progress panel or restore it in Administration. Permanent deletion is a separate choice in the confirmation dialog.
+
+To back up a group, choose JSON or CSV under Import / export. With no selection, group export includes the entire group, including archived memories and rows hidden by other filters. With a selection, export includes the checked rows. Clear the group and selection to export the whole library.
+
 ## Memory details and lifecycle
 
 Since 3.5.17, profiles open as responsive contact cards with names, accounts, recent groups, active fact previews and last-seen time. Click a card to read, edit or review the complete profile, then return to the people list. Source filters and isolation details are collapsed by default. Grouping one identity for display preserves each fact's stored chat scope.
@@ -36,10 +44,9 @@ Since 3.4.2, latest group labels are stored separately from each fact's original
 - Editing a summary, topic, or key fact rebuilds that memory's embedding, BM25, graph, atom, and related derived data. Status-only or importance-only edits do not unconditionally rebuild every index.
 - Memories above the source-retention threshold show source messages in the detail panel. When at least two source messages are available, the Dashboard can call the LLM to replace the memory with a new summary.
 - Changing status to `archived` removes a memory from normal recall indexes while retaining its source document. Changing it back to `active` regenerates its embedding and derived indexes.
-- Selection checkboxes support batch deletion from the current list. Export includes only selected memories when a selection exists.
 
 ::: warning
-Deletion is permanent. Archive memories that may need to be restored later. Restoration requires a working embedding provider.
+Permanent deletion cannot be undone. Recovery Center removes memories from normal recall. Restoring them requires a working embedding provider.
 :::
 
 ## Prompt management
@@ -71,7 +78,7 @@ Background index checks and large rebuild progress are currently exposed through
 
 The memory page supports JSON and CSV:
 
-- Export downloads all memories when nothing is selected, or only the selected rows otherwise.
+- Export uses the selected rows first, then the current group, then the entire library.
 - Native JSON and CSV round-trip summaries, scopes, personas, structured metadata, retained source messages, and atom lifecycles. Expired, forgotten, and superseded facts stay hidden after import.
 - External JSON may use `content`, `text`, `summary`, or `memory` for summary text. Collections may use `memories`, `long_term_memories`, `short_term_memories`, or conversation maps keyed by session ID.
 - Import always runs a preview first. By default it skips duplicates using summary content + session ID + persona ID; duplicates can be explicitly allowed.

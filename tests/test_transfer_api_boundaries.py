@@ -75,6 +75,46 @@ async def test_valid_empty_or_unmatched_export_selection_stays_empty(
     assert response["status"] == "ok" and response["data"]["memory_count"] == 0
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("export_format", ["json", "csv"])
+async def test_export_group_includes_archives_but_excludes_other_platforms(
+    administration, export_format
+):
+    engine = administration.engine
+    active = await engine.add_memory("active in group", session_id=SCOPE)
+    archived = await engine.add_memory("archived in group", session_id=SCOPE)
+    await engine.archive_memories([archived])
+    await engine.add_memory("same group ID on another platform", session_id="telegram:GroupMessage:1")
+    await engine.add_memory("direct message with same ID", session_id="qq:FriendMessage:1")
+
+    response = await request_transfer(
+        engine, "export", {"group": SCOPE, "format": export_format}
+    )
+    assert response["status"] == "ok"
+    data = response["data"]
+    assert data["memory_count"] == 2
+    if export_format == "csv":
+        rows = list(csv.DictReader(data["content"].splitlines()))
+    else:
+        rows = json.loads(data["content"])["memories"]
+    assert [int(row["original_id"]) for row in rows] == [active, archived]
+
+
+@pytest.mark.asyncio
+async def test_export_group_rejects_invalid_and_never_falls_back_to_full_library(administration):
+    engine = administration.engine
+    memory_id = await engine.add_memory("outside requested group", session_id=SCOPE)
+    for body in [
+        {"group": None},
+        {"group": ""},
+        {"group": "qq:FriendMessage:1"},
+        {"group": SCOPE, "memory_ids": [memory_id]},
+    ]:
+        assert (await request_transfer(engine, "export", body))["status"] == "error"
+    response = await request_transfer(engine, "export", {"group": "qq:GroupMessage:2"})
+    assert response["status"] == "ok" and response["data"]["memory_count"] == 0
+
+
 def invalid_number_record(case):
     record = {"content": "invalid fact", "session_id": SCOPE}
     if case == "importance_overflow":

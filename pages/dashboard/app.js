@@ -18,6 +18,7 @@ import {
   statusPill,
   nodeBadge,
 } from "./modules/index.js";
+import { MemoryDeletion } from "./modules/memory-deletion.js";
 
 (() => {
   "use strict";
@@ -48,6 +49,7 @@ import {
       pageSize: 20,
       hasMore: false,
       keyword: "",
+      group: "",
       session: "",
       status: "all",
       type: "all",
@@ -67,14 +69,24 @@ import {
      Initialize Modules
      ================================================================ */
   const api = new ApiClient();
-  const peekPanel = new PeekPanel(state, api);
-  const memoryPage = new MemoryPage(state, api, peekPanel);
+  const deletion = new MemoryDeletion(api, {
+    storageKey: STORAGE.key("delete-operation"),
+    onBusyChange: () => memoryPage.updateSelectionControls(),
+    onSettled: () => {
+      if (state.page === "memory") memoryPage.fetch();
+      if (state.page === "administration") administrationPage.fetch().catch(error => console.error(error));
+      if (state.page === "graph") fetchGraphStats();
+    },
+    onHistory: () => switchPage("administration"),
+  });
+  const peekPanel = new PeekPanel(state, api, deletion);
+  const memoryPage = new MemoryPage(state, api, peekPanel, deletion);
   const recallPage = new RecallPage(state, api, peekPanel);
   const systemPage = new SystemPage(state, api);
   const promptPage = new PromptPage(state, api);
   const profilePage = new ProfilePage(state, api, peekPanel);
   const settingsPage = new SettingsPage(state, api);
-  const administrationPage = new AdministrationPage(state, api, peekPanel);
+  const administrationPage = new AdministrationPage(state, api, peekPanel, deletion);
   const workspaceShell = new WorkspaceShell(SIDEBAR_KEY);
 
   function hydrateIcons() {
@@ -251,6 +263,8 @@ import {
 
   function refreshDynamicI18n() {
     updateLanguageMenu();
+    deletion.render();
+    memoryPage.groupPicker.render();
 
     if (state.page === "memory") {
       memoryPage.renderVirtual();
@@ -350,12 +364,13 @@ import {
     profilePage.initEventListeners();
     settingsPage.initEventListeners();
     administrationPage.initEventListeners();
+    deletion.init();
 
     document.getElementById("peek-close").addEventListener("click", () => peekPanel.close());
     document.getElementById("peek-overlay").addEventListener("click", () => peekPanel.close());
 
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape") {
+      if (e.key === "Escape" && !document.querySelector("dialog[open]")) {
         peekPanel.handleEscape();
       }
     });

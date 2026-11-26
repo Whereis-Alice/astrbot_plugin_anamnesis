@@ -21,6 +21,7 @@ from astrbot.api import logger
 from astrbot.api.platform import MessageType
 
 from ...storage.conversation_store import ConversationStore
+from ..memory_groups import group_metadata_for_event
 from ..memory_scope import resolve_sender_alias
 from ..models.conversation_models import Message, Session
 from .conversation_history import ConversationHistoryMixin
@@ -183,7 +184,7 @@ class ConversationManager(ConversationHistoryMixin):
             platform=platform,
             is_bot_message=(role == "assistant"),
             timestamp=self._event_timestamp(event) if role == "user" else None,
-            metadata=self._event_checkpoint(event),
+            metadata={**self._event_checkpoint(event), **group_metadata_for_event(event)},
         )
 
     @staticmethod

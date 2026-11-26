@@ -370,28 +370,30 @@ async def test_storage_task_writes_source_window(
     """_storage_task 应在 metadata 中写入 source_window 字段。"""
     from astrbot_plugin_anamnesis.core.models.conversation_models import Message
 
+    session_id = "test:GroupMessage:sender_42"
+    source_group = "test:GroupMessage:42"
     messages = [
         Message(
             id=1,
-            session_id="s1",
+            session_id=session_id,
             role="user",
             content="hello",
             sender_id="u1",
             sender_name="User",
-            group_id=None,
+            group_id=session_id,
             platform="test",
-            metadata={},
+            metadata={"source_group": source_group, "source_group_name": "Group 42"},
         ),
         Message(
             id=2,
-            session_id="s1",
+            session_id=session_id,
             role="assistant",
             content="hi",
             sender_id="bot",
             sender_name="Bot",
-            group_id=None,
+            group_id=session_id,
             platform="test",
-            metadata={"is_bot_message": True},
+            metadata={"is_bot_message": True, "source_group": source_group},
         ),
     ]
 
@@ -416,7 +418,7 @@ async def test_storage_task_writes_source_window(
     )
 
     await handler._memory_reflection._storage_task(
-        session_id="s1",
+        session_id=session_id,
         history_messages=messages,
         persona_id="p1",
         start_index=0,
@@ -429,10 +431,12 @@ async def test_storage_task_writes_source_window(
     assert [item["content"] for item in captured_source] == ["hello", "hi"]
     assert "source_window" in captured_metadata
     sw = captured_metadata["source_window"]
-    assert sw["session_id"] == "s1"
+    assert sw["session_id"] == session_id
     assert sw["start_index"] == 0
     assert sw["end_index"] == 2
     assert sw["message_count"] == 2
+    assert captured_metadata["source_group"] == source_group
+    assert captured_metadata["source_group_name"] == "Group 42"
 
 
 @pytest.mark.asyncio

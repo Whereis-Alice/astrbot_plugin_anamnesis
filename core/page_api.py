@@ -89,6 +89,12 @@ class PluginPageApi(AdministrationPageMixin):
             "Anamnesis Page memories",
         )
         register(
+            f"{PAGE_API_PREFIX}/memories/groups",
+            self.list_memory_groups,
+            ["GET"],
+            "Anamnesis Page memory groups",
+        )
+        register(
             f"{PAGE_API_PREFIX}/memories/detail",
             self.get_memory_detail,
             ["GET"],
@@ -231,6 +237,13 @@ class PluginPageApi(AdministrationPageMixin):
         if error:
             return error
         return await self.memory_handler.list_memories(ready["memory_engine"])
+
+    async def list_memory_groups(self) -> dict[str, Any]:
+        """获取有记忆的来源群聊。"""
+        ready, error = await self._ensure_plugin_ready()
+        if error:
+            return error
+        return await self.memory_handler.list_memory_groups(ready["memory_engine"])
 
     async def get_memory_detail(self):
         """获取单个记忆的完整详情"""

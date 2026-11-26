@@ -6,6 +6,7 @@ MemoryEngine 的 MemoryEngineBatchMixin 拆分模块
 import asyncio
 import json
 import time
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -57,10 +58,16 @@ class MemoryEngineBatchMixin:
         for i in range(0, len(memory_ids), sql_batch_size):
             batch = memory_ids[i : i + sql_batch_size]
             placeholders = ",".join("?" * len(batch))
+            async with self.db_connection.execute(
+                f"SELECT id,doc_id FROM documents WHERE id IN ({placeholders})", batch,
+            ) as cursor:
+                document_ids = {str(row["id"]): row["doc_id"] for row in await cursor.fetchall()}
+            found_ids = [int(memory_id) for memory_id in document_ids]
             op_id = await self._start_write_op(
                 "batch_delete",
                 {
                     "memory_ids": batch,
+                    "document_ids": document_ids,
                     "batch_offset": i,
                     "batch_size": len(batch),
                 },
@@ -79,13 +86,7 @@ class MemoryEngineBatchMixin:
                     payload_patch={"memory_ids": batch},
                 )
 
-                # 2. Look up UUIDs and delete from FAISS vector DB
-                cursor = await self.db_connection.execute(
-                    f"SELECT id, doc_id FROM documents WHERE id IN ({placeholders})",
-                    batch,
-                )
-                uuid_rows = await cursor.fetchall()
-                found_ids = [int(row["id"]) for row in uuid_rows]
+                # 2. Delete the identified documents from FAISS vector DB
                 if found_ids:
                     deleted_vector_ids = await self.vector_retriever.delete_documents(
                         found_ids
@@ -257,14 +258,21 @@ class MemoryEngineBatchMixin:
             return 0
 
     @serialize_memory_mutation
-    async def archive_memories(self, memory_ids: list[int]) -> int:
+    async def archive_memories(
+        self, memory_ids: list[int], *,
+        recovery_operation_id: str | None = None,
+        record_recovery: Callable[[aiosqlite.Connection, list[int]], Awaitable[None]] | None = None,
+    ) -> int:
         """Remove memories from retrieval indexes while retaining their documents."""
         if not hasattr(self, "_archive_restore_lock"):
             self._archive_restore_lock = asyncio.Lock()
         async with self._archive_restore_lock:
-            return await self._archive_memories_impl(memory_ids)
+            return await self._archive_memories_impl(memory_ids, recovery_operation_id, record_recovery)
 
-    async def _archive_memories_impl(self, memory_ids: list[int]) -> int:
+    async def _archive_memories_impl(
+        self, memory_ids: list[int], recovery_operation_id: str | None,
+        record_recovery: Callable[[aiosqlite.Connection, list[int]], Awaitable[None]] | None,
+    ) -> int:
         if not memory_ids or self.db_connection is None:
             return 0
 
@@ -275,27 +283,26 @@ class MemoryEngineBatchMixin:
             offset=0,
             limit=len(unique_ids),
         )
-        active_documents = []
-        metadata_updates: list[tuple[str, int]] = []
+        archived_ids: list[int] = []
+        metadata_updates = []
         archived_at = time.time()
         for document in documents:
             metadata = self._safe_json_dict(document.get("metadata"))
             if str(metadata.get("status") or "active") != "active":
                 continue
-            metadata["archived_atom_lifecycle"] = await self.snapshot_archived_atom_lifecycle(int(document["id"]))
-            metadata["archived_atom_lifecycle"] = await self._merge_pending_archive_atoms(
-                int(document["id"]), metadata["archived_atom_lifecycle"], metadata,
+            memory_id = int(document["id"])
+            atoms = await self.snapshot_archived_atom_lifecycle(memory_id)
+            atoms = await self._merge_pending_archive_atoms(
+                memory_id, atoms, metadata,
             )
-            metadata["status"] = "archived"
-            metadata["archived_at"] = archived_at
-            active_documents.append(document)
-            metadata_updates.append(
-                (json.dumps(metadata, ensure_ascii=False), int(document["id"]))
-            )
-        if not active_documents:
+            archived_ids.append(memory_id)
+            values = (archived_at, json.dumps(atoms))
+            if recovery_operation_id is not None:
+                values += (recovery_operation_id,)
+            metadata_updates.append((*values, memory_id))
+        if not archived_ids:
             return 0
 
-        archived_ids = [int(document["id"]) for document in active_documents]
         profile_manager = getattr(self, "user_profile_manager", None)
         if profile_manager is not None:
             await profile_manager.set_source_suppressed(archived_ids, True)
@@ -303,15 +310,17 @@ class MemoryEngineBatchMixin:
         try:
             async with aiosqlite.connect(self.db_path) as connection:
                 await configure_sqlite_connection(connection, self.config)
+                recovery_sql = ", '$.recovery_operation_id', ?" if recovery_operation_id is not None else ""
                 await connection.executemany(
                     "UPDATE documents SET metadata=json_set(metadata, '$.status','archived', "
-                    "'$.archived_at', ?, '$.archived_atom_lifecycle', json(?)) WHERE id=?",
-                    [(archived_at, json.dumps(json.loads(raw)["archived_atom_lifecycle"]), memory_id)
-                     for raw, memory_id in metadata_updates],
+                    f"'$.archived_at', ?, '$.archived_atom_lifecycle', json(?){recovery_sql}) WHERE id=?",
+                    metadata_updates,
                 )
                 await connection.execute(
                     f"DELETE FROM livingmemory_memories_fts WHERE doc_id IN ({placeholders})", archived_ids,
                 )
+                if record_recovery is not None:
+                    await record_recovery(connection, archived_ids)
                 await connection.commit()
             self._invalidate_search_cache()
         except BaseException:

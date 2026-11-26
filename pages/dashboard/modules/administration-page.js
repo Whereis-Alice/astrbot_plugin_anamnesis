@@ -48,6 +48,7 @@ const labels = {
   remove: ["清理记录", "Remove record", "Очистить запись"],
   empty: ["暂无记录", "No records", "Нет записей"],
   "kind.delete": ["删除恢复", "Deletion recovery", "Восстановление удалённого"],
+  "kind.permanent_delete": ["永久删除", "Permanent deletion", "Безвозвратное удаление"],
   "kind.correction": ["记忆纠正", "Memory correction", "Исправление памяти"],
   "kind.import": ["资料导入", "Import", "Импорт"],
   "kind.evaluation": ["检索评测", "Retrieval evaluation", "Оценка поиска"],
@@ -88,7 +89,7 @@ export function parseMemoryIds(text) {
 const date = value => new Date(value * 1000).toLocaleString();
 
 export class AdministrationPage {
-  constructor(state, api, peek) { this.state = state; this.api = api; this.peek = peek; this.records = []; this.episodes = []; this.sequence = 0; this.busy = false; }
+  constructor(state, api, peek, deletion) { this.state = state; this.api = api; this.peek = peek; this.deletion = deletion; this.records = []; this.episodes = []; this.sequence = 0; this.busy = false; }
   input(id, key, type = "text") { return `<label>${esc(adminText(key))}<input class="input" id="admin-${id}" type="${type}" /></label>`; }
   button(id, key) { return `<button type="button" class="btn btn-secondary btn-sm" id="admin-${id}">${esc(adminText(key))}</button>`; }
   initEventListeners() {
@@ -106,7 +107,8 @@ export class AdministrationPage {
     on("admin-delete", async () => {
       const ids = parseMemoryIds(this.value("delete-ids"));
       if (!await this.confirm(adminText("delete"), `${ids.join(", ")}\n${this.value("reason")}`)) return;
-      await this.api.post("operations/delete", { memory_ids: ids, reason: this.value("reason") }); await this.fetch();
+      await this.deletion.submit(ids, "recoverable", { reason: this.value("reason") });
+      await this.fetch();
     });
     on("admin-preview", async () => this.showPreview(await this.api.post("corrections/preview", { memory_id: Number(this.value("memory-id")), instruction: this.value("instruction"), new_content: this.value("draft") || undefined })));
     on("admin-import", () => this.submitImports());
@@ -186,13 +188,14 @@ export class AdministrationPage {
     document.getElementById("admin-records").innerHTML = this.records.map(record => {
       const job = ["import", "evaluation", "episode", "projection"].includes(record.kind);
       let buttons = action("detail", record.id);
-      if (record.kind === "delete" && !record.expired && ["completed", "partial", "running"].includes(record.status)) buttons += action("restore", record.id) + action("purge", record.id);
-      if (record.kind === "delete" && record.expired && !["purged", "restored"].includes(record.status)) buttons += action("purge", record.id);
+      if (record.kind === "delete" && !record.expired && ["completed", "partial", "interrupted"].includes(record.status)) buttons += action("restore", record.id) + action("purge", record.id);
+      if (record.kind === "delete" && record.expired && !["queued", "running", "purged", "restored"].includes(record.status)) buttons += action("purge", record.id);
       if (record.kind === "correction" && record.status === "preview" && !record.expired) buttons += action("preview", record.id);
       if (record.kind === "correction" && ["completed", "prepared_commit", "rollback_prepared", "needs_review"].includes(record.status) && !record.expired) buttons += action("rollback", record.id);
       if (job && ["queued", "running"].includes(record.status)) buttons += action("cancel", record.id);
       if (job && ["partial", "failed", "interrupted", "cancelled"].includes(record.status) && !record.expired) buttons += action("retry", record.id);
-      if (job && !["preparing", "queued", "running"].includes(record.status) || ["purged", "restored", "rolled_back", "failed", "stale", "preview"].includes(record.status) || record.kind === "correction" && record.status === "completed" && record.expired) buttons += action("remove", record.id);
+      const permanentDeleteFinished = record.kind === "permanent_delete" && ["completed", "partial", "failed", "interrupted"].includes(record.status);
+      if (permanentDeleteFinished || job && !["preparing", "queued", "running"].includes(record.status) || ["purged", "restored", "rolled_back", "failed", "stale", "preview"].includes(record.status) || record.kind === "correction" && record.status === "completed" && record.expired) buttons += action("remove", record.id);
       return `<article class="admin-record"><div><strong>${esc(adminText("kind." + record.kind))}</strong> · ${esc(adminText("status." + record.status))} · ${esc(date(record.created_at))}<small>${esc(record.id)}</small></div><div class="admin-actions">${buttons}</div></article>`;
     }).join("") || `<p>${esc(adminText("empty"))}</p>`;
     document.getElementById("admin-episodes").innerHTML = this.episodes.map(episode => `<details><summary>${esc(episode.title)}</summary><p class="admin-prose">${esc(episode.summary)}</p><small>${esc(episode.source_session_id || episode.session_id || "")} · ${esc(episode.memory_ids.join(", "))}</small>${action("rebuild", episode.id)}</details>`).join("") || `<p>${esc(adminText("empty"))}</p>`;
@@ -227,6 +230,9 @@ export class AdministrationPage {
     if (action === "preview") return this.showPreview(await this.api.get("operations/detail", { operation_id: id }));
     if (action === "detail") {
       const data = await this.api.get("operations/detail", { operation_id: id });
+      if (["delete", "permanent_delete"].includes(data.kind) && ["recoverable", "permanent"].includes(data.payload?.mode)) {
+        this.deletion?.track(id);
+      }
       const element = document.getElementById("admin-detail"); element.hidden = false;
       let body;
       if (data.kind === "evaluation" && data.result.summary) {
@@ -251,6 +257,7 @@ export class AdministrationPage {
       if (action === "purge" && !await this.confirm(adminText("purge"), adminText("confirmPurge"))) return;
       if (action === "rollback" && !await this.confirm(adminText("rollback"), adminText("confirmExecute"))) return;
       await this.api.post(action === "rollback" ? "corrections/rollback" : "operations/" + action, { operation_id: id });
+      if (action === "remove" && this.deletion?.operationId === id) this.deletion.reset();
     }
     await this.fetch();
   }

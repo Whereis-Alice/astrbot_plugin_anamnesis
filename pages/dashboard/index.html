@@ -83,6 +83,18 @@
           <span id="bridge-message"></span>
           <button id="bridge-retry" type="button" class="btn btn-secondary btn-sm" data-i18n="bridge.retry">重新连接</button>
         </div>
+        <div class="memory-delete-progress" id="mem-delete-progress" hidden>
+          <p id="mem-delete-status" role="status"></p>
+          <progress id="mem-delete-meter" data-i18n-aria="delete.progress" aria-label="Deletion progress" hidden></progress>
+          <button type="button" id="mem-delete-undo" class="btn btn-secondary btn-sm" data-i18n="delete.undo" hidden>Undo deletion</button>
+          <button type="button" id="mem-delete-retry" class="btn btn-secondary btn-sm" data-i18n="delete.retryStatus" hidden>Check status</button>
+          <button type="button" id="mem-delete-history" class="btn btn-ghost btn-sm" data-i18n="delete.history">Operation history</button>
+          <button type="button" id="mem-delete-dismiss" class="btn btn-ghost btn-sm" data-i18n-aria="common.close" aria-label="Close" hidden><i data-lucide="x" aria-hidden="true"></i></button>
+          <details id="mem-delete-details" hidden>
+            <summary data-i18n="delete.failedIds">Failed memory IDs</summary>
+            <p></p>
+          </details>
+        </div>
         <section class="page" id="page-administration"><header class="page-header module-toolbar"><div class="page-heading"><span class="page-title" data-i18n="nav.administration">管理工作台</span></div><button id="administration-refresh" class="btn btn-secondary btn-sm" type="button" data-i18n="common.refresh">刷新</button></header><div class="page-body" id="administration-content"></div></section>
 
         <!-- Page: Graph -->
@@ -135,6 +147,7 @@
             <div class="filter-bar memory-toolbar">
               <div class="toolbar-primary">
                 <input type="search" id="mem-keyword" class="input" data-i18n-placeholder="filter.keyword" data-i18n-aria="filter.keyword" aria-label="Search memories" placeholder="Search by keyword or memory ID..." />
+                <button type="button" id="mem-group-picker" class="btn btn-secondary" aria-haspopup="dialog" aria-controls="mem-group-dialog" data-focus-hide><span>Filter by group</span></button>
               </div>
               <details class="toolbar-details" id="mem-toolbar-filters" data-focus-hide>
                 <summary><i data-lucide="settings-2" aria-hidden="true"></i><span data-i18n="shell.filters">Filters</span></summary>
@@ -184,9 +197,9 @@
                 <option value="skip" data-i18n="transfer.skipDuplicates">Skip duplicates</option>
                 <option value="allow" data-i18n="transfer.allowDuplicates">Allow duplicates</option>
               </select>
-              <button class="btn btn-sm btn-secondary" id="mem-export" data-i18n-title="transfer.exportTitle">
+              <button class="btn btn-sm btn-secondary" id="mem-export">
                 <i data-lucide="download" aria-hidden="true"></i>
-                <span data-i18n="transfer.export">Export</span>
+                <span id="mem-export-label">Export all memories</span>
               </button>
               <button class="btn btn-sm btn-secondary" id="mem-import" data-i18n-title="transfer.importTitle">
                 <i data-lucide="upload" aria-hidden="true"></i>
@@ -202,12 +215,15 @@
                 <i data-lucide="pencil" aria-hidden="true"></i>
                 <span id="mem-batch-edit-label" data-i18n="batchEdit.button">Batch edit</span>
               </button>
-              <button class="btn btn-sm btn-danger" id="mem-delete-selected" disabled data-i18n-title="delete.selectedTitle">
-                <i data-lucide="trash-2" aria-hidden="true"></i>
-                <span id="mem-delete-selected-label" data-i18n="delete.selected">Delete selected</span>
-              </button>
                 </div>
               </details>
+              <div class="memory-selection" id="mem-selection" data-focus-hide hidden>
+                <button type="button" class="btn btn-sm btn-danger" id="mem-delete-selected" disabled data-i18n-title="delete.selectedTitle">
+                  <i data-lucide="trash-2" aria-hidden="true"></i>
+                  <span id="mem-delete-selected-label">Delete selected</span>
+                </button>
+                <button type="button" class="btn btn-sm btn-ghost" id="mem-clear-selection" data-i18n="delete.clearSelection">Clear selection</button>
+              </div>
             </div>
             <div class="table-container">
               <div class="table-scroll" id="memories-scroll">
@@ -419,6 +435,29 @@
         </section>
       </main>
     </div>
+
+    <dialog class="memory-dialog" id="mem-group-dialog" aria-labelledby="mem-group-title">
+      <div class="memory-dialog-header">
+        <h2 id="mem-group-title" data-i18n="filter.groupsPick">Filter by group</h2>
+        <form method="dialog"><button class="btn btn-sm btn-ghost" data-i18n-aria="common.close" aria-label="Close"><i data-lucide="x" aria-hidden="true"></i></button></form>
+      </div>
+      <input type="search" class="input" id="mem-group-query" data-i18n-placeholder="filter.groupsQuery" data-i18n-aria="filter.groupsQuery" aria-label="Find a group by name, ID or platform" placeholder="Find a group by name, ID or platform" autofocus />
+      <div id="mem-group-options" class="memory-group-options"></div>
+      <p id="mem-group-feedback" class="memory-dialog-note" role="status"></p>
+      <button type="button" class="btn btn-sm btn-secondary" id="mem-group-more" data-i18n="filter.groupsMore" hidden>More groups</button>
+    </dialog>
+
+    <dialog class="memory-dialog" id="mem-delete-dialog" aria-labelledby="mem-delete-title" aria-describedby="mem-delete-confirm-msg">
+      <form method="dialog">
+        <h2 id="mem-delete-title" data-i18n="delete.confirmTitle">Confirm deletion</h2>
+        <p class="memory-dialog-note" id="mem-delete-confirm-msg"></p>
+        <label class="memory-delete-mode" id="mem-delete-mode"><input type="checkbox" id="mem-delete-permanent" /><span data-i18n="delete.permanentAction">Delete permanently</span></label>
+        <div class="memory-dialog-actions">
+          <button class="btn btn-secondary" value="cancel" data-i18n="common.cancel" autofocus>Cancel</button>
+          <button class="btn btn-danger" id="mem-delete-confirm" value="confirm">Delete</button>
+        </div>
+      </form>
+    </dialog>
 
     <!-- Peek Panel -->
     <div class="peek-overlay" id="peek-overlay"></div>

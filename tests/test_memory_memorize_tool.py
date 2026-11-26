@@ -179,19 +179,27 @@ async def test_memory_memorize_tool_detects_group_chat(memory_engine, memory_pro
         memory_processor=memory_processor,
     )
 
+    run_context = _make_run_context(MessageType.GROUP_MESSAGE)
+    event = run_context.context.event
+    event.unified_msg_origin = "test:GroupMessage:sender_42"
+    event.get_group_id = Mock(return_value="42")
+
     with patch(
         "astrbot_plugin_anamnesis.core.tools.memory_memorize_tool.get_persona_id",
         new_callable=AsyncMock,
     ) as get_persona:
         get_persona.return_value = "persona_a"
         await tool.call(
-            _make_run_context(MessageType.GROUP_MESSAGE),
+            run_context,
             memory="群里约定周五复盘",
         )
 
     assert memory_processor.build_memory_from_structured_data.call_args.kwargs[
         "is_group_chat"
     ] is True
+    assert memory_engine.add_memory.await_args.kwargs["metadata"]["source_group"] == (
+        "test:GroupMessage:42"
+    )
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ from astrbot.core.agent.tool import FunctionTool, ToolExecResult
 from astrbot.core.astr_agent_context import AstrAgentContext
 from pydantic.dataclasses import dataclass
 
+from ..memory_groups import group_metadata_for_event
 from ..memory_scope import resolve_memory_scope
 from ..utils import get_persona_id
 from .tool_access import ensure_tool_access
@@ -151,6 +152,7 @@ class MemoryMemorizeTool(FunctionTool[AstrAgentContext]):
             metadata["memory_origin"] = "agent_memorize_tool"
             metadata["source_type"] = "agent_memorize_tool"
             metadata["source_session_id"] = session_id
+            metadata.update(group_metadata_for_event(event))
             cleaned_reason = (reason or "").strip()
             metadata["record_reason"] = cleaned_reason or "Agent 主动保存明确事实"
             if cleaned_reason:

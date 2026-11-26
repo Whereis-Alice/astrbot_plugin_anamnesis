@@ -16,6 +16,7 @@ from .i18n_backend import t, t_list
 from .identity_repair import normalise_platform
 from .managers.conversation_manager import ConversationManager
 from .managers.memory_engine import MemoryEngine
+from .memory_groups import group_metadata_for_event, group_metadata_from_messages
 from .memory_scope import is_event_memory_allowed, resolve_memory_scope
 from .memory_source import serialize_source_messages
 from .validators.index_validator import IndexValidator
@@ -538,6 +539,10 @@ class CommandHandler:
                 "triggered_by": "manual",
             }
             metadata["source_session_id"] = session_id
+            metadata.update(
+                group_metadata_from_messages(history_messages)
+                or group_metadata_for_event(event)
+            )
 
             await self.memory_engine.add_memory(
                 content=content,

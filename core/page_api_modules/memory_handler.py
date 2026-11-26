@@ -9,6 +9,7 @@ import aiosqlite
 from astrbot.api import logger
 from quart import request
 
+from ..memory_groups import MEMORY_GROUP_SQL, parse_group_key
 from ..memory_source import restore_source_messages
 from .memory_handler_io import MemoryHandlerIoMixin
 from .memory_handler_update import MemoryHandlerUpdateMixin
@@ -81,6 +82,7 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
 
         查询参数:
             - session_id: 会话ID过滤
+            - group: 来源群聊标识（来自 /memories/groups）
             - keyword: 关键词搜索（支持ID或文本）
             - status: 状态过滤（all/active/archived）
             - type: 记忆类型过滤（all/GENERAL/FACT/PREFERENCE/...）
@@ -93,6 +95,9 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
         """
         query = request.args
         session_id = self.utils.optional_text(query.get("session_id"))
+        group = self.utils.optional_text(query.get("group"))
+        if group and not parse_group_key(group):
+            return self.utils.error("群聊标识无效")
         keyword = str(query.get("keyword", "")).strip()
         status_filter = str(query.get("status", "all")).strip().lower() or "all"
         type_filter = self.utils.optional_text(query.get("type"))
@@ -121,6 +126,10 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
         if session_id:
             where_clauses.append("json_extract(metadata, '$.session_id') = ?")
             params.append(session_id)
+
+        if group:
+            where_clauses.append(f"{MEMORY_GROUP_SQL} = ?")
+            params.append(group)
 
         if status_filter != "all":
             where_clauses.append(
@@ -186,6 +195,8 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
         try:
             async with aiosqlite.connect(db_path) as db:
                 db.row_factory = aiosqlite.Row
+                # Keep the count and the page on the same snapshot during bulk deletion.
+                await db.execute("BEGIN")
 
                 count_cursor = await db.execute(
                     f"SELECT COUNT(*) AS total FROM documents {where_clause}",
@@ -231,6 +242,7 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
                 "has_more": (offset + page_size) < total,
                 "filters": {
                     "session_id": session_id,
+                    "group": group,
                     "keyword": keyword,
                     "status": status_filter,
                     "type": type_filter,
@@ -238,6 +250,69 @@ class MemoryHandler(MemoryHandlerUpdateMixin, MemoryHandlerIoMixin):
                 "sort": sort_key,
             }
         )
+
+    async def list_memory_groups(self, memory_engine) -> dict[str, Any]:
+        """List source groups ordered by memory count, with literal search and paging."""
+        query = request.args
+        search = str(query.get("q", "")).strip()[:512].lower()
+        try:
+            limit = min(200, max(1, int(query.get("limit", 50))))
+            offset = min(2**63 - 1, max(0, int(query.get("offset", 0))))
+        except (TypeError, ValueError):
+            return self.utils.error("分页参数无效")
+
+        db_path = getattr(memory_engine, "db_path", None)
+        if not db_path:
+            return self.utils.error("MemoryEngine db_path unavailable")
+
+        name_path = "'$.source_group_name'"
+        try:
+            async with aiosqlite.connect(db_path) as db:
+                db.row_factory = aiosqlite.Row
+                cursor = await db.execute(
+                    f"""
+                    WITH groups AS (
+                        SELECT {MEMORY_GROUP_SQL} AS group_key, COUNT(*) AS count,
+                            MAX(CASE
+                                WHEN json_type(metadata, {name_path}) = 'text'
+                                     AND TRIM(json_extract(metadata, {name_path})) <> ''
+                                THEN id
+                            END) AS named_memory_id
+                        FROM documents
+                        WHERE {MEMORY_GROUP_SQL} IS NOT NULL
+                        GROUP BY group_key
+                    ), named_groups AS (
+                        SELECT group_key, count,
+                               TRIM(json_extract(named.metadata, {name_path})) AS group_name
+                        FROM groups
+                        LEFT JOIN documents AS named ON named.id = groups.named_memory_id
+                    )
+                    SELECT group_key, count, group_name FROM named_groups
+                    WHERE (? = '' OR INSTR(LOWER(group_key), ?) > 0
+                                  OR INSTR(LOWER(group_name), ?) > 0)
+                    ORDER BY count DESC, group_key ASC
+                    LIMIT ? OFFSET ?
+                    """,
+                    (search, search, search, limit + 1, offset),
+                )
+                rows = await cursor.fetchall()
+        except Exception as exc:
+            logger.error(f"[PageAPI] 获取记忆群聊列表失败: {exc}", exc_info=True)
+            return self.utils.error(str(exc))
+
+        items = []
+        for row in rows[:limit]:
+            group = parse_group_key(row["group_key"])
+            if group:
+                platform_id, group_id = group
+                items.append({
+                    "id": row["group_key"],
+                    "group_id": group_id,
+                    "platform_id": platform_id,
+                    "group_name": row["group_name"],
+                    "count": row["count"],
+                })
+        return self.utils.ok({"items": items, "has_more": len(rows) > limit})
 
     async def get_memory_detail(self, memory_engine) -> dict[str, Any]:
         """

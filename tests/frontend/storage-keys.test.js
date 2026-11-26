@@ -15,7 +15,7 @@ const PREFIX = "anamnesis:";
 const LANG_KEY = PREFIX + "lang";
 const THEME_KEY = PREFIX + "theme";
 /* 前端允许使用的全部 storage key；新增 key 必须同步更新这里。 */
-const ALLOWED_KEYS = [LANG_KEY, THEME_KEY, PREFIX + "sidebar-expanded"];
+const ALLOWED_KEYS = [LANG_KEY, THEME_KEY, PREFIX + "sidebar-expanded", PREFIX + "delete-operation"];
 
 function setGlobal(name, value) {
   Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });

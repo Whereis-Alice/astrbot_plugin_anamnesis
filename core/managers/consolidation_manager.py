@@ -16,6 +16,8 @@ from typing import Any
 
 from astrbot.api import logger
 
+from ..memory_groups import merge_group_metadata
+
 
 class MemoryConsolidationManager:
     """按配置定期整合记忆库。"""
@@ -380,6 +382,10 @@ class MemoryConsolidationManager:
             "consolidated_at": time.time(),
         }
         source_messages = self._combine_sources(kept, snapshots, metadata)
+        metadata.update(merge_group_metadata(
+            snapshots[mem["id"]]["metadata"]
+            for mem in sorted(kept, key=lambda item: item["id"], reverse=True)
+        ))
 
         # 最终核验、新增和来源清理作为一个变更单元完成。调用方取消时等待该单元
         # 收尾再传播取消，避免 add 已提交但尚未返回 ID 时留下无法补偿的结果。

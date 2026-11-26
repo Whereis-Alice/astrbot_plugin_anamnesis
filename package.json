@@ -1,6 +1,6 @@
 {
   "name": "astrbot-plugin-anamnesis-docs",
-  "version": "3.6.3",
+  "version": "3.7.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,7 @@
     "test:frontend": "node --test --test-concurrency=1 tests/frontend/*.test.js",
     "dashboard:build": "node scripts/build_dashboard.mjs",
     "dashboard:check": "node scripts/build_dashboard.mjs --check",
-    "test:browser": "node tests/browser/dashboard.spec.mjs",
+    "test:browser": "node tests/browser/dashboard.spec.mjs && node tests/browser/memory-management.spec.mjs",
     "test:bridge-browser": "node tests/browser/bridge-navigation.spec.mjs",
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",

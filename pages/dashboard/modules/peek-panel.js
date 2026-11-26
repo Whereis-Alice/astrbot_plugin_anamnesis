@@ -16,9 +16,10 @@ import {
 } from "./utils.js";
 
 export class PeekPanel {
-  constructor(state, apiClient) {
+  constructor(state, apiClient, deletion) {
     this.state = state;
     this.api = apiClient;
+    this.deletion = deletion;
     this._confirmResolve = null;
     this._batchEditResolve = null;
     this._detailGeneration = 0;
@@ -287,7 +288,7 @@ export class PeekPanel {
     const delBtn = document.getElementById("peek-delete-btn");
     if (editBtn) editBtn.addEventListener("click", () => this.renderEditView(detail));
     if (resummarizeBtn) resummarizeBtn.addEventListener("click", () => this.resummarizeMemory(id));
-    if (delBtn) delBtn.addEventListener("click", () => this.deleteSingleMemory(parseInt(id)));
+    if (delBtn) delBtn.addEventListener("click", () => this.deleteSingleMemory(Number(id), status));
     document.getElementById("peek-locate-graph")?.addEventListener("click", () => window.lmLocateMemoryInGraph?.(id));
     peekBody.querySelectorAll("[data-linked-memory]").forEach(button => button.addEventListener("click", () => this.renderMemory({ memory_id: button.dataset.linkedMemory })));
 
@@ -508,23 +509,12 @@ export class PeekPanel {
    * 删除单个记忆
    * @param {number} id - 记忆 ID
    */
-  async deleteSingleMemory(id) {
-    const confirmed = await this.showConfirmDialog(
-      window.t("confirm.deleteTitle"),
-      window.t("confirm.deleteMessage", id)
-    );
-
-    if (!confirmed) return;
-
+  async deleteSingleMemory(id, status) {
+    const generation = this._detailGeneration;
     try {
-      await this.api.post("memories/batch-delete", { memory_ids: [id] });
-      this.showToast(window.t("memory.deleted"));
-      this.close();
-
-      // 通知刷新记忆列表
-      if (window.lmRefreshMemories) {
-        await window.lmRefreshMemories();
-      }
+      await this.deletion.request([id], status === "active", () => {
+        if (generation === this._detailGeneration) this.close();
+      });
     } catch (e) {
       this.showToast(e.message || window.t("memory.deleteFailed"), true);
     }

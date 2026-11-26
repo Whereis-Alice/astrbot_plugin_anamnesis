@@ -304,11 +304,24 @@ async def test_memory_batch_delete_saves_real_faiss_index_once(
     second_id = await engine.add_memory("second", "s1", "p1", 0.5, {})
 
     write_paths = _count_index_writes(monkeypatch, vector_db)
+    document_storage = vector_db.document_storage
+    if callable(getattr(document_storage, "_delete_fts_rows_batch", None)):
+        delete_one = AsyncMock(wraps=document_storage.delete_document_by_doc_id)
+        monkeypatch.setattr(document_storage, "delete_document_by_doc_id", delete_one)
+    else:
+        delete_one = None
 
     try:
         deleted = await engine.batch_delete_memories([first_id, second_id])
         assert deleted == 2
         assert len(write_paths) == 1
+        if delete_one is not None:
+            delete_one.assert_not_awaited()
+        if getattr(document_storage, "fts5_available", False):
+            async with engine.db_connection.execute(
+                "SELECT COUNT(*) FROM documents_fts WHERE rowid IN (?,?)", [first_id, second_id],
+            ) as cursor:
+                assert (await cursor.fetchone())[0] == 0
         assert await engine.get_memory(first_id) is None
         assert await engine.get_memory(second_id) is None
     finally:

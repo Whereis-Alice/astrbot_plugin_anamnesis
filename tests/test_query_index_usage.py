@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from astrbot_plugin_anamnesis.core.managers.memory_engine import MemoryEngine
+from astrbot_plugin_anamnesis.core.memory_groups import MEMORY_GROUP_SQL
 
 from .test_memory_engine import _FakeFaissDB
 
@@ -108,6 +109,23 @@ async def test_created_asc_sort_reuses_create_time_index(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_group_filter_uses_group_and_create_time_index(tmp_path: Path):
+    engine = await _make_engine(tmp_path)
+    try:
+        plan = await _plan(
+            engine,
+            f"SELECT id FROM documents WHERE {MEMORY_GROUP_SQL} = ? "
+            "ORDER BY COALESCE(CAST(json_extract(metadata, '$.create_time') AS REAL), 0) DESC, id DESC "
+            "LIMIT 20",
+            ["qq:GroupMessage:456"],
+        )
+        assert "idx_doc_memory_group" in plan, plan
+        assert "TEMP B-TREE" not in plan, plan
+    finally:
+        await engine.close()
+
+
+@pytest.mark.asyncio
 async def test_new_indexes_exist_after_initialize(tmp_path: Path):
     engine = await _make_engine(tmp_path)
     try:
@@ -121,6 +139,7 @@ async def test_new_indexes_exist_after_initialize(tmp_path: Path):
             "idx_doc_status",
             "idx_doc_memory_type",
             "idx_doc_create_time",
+            "idx_doc_memory_group",
         } <= names
     finally:
         await engine.close()

@@ -22,6 +22,7 @@ from ...storage.administration_store import (
 )
 from ...storage.projection_outbox import ProjectionOutbox
 from .administration_jobs import AdministrationJobsMixin
+from .deletion_jobs import DeletionJobsMixin
 from .memory_mutation import (
     memory_mutation_guard,
     memory_mutation_task,
@@ -53,7 +54,7 @@ def valid_memory_id(value) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value > 0
 
 
-class MemoryAdministration(AdministrationJobsMixin):
+class MemoryAdministration(DeletionJobsMixin, AdministrationJobsMixin):
     def __init__(self, engine, config_manager, processor=None):
         self.engine, self.config, self.processor = engine, config_manager, processor
         self.store = AdministrationStore(engine.db_path, getattr(engine, "config", {}))
@@ -75,6 +76,7 @@ class MemoryAdministration(AdministrationJobsMixin):
                 await self.store.initialize()
                 await self.projection.initialize()
                 await self.store.interrupt_jobs()
+                await self._reconcile_interrupted_deletions()
                 after_id = None
                 while operations := await self.store.list_unresolved_corrections(after_id=after_id):
                     # Capture the stable page boundary before repairs change
@@ -230,7 +232,11 @@ class MemoryAdministration(AdministrationJobsMixin):
                 operation["kind"] == "correction" and operation["status"] == "completed"
                 and operation["expires_at"] <= time.time()
             )
-            if (not expired_correction and operation["status"] not in (
+            completed_permanent_deletion = (
+                operation["kind"] == "permanent_delete"
+                and operation["status"] in ("completed", "partial", "failed", "interrupted")
+            )
+            if (not expired_correction and not completed_permanent_deletion and operation["status"] not in (
                 "purged", "restored", "rolled_back", "failed", "stale", "preview"
             )) or operation["kind"] in ("import", "evaluation", "episode", "projection"):
                 raise ValueError("保留中的删除快照或运行中操作不能直接清理")
@@ -249,14 +255,22 @@ class MemoryAdministration(AdministrationJobsMixin):
         # Recheck ownership and retention after acquiring the mutation guard;
         # a restore can have waited past its deadline since the public check.
         operation = await self._owned(operation_id, actor, "delete", allow_expired=purge)
+        batched = operation["payload"].get("mode") == "recoverable"
+        if batched and operation["status"] in ("preparing", "queued", "running"):
+            raise ValueError("请等待删除任务结束")
         restored, conflicts = [], []
         for item in await self.store.items(operation_id):
             memory_id, data = int(item["item_key"]), item["payload"]
             if item["status"] == "purged":
                 continue
+            if batched and item["status"] in ("pending", "prepared", "failed"):
+                # Batched archives publish the receipt in the archive transaction.
+                # An unsealed snapshot cannot authorize a restore or purge.
+                continue
             if (item.get("corrupt_fields") or not isinstance(data, dict)
                     or not valid_snapshot(data.get("before"))
-                    or any(data.get(key) is not None and not valid_snapshot(data[key]) for key in ("after", "tagged"))):
+                    or any(data.get(key) is not None and not valid_snapshot(data[key]) for key in ("after", "tagged"))
+                    or (batched and not isinstance(data.get("archive_fingerprint"), str))):
                 conflicts.append(memory_id)
                 logger.warning("恢复操作 %s 的记忆 %s 快照损坏，已保留原始日志待核验", operation_id, memory_id)
                 continue
@@ -294,7 +308,16 @@ class MemoryAdministration(AdministrationJobsMixin):
             tagged = current and current["metadata"].get("recovery_operation_id") == operation_id
             # Reconcile an interrupted archive from the saved before snapshot.
             expected = data.get("after")
-            if expected is None and current and current["metadata"].get("status", "active") == "active":
+            tagged_snapshot = data.get("tagged")
+            if batched:
+                if tagged and fingerprint(current) == data["archive_fingerprint"]:
+                    expected = current
+                before = data["before"]
+                tagged_snapshot = {
+                    **before,
+                    "metadata": {**before["metadata"], "recovery_operation_id": operation_id},
+                }
+            if not batched and expected is None and current and current["metadata"].get("status", "active") == "active":
                 before = data.get("before")
                 candidate = {**current, "metadata": dict(current["metadata"])}
                 if tagged and isinstance(before, dict):
@@ -308,14 +331,14 @@ class MemoryAdministration(AdministrationJobsMixin):
                     await self.store.put_item(operation_id, memory_id, {} if purge else data, status="purged" if purge else "restored")
                     restored.append(memory_id)
                     continue
-            if expected is None and tagged and current["metadata"].get("status") == "archived":
+            if not batched and expected is None and tagged and current["metadata"].get("status") == "archived":
                 candidate = dict(current)
                 meta = dict(current["metadata"])
                 for key in ("archived_at", "archived_atom_lifecycle"):
                     meta.pop(key, None)
                 meta["status"] = data["before"]["metadata"].get("status", "active")
                 candidate["metadata"] = meta
-                if fingerprint(candidate) == fingerprint(data.get("tagged")):
+                if fingerprint(candidate) == fingerprint(tagged_snapshot):
                     expected = current
             if item["status"] == "restoring" and tagged and current["metadata"].get("status") == "active":
                 # A crash after metadata commit but before recording completion.
@@ -326,7 +349,7 @@ class MemoryAdministration(AdministrationJobsMixin):
                     for key in ("status", "archived_at", "restored_at", "archived_atom_lifecycle"):
                         cloned["metadata"].pop(key, None)
                     return fingerprint(cloned)
-                expected_identity = restoration_identity(expected or data.get("tagged"))
+                expected_identity = restoration_identity(expected or tagged_snapshot)
                 if expected_identity is not None and restoration_identity(current) == expected_identity:
                     if not await self.engine.restore_memory(memory_id):
                         conflicts.append(memory_id)

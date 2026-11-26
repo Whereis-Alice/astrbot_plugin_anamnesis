@@ -68,9 +68,34 @@ async def delete_faiss_documents_by_ids(
 
     found_ids = [int(doc["id"]) for doc in deletable]
     await embedding_delete(found_ids)
-    for document in deletable:
-        await delete_by_uuid(document["doc_id"])
+    document_ids = [document["doc_id"] for document in deletable]
+    if not await _delete_astrbot_document_batch(document_storage, document_ids):
+        for document_id in document_ids:
+            await delete_by_uuid(document_id)
     return found_ids
+
+
+async def _delete_astrbot_document_batch(storage, document_ids: list[str]) -> bool:
+    """Perform the native document and FTS changes in one transaction."""
+    delete_fts = getattr(storage, "_delete_fts_rows_batch", None)
+    if not callable(delete_fts):
+        return False
+    try:
+        from astrbot.core.db.vec_db.faiss_impl.document_storage import Document, DocumentStorage
+        from sqlalchemy import delete, select
+        from sqlmodel import col
+    except ImportError:
+        return False
+    if type(storage) is not DocumentStorage:
+        return False
+
+    matching = col(Document.doc_id).in_(document_ids)
+    async with storage.get_session() as session, session.begin():
+        documents = (await session.scalars(select(Document).where(matching))).all()
+        # AstrBot handles both contentless FTS variants and non-FTS databases.
+        await delete_fts(session, documents)
+        await session.execute(delete(Document).where(matching))
+    return True
 
 
 class VectorRetriever:

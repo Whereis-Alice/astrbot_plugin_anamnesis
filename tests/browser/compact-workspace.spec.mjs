@@ -99,18 +99,22 @@ try {
 
         await navigate(page, 'memory');
         await page.locator('.memory-summary-text').first().waitFor();
+        await inViewport(page, '#mem-group-picker');
         for (const id of ['mem-toolbar-filters', 'mem-toolbar-transfer', 'mem-toolbar-selection']) {
           await page.locator(`#${id} > summary`).click();
         }
         assert.equal(await page.locator('.memory-toolbar details[open]').count(), 3);
         for (const selector of ['#mem-session', '#mem-sort', '#mem-page-size',
-          '#mem-transfer-format', '#mem-export', '#mem-import', '#mem-batch-edit', '#mem-delete-selected']) {
+          '#mem-transfer-format', '#mem-export', '#mem-import', '#mem-batch-edit']) {
           await inViewport(page, selector);
         }
         const tools = await page.locator('.memory-toolbar').evaluate(element => ({
           height: element.clientHeight, scroll: element.scrollHeight, top: element.scrollTop,
         }));
         assert.ok(tools.scroll > tools.height && tools.top > 0, 'expanded tools scroll internally');
+        await page.locator('#mem-select-all').check();
+        await inViewport(page, '#mem-delete-selected');
+        await page.locator('#mem-clear-selection').click();
         const table = await page.locator('#memories-scroll').boundingBox();
         assert.ok(table.height >= 80, `memory list retains a readable height: ${table.height}`);
         const pagination = page.locator('#page-memory .pagination');

@@ -16,6 +16,8 @@ class AdministrationPageMixin:
         routes = {
             "operations": ("GET", "list"), "operations/detail": ("GET", "detail"),
             "operations/delete": ("POST", "delete"), "operations/restore": ("POST", "restore"),
+            "operations/delete/start": ("POST", "start_deletion"),
+            "operations/delete/status": ("GET", "deletion_status"),
             "operations/purge": ("POST", "purge"), "operations/remove": ("POST", "remove"),
             "corrections/preview": ("POST", "preview"), "corrections/confirm": ("POST", "confirm"),
             "corrections/execute": ("POST", "execute"), "corrections/rollback": ("POST", "rollback"),
@@ -74,6 +76,13 @@ class AdministrationPageMixin:
                     result["new_content"] = operation["payload"]["content"]
             elif action == "delete":
                 result = await service.delete(payload.get("memory_ids"), actor=actor, reason=payload.get("reason", ""))
+            elif action == "start_deletion":
+                result = await service.start_deletion(
+                    payload.get("memory_ids"), mode=payload.get("mode", "recoverable"),
+                    actor=actor, reason=payload.get("reason", ""),
+                )
+            elif action == "deletion_status":
+                result = await service.deletion_status(operation_id, actor=actor)
             elif action in ("restore", "purge"):
                 result = await service.restore(operation_id, actor=actor, purge=action == "purge")
             elif action == "remove":

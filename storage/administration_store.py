@@ -257,6 +257,70 @@ class AdministrationStore:
             rows = await (await db.execute("SELECT * FROM memory_admin_items WHERE operation_id=? ORDER BY item_key", (operation_id,))).fetchall()
             return [self.decode(row, tolerate_corruption=True) for row in rows]
 
+    async def reserve_deletion_items(self, operation_id: str, memory_ids: list[int]) -> None:
+        async with self.connection(write=True) as db:
+            await db.executemany(
+                "INSERT INTO memory_admin_items(operation_id,item_key,status,payload) VALUES(?,?,'pending','{}')",
+                [(operation_id, str(memory_id)) for memory_id in memory_ids],
+            )
+
+    async def prepare_deletion_snapshots(self, operation_id: str, snapshots: dict[int, dict]) -> list[int]:
+        reserved = []
+        async with self.connection(write=True) as db:
+            for memory_id, snapshot in snapshots.items():
+                try:
+                    # Reserve the space for the archive fingerprint before modifying the document.
+                    raw = self._encode({"before": snapshot, "archive_fingerprint": "0" * 64})
+                    await db.execute(
+                        "UPDATE memory_admin_items SET status='prepared',payload=? WHERE operation_id=? AND item_key=?",
+                        (raw, operation_id, str(memory_id)),
+                    )
+                except AdministrationCapacityError:
+                    continue
+                except sqlite3.IntegrityError as exc:
+                    if "anamnesis_admin_quota" not in str(exc):
+                        raise
+                    continue
+                reserved.append(memory_id)
+        return reserved
+
+    async def seal_deletion_snapshots(self, db, operation_id: str, fingerprints: dict[int, str]) -> None:
+        cursor = await db.executemany(
+            "UPDATE memory_admin_items SET status='deleted',payload=json_set(payload,'$.archive_fingerprint',?) "
+            "WHERE operation_id=? AND item_key=? AND status='prepared'",
+            [(fingerprint, operation_id, str(memory_id)) for memory_id, fingerprint in fingerprints.items()],
+        )
+        if cursor.rowcount != len(fingerprints):
+            raise RuntimeError("待归档的恢复快照已变化")
+
+    async def mark_deletion_items(self, operation_id: str, memory_ids: list[int], status: str) -> None:
+        if not memory_ids:
+            return
+        placeholders = ",".join("?" for _ in memory_ids)
+        async with self.connection(write=True) as db:
+            await db.execute(
+                f"UPDATE memory_admin_items SET status=? WHERE operation_id=? AND item_key IN ({placeholders}) "
+                "AND status IN ('pending','prepared','deleting')",
+                (status, operation_id, *map(str, memory_ids)),
+            )
+
+    async def deletion_item_states(self, operation_id: str) -> dict[int, str]:
+        async with self.connection() as db:
+            async with db.execute(
+                "SELECT item_key,status FROM memory_admin_items WHERE operation_id=?",
+                (operation_id,),
+            ) as cursor:
+                return {int(row[0]): row[1] for row in await cursor.fetchall()}
+
+    async def interrupted_permanent_deletions(self) -> list[dict]:
+        async with self.connection() as db:
+            async with db.execute(
+                "SELECT op.* FROM memory_admin_operations op "
+                "WHERE op.kind='permanent_delete' AND op.status='interrupted' AND EXISTS ("
+                "SELECT 1 FROM memory_admin_items i WHERE i.operation_id=op.id AND i.status='deleting')",
+            ) as cursor:
+                return [self.decode(row, tolerate_corruption=True) for row in await cursor.fetchall()]
+
     async def remove(self, operation_id):
         async with self.connection(write=True) as db:
             await db.execute("DELETE FROM memory_admin_items WHERE operation_id=?", (operation_id,))
@@ -265,3 +329,10 @@ class AdministrationStore:
     async def interrupt_jobs(self):
         async with self.connection(write=True) as db:
             await db.execute("UPDATE memory_admin_operations SET status='interrupted',updated_at=?,token_hash=NULL,token_expires=NULL WHERE status IN ('preparing','queued','running') AND kind IN ('import','evaluation','episode','projection')", (time.time(),))
+            await db.execute(
+                "UPDATE memory_admin_operations SET status='interrupted',updated_at=? "
+                "WHERE status IN ('preparing','queued','running') AND kind IN ('delete','permanent_delete') "
+                "AND CASE WHEN json_valid(payload) THEN json_extract(payload,'$.mode') END "
+                "IN ('recoverable','permanent')",
+                (time.time(),),
+            )
